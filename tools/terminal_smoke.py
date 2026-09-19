@@ -216,6 +216,20 @@ def main():
             terminal.finish()
         print("PASS: Unicode paste, CRLF, undo/redo, dirty quit, resize, save, clean quit")
 
+        opened_lines = Path(directory) / "opened lines.txt"
+        opened_lines.write_bytes(b"\tfirst\r\nlast")
+        with Terminal([binary, str(opened_lines)]) as terminal:
+            terminal.start()
+            # Exercise both common Backspace bytes through Crossterm, too.
+            terminal.send(b"obeloX\x7fwY\x08")
+            terminal.expect_screen(b"below")
+            terminal.send(b"\x03Oabove")
+            terminal.expect_screen(b"above")
+            terminal.send(b"\x03u:wq\r")
+            terminal.finish()
+            assert opened_lines.read_bytes() == b"\tfirst\r\n\tbelow\r\nlast"
+        print("PASS: o/O, indentation, CRLF, grouped undo, both Backspace encodings")
+
         saved_group = Path(directory) / "saved group.txt"
         saved_group.write_text("")
         with Terminal([binary, str(saved_group)]) as terminal:

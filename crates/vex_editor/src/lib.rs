@@ -68,6 +68,7 @@ pub struct Editor {
     mode: Mode,
     preferred_columns: Option<Vec<usize>>,
     tab_width: NonZeroUsize,
+    newline: &'static str,
     layout: RefCell<LayoutCache>,
     syntax: RefCell<syntax::Highlighting>,
     search: search::Search,
@@ -77,6 +78,15 @@ pub struct Editor {
 
 impl Editor {
     pub fn new(document: Document) -> Self {
+        let first = document.text().line(0);
+        let len = first.len_chars();
+        let newline = if len >= 2 && first.char(len - 2) == '\r' && first.char(len - 1) == '\n' {
+            "\r\n"
+        } else if len >= 1 && first.char(len - 1) == '\r' {
+            "\r"
+        } else {
+            "\n"
+        };
         let selections = SelectionSet::single(
             motion::block(document.text(), CharOffset(0)).expect("BOF is valid"),
         );
@@ -86,6 +96,7 @@ impl Editor {
             mode: Mode::Normal,
             preferred_columns: None,
             tab_width: NonZeroUsize::new(4).unwrap(),
+            newline,
             layout: RefCell::default(),
             syntax: RefCell::default(),
             search: search::Search::default(),
@@ -102,6 +113,12 @@ impl Editor {
     }
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// Line ending detected when the document was loaded, defaulting to LF.
+    /// Retained through edits so removing all line breaks does not change it.
+    pub fn newline(&self) -> &'static str {
+        self.newline
     }
 
     /// Take a language-service action after command dispatch. The frontend owns

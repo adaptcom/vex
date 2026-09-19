@@ -247,11 +247,6 @@ impl App {
                                 self.fail(error);
                             }
                         }
-                        Key::Enter if self.editor.mode() == Mode::Insert => {
-                            if let Err(error) = self.editor.insert_text(self.files.newline()) {
-                                self.fail(error);
-                            }
-                        }
                         _ => {
                             if let Err(error) = self.keys.handle(&mut self.editor, key) {
                                 self.fail(error);

@@ -1,7 +1,7 @@
 //! Named command functions. Their Rust documentation also supplies runtime help.
 
 use std::num::NonZeroUsize;
-use vex_core::{Affinity, CharOffset, Selection, SelectionSet, grapheme, motion};
+use vex_core::{Affinity, CharOffset, Edit, Selection, SelectionSet, grapheme, motion};
 
 use crate::{Editor, Error, Mode};
 
@@ -196,6 +196,89 @@ fn enter_insert(editor: &mut Editor, append: bool) -> Result<(), Error> {
     editor.mode = Mode::Insert;
     editor.preferred_columns = None;
     Ok(())
+}
+
+fn open_lines(ctx: &mut CommandContext<'_>, below: bool) -> Result<(), Error> {
+    let editor = &mut *ctx.editor;
+    let text = editor.document.text();
+    let count = ctx.count.get();
+    // Use the selection's outer lines in either direction. A selection ending
+    // at the next line's start still belongs to the preceding line.
+    let lines = editor
+        .selections
+        .ranges()
+        .iter()
+        .map(|selection| {
+            let edge = if below && !selection.is_empty() {
+                grapheme::previous(text, selection.end(), 1)?
+            } else {
+                selection.start()
+            };
+            Ok(Selection::cursor(motion::line_start(text, edge)?))
+        })
+        .collect::<Result<Vec<_>, vex_core::Error>>()?;
+    // Multiple selections on a line open it once, retaining the primary.
+    let lines = SelectionSet::new(lines, editor.selections.primary_index())?;
+    let capacity = lines
+        .ranges()
+        .len()
+        .checked_mul(count)
+        .ok_or(vex_core::Error::LengthOverflow)?;
+    let mut carets = Vec::new();
+    carets
+        .try_reserve_exact(capacity)
+        .map_err(|_| vex_core::Error::LengthOverflow)?;
+    let edits = lines
+        .ranges()
+        .iter()
+        .map(|line| {
+            let indent: String = text
+                .slice(line.head.0..)
+                .chars()
+                .take_while(|ch| matches!(ch, ' ' | '\t'))
+                .collect();
+            let unit = if below {
+                format!("{}{indent}", editor.newline())
+            } else {
+                format!("{indent}{}", editor.newline())
+            };
+            let len = unit
+                .len()
+                .checked_mul(count)
+                .ok_or(vex_core::Error::LengthOverflow)?;
+            let mut inserted = String::new();
+            inserted
+                .try_reserve_exact(len)
+                .map_err(|_| vex_core::Error::LengthOverflow)?;
+            for _ in 0..count {
+                inserted.push_str(&unit);
+            }
+            let at = if below {
+                motion::line_end(text, line.head)?
+            } else {
+                line.head
+            };
+            Ok(Edit::insert(at, inserted))
+        })
+        .collect::<Result<Vec<_>, vex_core::Error>>()?;
+    let transaction = editor.document.transaction(edits)?;
+    for edit in transaction.edits() {
+        // The inserted indentation and line endings are all ASCII.
+        let width = edit.text().len() / count;
+        let start = transaction
+            .map_position(edit.range().start, Affinity::Before)?
+            .0;
+        let first = start + width - if below { 0 } else { editor.newline().len() };
+        for index in 0..count {
+            carets.push(Selection::cursor(CharOffset(first + index * width)));
+        }
+    }
+    let selections = SelectionSet::new(carets, lines.primary_index() * count)?;
+    let transaction = transaction.with_selections(selections)?;
+    editor.finish_undo_group();
+    editor.apply(transaction, true)?;
+    editor.mode = Mode::Insert;
+    normalize(editor)
 }
 
 fn erase(ctx: &mut CommandContext<'_>, backward: bool) -> Result<(), Error> {
@@ -411,6 +494,14 @@ commands! {
 
     /// Enter insert mode with a caret after every selection.
     fn append_mode(ctx) { enter_insert(ctx.editor, true) }
+
+    /// Open lines below each selection and enter insert mode, copying indentation. A count creates that many lines and carets; opening and subsequent typing share one undo step.
+    /// Uses the loaded line ending; multiple selections ending on the same line share the new lines.
+    fn open_below(ctx) { open_lines(ctx, true) }
+
+    /// Open lines above each selection and enter insert mode, copying indentation. A count creates that many lines and carets; opening and subsequent typing share one undo step.
+    /// Uses the loaded line ending; multiple selections starting on the same line share the new lines.
+    fn open_above(ctx) { open_lines(ctx, false) }
 
     /// Insert the context's text at all carets, continuing the typing undo group; requires insert mode.
     fn insert_text(ctx) { insert(ctx, true) }
@@ -673,6 +764,136 @@ mod tests {
         assert_eq!(editor.document().text(), "e\u{301}🦀\ne\u{301}🦀");
         assert_eq!(editor.selections().ranges(), &[range(3, 4), range(7, 7)]);
         assert_eq!(editor.selections().primary_index(), 1);
+    }
+
+    #[test]
+    fn opening_lines_handles_empty_files_eof_and_copies_indentation() {
+        for (source, command, expected) in [
+            ("", "open_below", "\nx"),
+            ("", "open_above", "x\n"),
+            ("one", "open_below", "one\nx"),
+            ("one", "open_above", "x\none"),
+            ("one\n", "open_below", "one\nx\n"),
+            ("one\n", "open_above", "x\none\n"),
+            ("\t  one\nlast", "open_below", "\t  one\n\t  x\nlast"),
+            ("\t  one\nlast", "open_above", "\t  x\n\t  one\nlast"),
+            ("  ", "open_below", "  \n  x"),
+            ("  ", "open_above", "  x\n  "),
+        ] {
+            let mut editor = Editor::new(Document::from(source));
+            editor.execute(command, 1).unwrap();
+            assert_eq!(editor.mode(), Mode::Insert);
+            editor.insert_text("x").unwrap();
+            assert_eq!(editor.document().text(), expected, "{command}: {source:?}");
+        }
+        for command in ["open_below", "open_above"] {
+            let mut editor = Editor::new(Document::from("one\n"));
+            editor.execute("goto_file_end", 1).unwrap();
+            editor.execute(command, 1).unwrap();
+            editor.insert_text("x").unwrap();
+            let expected = if command == "open_below" {
+                "one\n\nx"
+            } else {
+                "one\nx\n"
+            };
+            assert_eq!(editor.document().text(), expected);
+        }
+    }
+
+    #[test]
+    fn opening_uses_selection_edges_in_either_direction_and_preserves_line_endings() {
+        for newline in ["\n", "\r\n", "\r"] {
+            let source = format!("one{newline}\t two{newline}three");
+            let end = 8 + 2 * newline.len();
+            for selection in [range(0, end), range(end, 0)] {
+                for command in ["open_above", "open_below"] {
+                    let mut editor = Editor::new(Document::from(source.as_str()));
+                    editor
+                        .set_selections(SelectionSet::single(selection))
+                        .unwrap();
+                    editor.execute("select_mode", 1).unwrap();
+                    editor.execute(command, 1).unwrap();
+                    editor.insert_text("x").unwrap();
+                    let expected = if command == "open_above" {
+                        format!("x{newline}{source}")
+                    } else {
+                        format!("one{newline}\t two{newline}\t x{newline}three")
+                    };
+                    assert_eq!(editor.document().text(), expected.as_str());
+                    editor.execute("normal_mode", 1).unwrap();
+                    editor.execute("undo", 1).unwrap();
+                    assert_eq!(editor.document().text(), source.as_str());
+                    assert_eq!(editor.selections().primary(), selection);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn opening_counted_lines_merges_duplicate_lines_preserves_primary_and_undo() {
+        for command in ["open_below", "open_above"] {
+            for primary in [1, 2] {
+                let mut editor = Editor::new(Document::from("ab\ncd"));
+                let before =
+                    SelectionSet::new(vec![range(0, 1), range(2, 1), range(3, 4)], primary)
+                        .unwrap();
+                editor.set_selections(before.clone()).unwrap();
+                editor.execute(command, 2).unwrap();
+                assert_eq!(editor.selections().ranges().len(), 4);
+                assert_eq!(
+                    editor.selections().primary_index(),
+                    if primary == 1 { 0 } else { 2 }
+                );
+                for text in ["e", "\u{301}", "🦀"] {
+                    editor.insert_text(text).unwrap();
+                }
+                let typed = "e\u{301}🦀";
+                let expected = if command == "open_below" {
+                    format!("ab\n{typed}\n{typed}\ncd\n{typed}\n{typed}")
+                } else {
+                    format!("{typed}\n{typed}\nab\n{typed}\n{typed}\ncd")
+                };
+                assert_eq!(editor.document().text(), expected.as_str());
+                assert_eq!(editor.document().undo_depth(), 1);
+                editor.execute("normal_mode", 1).unwrap();
+                editor.execute("undo", 1).unwrap();
+                assert_eq!(editor.document().text(), "ab\ncd");
+                assert_eq!(editor.selections(), &before);
+                editor.execute("redo", 1).unwrap();
+                assert_eq!(editor.document().text(), expected.as_str());
+                assert_eq!(
+                    editor.selections().primary_index(),
+                    if primary == 1 { 0 } else { 2 }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn opening_lines_separates_prior_typing_and_rejects_impossible_counts_atomically() {
+        for command in [open_below, open_above] {
+            let mut editor = Editor::new(Document::from("one"));
+            insert_mode(&mut CommandContext::new(&mut editor)).unwrap();
+            editor.insert_text("ab").unwrap();
+            let before = editor.selections().clone();
+            let mut context = CommandContext::new(&mut editor);
+            context.count = NonZeroUsize::new(usize::MAX).unwrap();
+            assert_eq!(
+                command(&mut context),
+                Err(Error::Core(vex_core::Error::LengthOverflow))
+            );
+            assert_eq!(editor.document().text(), "abone");
+            assert_eq!(editor.selections(), &before);
+            assert_eq!(editor.mode(), Mode::Insert);
+            command(&mut CommandContext::new(&mut editor)).unwrap();
+            editor.insert_text("xy").unwrap();
+            assert_eq!(editor.document().undo_depth(), 2);
+            editor.execute("undo", 1).unwrap();
+            assert_eq!(editor.document().text(), "abone");
+            assert_eq!(editor.selections(), &before);
+            editor.execute("undo", 1).unwrap();
+            assert_eq!(editor.document().text(), "one");
+        }
     }
 
     #[test]

@@ -162,6 +162,8 @@ impl Default for Keymap {
                 (vec![Char('v')], "select_mode"),
                 (vec![Char('i')], "insert_mode"),
                 (vec![Char('a')], "append_mode"),
+                (vec![Char('o')], "open_below"),
+                (vec![Char('O')], "open_above"),
                 (vec![Char('d')], "delete_selection"),
                 (vec![Char('c')], "change_selection"),
                 (vec![Char('u')], "undo"),
@@ -215,6 +217,9 @@ impl Default for Keymap {
         }
         keymap
             .bind(Mode::Insert, vec![Backspace], "delete_backward")
+            .unwrap();
+        keymap
+            .bind(Mode::Insert, vec![Ctrl('h')], "delete_backward")
             .unwrap();
         keymap
             .bind(Mode::Insert, vec![Delete], "delete_forward")
@@ -339,7 +344,7 @@ impl KeyHandler {
             let mut buffer = [0; 4];
             let text = match key {
                 Key::Char(ch) if !ch.is_control() => ch.encode_utf8(&mut buffer),
-                Key::Enter => "\n",
+                Key::Enter => editor.newline(),
                 Key::Tab => "\t",
                 _ => return Ok(Dispatch::Ignored),
             };
@@ -478,6 +483,76 @@ mod tests {
             editor.selections().primary().range(),
             CharOffset(7)..CharOffset(8)
         );
+    }
+
+    #[test]
+    fn open_line_bindings_enter_insert_mode_and_group_following_typing() {
+        for mode in [Mode::Normal, Mode::Select] {
+            for (key, command, expected) in [
+                ('o', "open_below", "one\nx\nx\ntwo"),
+                ('O', "open_above", "x\nx\none\ntwo"),
+            ] {
+                let mut editor = Editor::new(Document::from("one\ntwo"));
+                let mut keys = KeyHandler::default();
+                if mode == Mode::Select {
+                    press(&mut keys, &mut editor, "v");
+                }
+                press(&mut keys, &mut editor, "2");
+                assert_eq!(
+                    keys.handle(&mut editor, Key::Char(key)).unwrap(),
+                    Dispatch::Executed(command)
+                );
+                assert_eq!(editor.mode(), Mode::Insert);
+                assert_eq!(keys.count(), None);
+                press(&mut keys, &mut editor, "x");
+                keys.handle(&mut editor, Key::Escape).unwrap();
+                assert_eq!(editor.document().text(), expected);
+                assert_eq!(editor.document().undo_depth(), 1);
+                press(&mut keys, &mut editor, "u");
+                assert_eq!(editor.document().text(), "one\ntwo");
+            }
+        }
+    }
+
+    #[test]
+    fn backspace_aliases_delete_whole_graphemes_only_in_insert_mode() {
+        for key in [Key::Backspace, Key::Ctrl('h')] {
+            let mut editor = Editor::new(Document::from("e\u{301}👩\u{200d}💻\r\n"));
+            let mut keys = KeyHandler::default();
+            for prefix in ["l", "v"] {
+                press(&mut keys, &mut editor, prefix);
+                assert_eq!(keys.handle(&mut editor, key).unwrap(), Dispatch::Ignored);
+                assert_eq!(editor.document().undo_depth(), 0);
+            }
+            keys.handle(&mut editor, Key::Escape).unwrap();
+            press(&mut keys, &mut editor, "gei");
+            for expected in ["e\u{301}👩\u{200d}💻", "e\u{301}", "", ""] {
+                assert_eq!(
+                    keys.handle(&mut editor, key).unwrap(),
+                    Dispatch::Executed("delete_backward")
+                );
+                assert_eq!(editor.document().text(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn enter_and_open_lines_retain_loaded_line_endings_after_deletion() {
+        for newline in ["\n", "\r\n", "\r"] {
+            let mut editor = Editor::new(Document::from(format!("a{newline}").as_str()));
+            let mut keys = KeyHandler::default();
+            press(&mut keys, &mut editor, "xd");
+            assert_eq!(editor.document().text(), "");
+            press(&mut keys, &mut editor, "o");
+            assert_eq!(editor.document().text(), newline);
+            keys.handle(&mut editor, Key::Backspace).unwrap();
+            assert_eq!(editor.document().text(), "");
+            keys.handle(&mut editor, Key::Enter).unwrap();
+            assert_eq!(editor.document().text(), newline);
+            keys.handle(&mut editor, Key::Escape).unwrap();
+            press(&mut keys, &mut editor, "O");
+            assert_eq!(editor.document().text(), newline.repeat(2).as_str());
+        }
     }
 
     #[test]

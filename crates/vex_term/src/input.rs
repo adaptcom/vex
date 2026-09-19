@@ -75,7 +75,7 @@ impl Prompt {
             Key::Right => self.cursor = self.next(),
             Key::Home => self.cursor = 0,
             Key::End => self.cursor = self.text.len(),
-            Key::Backspace => {
+            Key::Backspace | Key::Ctrl('h') => {
                 let previous = self.previous();
                 self.text.replace_range(previous..self.cursor, "");
                 self.cursor = previous;
@@ -149,6 +149,20 @@ mod tests {
         assert_eq!(prompt.text(), "w file:q!🦀");
         prompt.handle(Key::Delete);
         assert_eq!(prompt.text(), "w file:q!");
+    }
+
+    #[test]
+    fn backspace_and_its_alias_edit_prompts_consistently() {
+        for event in [
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+        ] {
+            let mut prompt = Prompt::default();
+            prompt.insert("a👩\u{200d}💻");
+            prompt.handle(key(event).unwrap());
+            assert_eq!(prompt.text(), "a");
+        }
     }
 
     #[test]

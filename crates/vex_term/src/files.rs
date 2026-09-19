@@ -13,7 +13,6 @@ pub struct FileState {
     target: Option<PathBuf>,
     existed: bool,
     saved: Rope,
-    newline: &'static str,
 }
 
 impl FileState {
@@ -45,21 +44,11 @@ impl FileState {
     }
 
     pub fn scratch(document: &Document) -> Self {
-        let first = document.text().line(0);
-        let len = first.len_chars();
-        let newline = if len >= 2 && first.char(len - 2) == '\r' && first.char(len - 1) == '\n' {
-            "\r\n"
-        } else if len >= 1 && first.char(len - 1) == '\r' {
-            "\r"
-        } else {
-            "\n"
-        };
         Self {
             path: None,
             target: None,
             existed: false,
             saved: document.text().clone(),
-            newline,
         }
     }
 
@@ -69,9 +58,6 @@ impl FileState {
     /// Resolved absolute path, also used as the language server's file identity.
     pub fn target(&self) -> Option<&Path> {
         self.target.as_deref()
-    }
-    pub fn newline(&self) -> &'static str {
-        self.newline
     }
 
     /// O(1) savepoint check. Undo/redo restores shared rope identities. An edit
@@ -222,7 +208,6 @@ mod tests {
         let path = directory.path().join("file.txt");
         fs::write(&path, "hello\r\n").unwrap();
         let (mut document, mut state) = FileState::load(Some(&path)).unwrap();
-        assert_eq!(state.newline(), "\r\n");
         assert!(!state.is_dirty(&document));
         insert(&mut document, "🦀");
         assert!(state.is_dirty(&document));

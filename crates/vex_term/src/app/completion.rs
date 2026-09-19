@@ -86,7 +86,8 @@ impl App {
             .is_some_and(|session| session.selected.is_none())
             && matches!(event, Event::Key(key) if key.kind != KeyEventKind::Release
                 && matches!(input::key(*key), Some(Key::Char(ch)) if ch == '_' || ch.is_alphanumeric())
-                || key.kind != KeyEventKind::Release && input::key(*key) == Some(Key::Backspace))
+                || key.kind != KeyEventKind::Release
+                    && matches!(input::key(*key), Some(Key::Backspace | Key::Ctrl('h'))))
     }
 
     /// Completion keys take precedence over insertion only while the menu is active.
@@ -524,6 +525,23 @@ mod tests {
         app.handle(key(KeyCode::Esc));
         assert_eq!(app.editor.document().text(), "// 界\r\nanswer");
         assert_eq!(app.editor.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn backspace_aliases_refresh_unselected_completions_after_deleting() {
+        for event in [key(KeyCode::Backspace), ctrl('h')] {
+            let (_directory, mut app) = fixture();
+            let old = start(&mut app);
+            app.handle(event);
+            assert_eq!(app.editor.document().text(), "// 界\r\nan");
+            let newer = app.take_lsp_update().unwrap();
+            assert!(matches!(
+                newer.request.as_ref().unwrap().kind,
+                RequestKind::Completion
+            ));
+            assert!(!answer(&mut app, old, list(true)));
+            assert!(answer(&mut app, newer, list(true)));
+        }
     }
 
     #[test]

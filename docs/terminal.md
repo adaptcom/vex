@@ -29,6 +29,8 @@ and calls that existing dispatcher.
 | Home, End | Start/end of logical line |
 | Page Up, Page Down | Move by roughly one viewport of logical lines |
 | `i`, `a` | Insert before/after the selection |
+| `o`, `O` | Open lines below/above selections and enter insert mode |
+| Backspace, Ctrl-h in insert mode | Delete the preceding grapheme |
 | `v` | Enter select mode |
 | `d`, `c` | Delete/change the selection |
 | `x` | Select lines |
@@ -46,15 +48,18 @@ Prefix groups display their available commands. The [file picker](pickers.md)
 supports background discovery and fuzzy matching, Unicode query editing, a preview
 on wide terminals, and Ctrl-o return jumps. It protects unsaved changes when opening
 another file.
-Enter in insert mode follows the loaded file's first line ending (LF, CRLF, or
-CR). Tab inserts a literal tab, displayed at the editor's configured tab stops.
+Enter in insert mode and `o`/`O` follow the loaded file's first line ending (LF,
+CRLF, or CR), retained even after deleting all line breaks. The open-line commands
+copy leading tabs and spaces; counts such as `3o` create three lines with a caret
+on each. Tab inserts a literal tab, displayed at the editor's configured tab stops.
 Bracketed paste in insert mode is a separate undo step, preserving the pasted
 bytes. Pasting in normal/select mode shows a message to enter insert mode. Pasting
 into the prompt removes control characters and never submits a command.
 
 Consecutive typing (including Enter and Tab) shares one undo group. Movement,
 mode/selection changes, and save attempts end it. `c` and its following replacement
-text share a group; `d`, Backspace, Delete, and each paste get their own steps.
+text share a group, as do `o`/`O` and their following typing; `d`, Backspace,
+Delete, and each paste get their own steps.
 Typing after those actions starts a new group. For example, `ihello<Esc>u` removes
 the whole word, and `2u` undoes two groups. Undo/redo restores every selection,
 adjusted to the current mode; it does not switch modes.
