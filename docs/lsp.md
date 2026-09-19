@@ -16,7 +16,7 @@ protocol failures, and request errors leave editing and saving available.
 |---|---|
 | `K` / `:hover` | Show documentation at the primary cursor |
 | `gd` / `:goto_definition` | Jump to the first definition returned by the server |
-| `Ctrl-o` / `:jump_back` | Return to the previous definition-jump location |
+| `Ctrl-o` / `:jump_back` | Return to the previous file-picker or definition-jump location |
 | `]d` / `:goto_next_diagnostic` | Next diagnostic, wrapping and accepting a count |
 | `[d` / `:goto_previous_diagnostic` | Previous diagnostic, wrapping and accepting a count |
 | `:lsp-restart` | Restart the server for the current file |

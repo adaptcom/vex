@@ -36,6 +36,10 @@ hover, `gd` for definitions, `Ctrl-o` to jump back, and `]d` / `[d` to navigate
 diagnostics. See [language services and setup](docs/lsp.md).
 See [terminal usage and architecture](docs/terminal.md).
 
+Press Space-f for the fuzzy project file picker. Named key groups (`g`, Space,
+`[`, `]`) show available bindings. Discovery, matching, and previews run in the
+background using Vex's own implementations. See [key groups and pickers](docs/pickers.md).
+
 ## Development
 
 ```sh
@@ -50,6 +54,7 @@ cargo run --release -p vex_term --example long_lines --locked -- 10 100
 cargo run -p vex_editor --example command_reference --locked
 cargo build --release -p vex_term --locked
 python3 tools/terminal_smoke.py
+python3 tools/picker_smoke.py
 python3 tools/lsp_smoke.py # Requires rust-analyzer and a Rust toolchain.
 python3 tools/background_search_benchmark.py
 ```
@@ -155,8 +160,10 @@ fn main() -> Result<(), vex_editor::Error> {
 
 `Keymap::default()` supplies Vex's Helix-inspired defaults; `Keymap::empty()` starts
 a custom map. Bindings can be a key or a sequence such as `gg`. Conflicting prefix
-bindings are rejected, so dispatch needs no timeout. Escape cancels pending input
-and enters normal mode. Digits build a repeat count outside insert mode; overflow
+bindings are rejected, so dispatch needs no timeout. Prefixes show available
+commands; `Keymap::name_group` gives custom groups a title. Escape cancels pending
+input while preserving the mode, or enters normal mode when no input is pending.
+Digits build a repeat count outside insert mode; overflow
 returns an error and clears the count. An unbound sequence also clears pending
 input. Insert mode treats unbound printable characters as text; Enter inserts LF
 and Tab inserts a literal tab. Text events call `Editor::insert_text`; paste events
@@ -192,8 +199,8 @@ Soft wrapping is not implemented yet.
 ## Next milestone
 
 The interactive loop can open, search, select, edit, undo groups, and save.
-Search, syntax, and Rust language services run independently through a shared event
-queue. Multiple buffers, completion, registers, pickers, and more syntax languages
+Search, syntax, file picking, and Rust language services run through a shared event
+queue. Multiple buffers, completion, registers, more picker providers, and more syntax languages
 remain upcoming milestones. Further layout
 work can address cold indexing and updates near the beginning of a huge line.
 

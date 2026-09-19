@@ -1,6 +1,7 @@
 //! Wakeable event inbox and owned producer threads. Terminal input is bounded;
 //! independent services have typed completions and explicit delivery policies.
 
+use crate::picker::files::{FileJob, FileResult, FileWorker, PreviewJob, PreviewResult};
 use crossterm::event::{self, Event};
 use std::{
     collections::VecDeque,
@@ -28,13 +29,15 @@ pub(crate) enum AppEvent {
 pub(crate) enum BackgroundEvent {
     Search(SearchResult),
     Syntax(SyntaxResult),
+    Files(FileResult),
+    Preview(PreviewResult),
 }
 
 #[derive(Default)]
 struct Inbox {
     input: VecDeque<Event>,
     lsp: VecDeque<vex_lsp::Event>,
-    background: [Option<BackgroundEvent>; 2],
+    background: [Option<BackgroundEvent>; 4],
     next_background: usize,
     prefer_input: bool,
     failure: Option<io::Error>,
@@ -83,6 +86,8 @@ impl EventQueue {
             let slot = match &result {
                 BackgroundEvent::Search(_) => 0,
                 BackgroundEvent::Syntax(_) => 1,
+                BackgroundEvent::Files(_) => 2,
+                BackgroundEvent::Preview(_) => 3,
             };
             state.background[slot] = Some(result);
             self.0.ready.notify_one();
@@ -100,7 +105,7 @@ impl EventQueue {
         state.closed = true;
         state.input.clear();
         state.lsp.clear();
-        state.background = [None, None];
+        state.background = [None, None, None, None];
         self.0.ready.notify_all();
         self.0.space.notify_all();
     }
@@ -137,9 +142,10 @@ impl EventQueue {
                 self.0.space.notify_all();
                 return Some(AppEvent::Terminal(event));
             }
-            for offset in 0..3 {
-                let index = (state.next_background + offset) % 3;
-                if index == 2 {
+            let services = state.background.len() + 1;
+            for offset in 0..services {
+                let index = (state.next_background + offset) % services;
+                if index == state.background.len() {
                     if let Some(event) = state.lsp.pop_front() {
                         state.next_background = 0;
                         state.prefer_input = true;
@@ -149,7 +155,7 @@ impl EventQueue {
                     continue;
                 }
                 if let Some(result) = state.background[index].take() {
-                    state.next_background = (index + 1) % 3;
+                    state.next_background = (index + 1) % services;
                     state.prefer_input = true;
                     return Some(AppEvent::Background(result));
                 }
@@ -196,6 +202,17 @@ impl Job for SearchJob {
 impl Job for SyntaxJob {
     fn cancellation(&self) -> Cancellation {
         self.cancellation()
+    }
+}
+
+impl Job for FileJob {
+    fn cancellation(&self) -> Cancellation {
+        self.cancellation.clone()
+    }
+}
+impl Job for PreviewJob {
+    fn cancellation(&self) -> Cancellation {
+        self.cancellation.clone()
     }
 }
 
@@ -317,6 +334,8 @@ pub(crate) struct Runtime {
     search: Option<SearchWorker>,
     syntax: Option<LatestWorker<SyntaxJob>>,
     lsp: Option<vex_lsp::Service>,
+    files: Option<LatestWorker<FileJob>>,
+    preview: Option<LatestWorker<PreviewJob>>,
     input: Option<JoinHandle<()>>,
 }
 
@@ -330,6 +349,17 @@ impl Runtime {
         })?;
         let queue = events.clone();
         let lsp = vex_lsp::Service::start(move |event| queue.lsp(event))?;
+        let queue = events.clone();
+        let mut file_state = FileWorker::default();
+        let files = LatestWorker::spawn("vex-files", events.clone(), move |job| {
+            file_state.run(job, |result| {
+                queue.background(BackgroundEvent::Files(result))
+            });
+            None
+        })?;
+        let preview = LatestWorker::spawn("vex-preview", events.clone(), |job: PreviewJob| {
+            job.run().map(BackgroundEvent::Preview)
+        })?;
         let queue = events.clone();
         let input = thread::Builder::new()
             .name("vex-input".into())
@@ -356,6 +386,8 @@ impl Runtime {
             search: Some(search),
             syntax: Some(syntax),
             lsp: Some(lsp),
+            files: Some(files),
+            preview: Some(preview),
             input: Some(input),
         })
     }
@@ -371,6 +403,13 @@ impl Runtime {
     pub(crate) fn update_lsp(&self, update: vex_lsp::Update) {
         self.lsp.as_ref().unwrap().update(update);
     }
+
+    pub(crate) fn submit_picker(&self, job: FileJob) {
+        self.files.as_ref().unwrap().submit(job);
+    }
+    pub(crate) fn submit_preview(&self, job: PreviewJob) {
+        self.preview.as_ref().unwrap().submit(job);
+    }
 }
 
 impl Drop for Runtime {
@@ -379,9 +418,13 @@ impl Drop for Runtime {
         self.search.as_ref().unwrap().stop();
         self.syntax.as_ref().unwrap().stop();
         self.lsp.as_ref().unwrap().stop();
+        self.files.as_ref().unwrap().stop();
+        self.preview.as_ref().unwrap().stop();
         self.search.take();
         self.syntax.take();
         self.lsp.take();
+        self.files.take();
+        self.preview.take();
         if let Some(thread) = self.input.take() {
             let _ = thread.join();
         }
@@ -418,6 +461,12 @@ mod tests {
             }
             AppEvent::Background(BackgroundEvent::Syntax(result)) => {
                 app.editor.apply_syntax_result(result);
+            }
+            AppEvent::Background(BackgroundEvent::Files(result)) => {
+                app.handle_picker_result(result);
+            }
+            AppEvent::Background(BackgroundEvent::Preview(result)) => {
+                app.handle_preview_result(result);
             }
             AppEvent::Lsp(event) => {
                 app.handle_lsp_event(event);
@@ -727,6 +776,36 @@ mod tests {
         assert_eq!(app.editor.mode(), vex_editor::Mode::Normal);
         assert_eq!(app.editor.search_direction(), None);
         assert_eq!(app.editor.document().undo_depth(), 1);
+    }
+
+    #[test]
+    fn picker_enter_holds_following_edits_until_the_selected_file_opens() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join(".git")).unwrap();
+        let origin = directory.path().join("origin.txt");
+        std::fs::write(&origin, "origin").unwrap();
+        std::fs::write(directory.path().join("destination.txt"), "target").unwrap();
+        let mut app = App::open(Some(&origin), (60, 12)).unwrap();
+        press(&mut app, " fdestination");
+        app.handle(key(KeyCode::Enter));
+        assert!(app.input_waiting());
+        let events = EventQueue::default();
+        for ch in "iX".chars() {
+            events.terminal(key(KeyCode::Char(ch)));
+        }
+        events.terminal(Event::Resize(80, 16));
+        let event = events.next(Duration::ZERO, app.input_waiting()).unwrap();
+        deliver(&mut app, event);
+        assert_eq!(app.size(), (80, 16));
+        assert!(events.next(Duration::ZERO, app.input_waiting()).is_none());
+        FileWorker::default().run(app.take_picker_job().unwrap(), |result| {
+            events.background(BackgroundEvent::Files(result))
+        });
+        while let Some(event) = events.next(Duration::ZERO, app.input_waiting()) {
+            deliver(&mut app, event);
+        }
+        assert_eq!(app.editor.document().text(), "Xtarget");
+        assert_eq!(std::fs::read_to_string(origin).unwrap(), "origin");
     }
 
     #[test]

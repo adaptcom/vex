@@ -35,12 +35,17 @@ and calls that existing dispatcher.
 | `u`, `U` | Undo/redo |
 | `K`, `gd`, Ctrl-o | Hover, go to definition, return from a definition jump |
 | `]d`, `[d` | Next/previous diagnostic, with counts and wrapping |
-| Escape | Cancel pending input and enter normal mode |
+| Space-f, Space-k | Open file picker / show hover |
+| Escape | Cancel a prefix/picker/prompt; otherwise enter normal mode |
 | `:` in normal/select mode | Open the command prompt |
 | Ctrl-s, Ctrl-q | Save / quit with an unsaved-change check |
 | Ctrl-c | Cancel the prompt or return to normal mode |
 
 See the [editing command reference](commands.md) for exact movement semantics.
+Prefix groups display their available commands. The [file picker](pickers.md)
+supports background discovery and fuzzy matching, Unicode query editing, a preview
+on wide terminals, and Ctrl-o return jumps. It protects unsaved changes when opening
+another file.
 Enter in insert mode follows the loaded file's first line ending (LF, CRLF, or
 CR). Tab inserts a literal tab, displayed at the editor's configured tab stops.
 Bracketed paste in insert mode is a separate undo step, preserving the pasted
@@ -75,6 +80,7 @@ and both wrap and accept counts. See [search semantics and limits](search.md).
 | `:help [COMMAND]`, `:h [COMMAND]` | Show help or a command's documentation |
 | `:language [rust/text/auto]`, `:lang [...]` | Show or set the language |
 | `:lsp-restart` | Restart rust-analyzer for the current Rust file |
+| `:file_picker` | Open the fuzzy project file picker |
 | `:move_word_forward`, etc. | Invoke an editing command by its registered name |
 
 The remaining text after a file command is a literal path, including internal
@@ -105,7 +111,8 @@ encoding. It has no UI framework or Ratatui dependency:
 
 - `input` converts terminal keys to editor keys and owns prompt editing.
 - `events` combines terminal input and typed background completions in a wakeable
-  inbox, with one input thread and independent search, syntax, and LSP services.
+  inbox, with one input thread and independent search, syntax, picker, preview,
+  and LSP services.
 - `app` combines editor state, key dispatch, file state, prompt, and viewport.
 - `render` paints visible logical lines, selections, line numbers, status, and
   the prompt into a cell grid. It borrows rope slices where possible. Horizontal
@@ -152,6 +159,9 @@ services alternate to prevent starvation, with ordinary input taking a turn
 between completions. Search and syntax use the same worker
 mailbox implementation: at most one running and one replaceable pending job,
 with cooperative cancellation of older work. Input keys stay in FIFO order.
+File discovery/matching and previews use that mailbox implementation with two
+additional latest-result slots. The file index stays on its worker, and each
+completion is a bounded snapshot rather than a batch of new paths.
 
 `BackgroundEvent` carries search and syntax results. LSP has a separate typed
 event variant and a FIFO of up to 128 events with producer backpressure, preserving
@@ -164,8 +174,10 @@ holds later keys until the destination is ready, preserving sequences such as
 `/cat<Enter>nd`. Resize/focus events can pass the held keys. Escape and Ctrl-c
 cancel when next in key order, and ready completions take priority over further
 ordinary input. This avoids applying edits to an unresolved search position.
+Enter during picker matching uses the same input ordering until the selected
+file opens. Closing a picker cancels its work and releases its index.
 
-Closing the runtime wakes blocked producers, cancels search and syntax jobs,
+Closing the runtime wakes blocked producers, cancels search, syntax, picker, and preview jobs,
 shuts down the language server, and joins owned threads before restoring terminal state. Input errors and worker
 failures wake the main loop and unwind through cleanup. Input polling has a
 50 ms shutdown check; the main inbox wait checks signal flags at most every

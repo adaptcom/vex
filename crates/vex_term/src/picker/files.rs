@@ -1,0 +1,603 @@
+//! Incremental file discovery and ranking, run by the existing latest-job worker.
+//! Query changes retain the scan/index; closing a picker releases them off the UI.
+
+use super::{
+    Entry, Item,
+    fuzzy::{Matcher, Query},
+    ignore::{Rules, Scratch},
+};
+use std::{
+    cmp::{Ordering, Reverse},
+    collections::BinaryHeap,
+    fs::{self, File, ReadDir},
+    io::{self, Read},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use vex_editor::background::Cancellation;
+
+pub(crate) const MAX_RESULTS: usize = 512;
+const MAX_FILES: usize = 200_000;
+const MAX_PATH_BYTES: usize = 64 << 20;
+const PREVIEW_BYTES: usize = 64 << 10;
+
+pub(crate) struct FileJob {
+    pub session: u64,
+    pub revision: u64,
+    /// None closes the session. Paths are captured by the UI; all probing is here.
+    pub source: Option<(Option<PathBuf>, PathBuf)>,
+    pub query: String,
+    pub cancellation: Cancellation,
+}
+
+pub(crate) struct FileResult {
+    pub session: u64,
+    pub revision: u64,
+    pub root: PathBuf,
+    pub items: Vec<Item<PathBuf>>,
+    pub matched: usize,
+    pub scanned: usize,
+    pub scanning: bool,
+    pub notice: String,
+}
+
+struct Directory {
+    entries: ReadDir,
+    pending: Option<fs::DirEntry>,
+    rules: Arc<Rules>,
+}
+
+struct Index {
+    session: u64,
+    root: PathBuf,
+    stack: Vec<Directory>,
+    entries: Vec<Arc<Entry<PathBuf>>>,
+    bytes: usize,
+    notice: String,
+    ignore_scratch: Scratch,
+}
+
+/// Prefer the enclosing repository, otherwise the outermost Cargo project,
+/// otherwise the captured working directory. This does not depend on LSP readiness.
+fn project_root(origin: Option<&Path>, cwd: &Path) -> PathBuf {
+    let mut project = None;
+    let start = origin.and_then(Path::parent).unwrap_or(cwd);
+    for ancestor in start.ancestors() {
+        if ancestor.join(".git").exists() {
+            return ancestor.into();
+        }
+        if ancestor.join("Cargo.toml").is_file() {
+            project = Some(ancestor.to_path_buf());
+        }
+    }
+    project.unwrap_or_else(|| cwd.into())
+}
+
+impl Index {
+    fn new(job: &FileJob) -> Self {
+        let (origin, cwd) = job.source.as_ref().unwrap();
+        let root = project_root(origin.as_deref(), cwd);
+        let mut index = Self {
+            session: job.session,
+            root,
+            stack: Vec::new(),
+            entries: Vec::new(),
+            bytes: 0,
+            notice: String::new(),
+            ignore_scratch: Scratch::default(),
+        };
+        index.enter(PathBuf::new(), None);
+        index
+    }
+
+    fn enter(&mut self, relative: PathBuf, parent: Option<Arc<Rules>>) {
+        let path = self.root.join(&relative);
+        if self.stack.len() >= 64 {
+            self.notice = "directory depth limit reached".into();
+            return;
+        }
+        let entries = match fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.notice = format!("cannot scan {}: {error}", relative.display());
+                return;
+            }
+        };
+        let mut contents = String::new();
+        // Repository exclusions have lower precedence than .gitignore; .ignore
+        // lets projects configure this picker without altering Git's policy.
+        let names: &[&str] = if relative.as_os_str().is_empty() {
+            &[".git/info/exclude", ".gitignore", ".ignore"]
+        } else {
+            &[".gitignore", ".ignore"]
+        };
+        for name in names {
+            let file = path.join(name);
+            // Never open a symlink or special file as an ignore configuration.
+            if !fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+                continue;
+            }
+            let result = File::open(&file).and_then(|file| {
+                let mut bytes = Vec::new();
+                file.take((64 << 10) + 1).read_to_end(&mut bytes)?;
+                if bytes.len() > 64 << 10 {
+                    return Err(io::Error::other("ignore file exceeds 64 KiB"));
+                }
+                String::from_utf8(bytes).map_err(io::Error::other)
+            });
+            match result {
+                Ok(text) => {
+                    contents.push_str(&text);
+                    contents.push('\n');
+                }
+                Err(error) => self.notice = format!("{}: {error}", file.display()),
+            }
+        }
+        self.stack.push(Directory {
+            entries,
+            pending: None,
+            rules: Arc::new(Rules::new(relative, &contents, parent)),
+        });
+    }
+
+    fn scan(&mut self, cancellation: &Cancellation) {
+        let deadline = Instant::now() + Duration::from_millis(3);
+        for _ in 0..256 {
+            if cancellation.is_cancelled() || Instant::now() >= deadline {
+                break;
+            }
+            let Some(directory) = self.stack.last_mut() else {
+                break;
+            };
+            let Some(entry) = directory
+                .pending
+                .take()
+                .map(Ok)
+                .or_else(|| directory.entries.next())
+            else {
+                self.stack.pop();
+                continue;
+            };
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    self.notice = error.to_string();
+                    continue;
+                }
+            };
+            self.visit(entry, cancellation);
+        }
+    }
+
+    fn visit(&mut self, entry: fs::DirEntry, cancellation: &Cancellation) {
+        let directory = self.stack.last_mut().unwrap();
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') {
+            return;
+        }
+        let path = entry.path();
+        let kind = match entry.file_type() {
+            Ok(kind) => kind,
+            Err(error) => {
+                self.notice = error.to_string();
+                return;
+            }
+        };
+        // Symlink directories are never traversed (including cycles).
+        if !kind.is_file() && !kind.is_dir() {
+            return;
+        }
+        let relative = path.strip_prefix(&self.root).unwrap();
+        let Some(ignored) = directory.rules.check(
+            relative,
+            kind.is_dir(),
+            &mut self.ignore_scratch,
+            cancellation,
+        ) else {
+            // read_dir already advanced. Retain the entry so a query change
+            // cannot silently skip this file or its entire directory tree.
+            directory.pending = Some(entry);
+            return;
+        };
+        if ignored {
+            return;
+        }
+        if kind.is_dir() {
+            let rules = directory.rules.clone();
+            self.enter(relative.into(), Some(rules));
+        } else {
+            let label = relative.to_string_lossy().into_owned();
+            self.bytes += path.as_os_str().len() + label.len();
+            if self.entries.len() == MAX_FILES || self.bytes > MAX_PATH_BYTES {
+                self.notice = "file index limit reached; open a smaller project".into();
+                self.stack.clear();
+                return;
+            }
+            self.entries.push(Arc::new(Entry { label, value: path }));
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Ranked {
+    score: i32,
+    entry: Arc<Entry<PathBuf>>,
+}
+impl PartialEq for Ranked {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+impl Eq for Ranked {}
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score
+            .cmp(&other.score)
+            .then_with(|| other.entry.label.cmp(&self.entry.label))
+            .then_with(|| other.entry.value.cmp(&self.entry.value))
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct FileWorker {
+    index: Option<Index>,
+    matcher: Matcher,
+}
+
+impl FileWorker {
+    pub fn run(&mut self, job: FileJob, mut emit: impl FnMut(FileResult)) {
+        if job.source.is_none() {
+            self.index = None;
+            return;
+        }
+        if job.cancellation.is_cancelled() {
+            return;
+        }
+        if self
+            .index
+            .as_ref()
+            .is_none_or(|index| index.session != job.session)
+        {
+            self.index = Some(Index::new(&job));
+        }
+        let index = self.index.as_mut().unwrap();
+        let query = Query::new(&job.query);
+        let mut ranked: BinaryHeap<Reverse<Ranked>> = BinaryHeap::new();
+        let mut cursor = 0;
+        let mut matched = 0;
+        let mut next_publish = Instant::now();
+        loop {
+            if job.cancellation.is_cancelled() {
+                return;
+            }
+            index.scan(&job.cancellation);
+            let deadline = Instant::now() + Duration::from_millis(3);
+            while cursor < index.entries.len() {
+                if job.cancellation.is_cancelled() {
+                    return;
+                }
+                let entry = &index.entries[cursor];
+                if let Some(score) = self.matcher.score(&entry.label, &query) {
+                    matched += 1;
+                    let candidate = Ranked {
+                        score,
+                        entry: entry.clone(),
+                    };
+                    if ranked.len() < MAX_RESULTS {
+                        ranked.push(Reverse(candidate));
+                    } else if ranked.peek().is_some_and(|worst| candidate > worst.0) {
+                        ranked.pop();
+                        ranked.push(Reverse(candidate));
+                    }
+                }
+                cursor += 1;
+                if cursor % 64 == 0 && Instant::now() >= deadline {
+                    break;
+                }
+            }
+            let complete = index.stack.is_empty() && cursor == index.entries.len();
+            if complete || Instant::now() >= next_publish {
+                let mut matches: Vec<_> = ranked.iter().map(|r| r.0.clone()).collect();
+                matches.sort_unstable_by(|a, b| b.cmp(a));
+                let mut items = Vec::with_capacity(matches.len());
+                for candidate in matches {
+                    if job.cancellation.is_cancelled() {
+                        return;
+                    }
+                    let matched = self.matcher.indices(&candidate.entry.label, &query);
+                    items.push(Item {
+                        entry: candidate.entry,
+                        matched,
+                    });
+                }
+                emit(FileResult {
+                    session: job.session,
+                    revision: job.revision,
+                    root: index.root.clone(),
+                    items,
+                    matched,
+                    scanned: index.entries.len(),
+                    scanning: !complete,
+                    notice: index.notice.clone(),
+                });
+                next_publish = Instant::now() + Duration::from_millis(40);
+            }
+            if complete {
+                return;
+            }
+        }
+    }
+}
+
+pub(crate) struct PreviewJob {
+    pub session: u64,
+    pub request: u64,
+    pub path: PathBuf,
+    pub cancellation: Cancellation,
+}
+
+pub(crate) struct PreviewResult {
+    pub session: u64,
+    pub request: u64,
+    pub path: PathBuf,
+    pub text: String,
+}
+
+impl PreviewJob {
+    pub fn run(self) -> Option<PreviewResult> {
+        if self.cancellation.is_cancelled() {
+            return None;
+        }
+        let text = preview(&self.path, &self.cancellation)
+            .unwrap_or_else(|error| format!("Preview unavailable: {error}"));
+        (!self.cancellation.is_cancelled()).then_some(PreviewResult {
+            session: self.session,
+            request: self.request,
+            path: self.path,
+            text,
+        })
+    }
+}
+
+fn preview(path: &Path, cancellation: &Cancellation) -> io::Result<String> {
+    if !fs::symlink_metadata(path)?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    let mut file = File::open(path)?.take(PREVIEW_BYTES as u64 + 1);
+    let mut bytes = Vec::new();
+    let mut chunk = [0; 4096];
+    loop {
+        if cancellation.is_cancelled() {
+            return Ok(String::new());
+        }
+        let n = file.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+    }
+    let truncated = bytes.len() > PREVIEW_BYTES;
+    bytes.truncate(PREVIEW_BYTES);
+    if bytes.contains(&0) {
+        return Ok("Binary file — no preview".into());
+    }
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        Err(error) if truncated && error.error_len().is_none() => {
+            std::str::from_utf8(&bytes[..error.valid_up_to()]).unwrap()
+        }
+        Err(_) => return Ok("Non-UTF-8 file — no preview".into()),
+    };
+    let mut lines = text.lines();
+    let mut preview = lines.by_ref().take(200).collect::<Vec<_>>().join("\n");
+    if truncated || lines.next().is_some() {
+        preview.push_str("\n… preview truncated");
+    }
+    Ok(preview)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job(root: &Path, query: &str) -> FileJob {
+        FileJob {
+            session: 1,
+            revision: 1,
+            source: Some((None, root.into())),
+            query: query.into(),
+            cancellation: Cancellation::default(),
+        }
+    }
+
+    #[test]
+    fn walking_respects_nested_ignores_pruning_hidden_files_and_query_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("src/generated")).unwrap();
+        fs::write(
+            root.join(".gitignore"),
+            "*.log\ngenerated/\n!generated/keep.rs\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/.gitignore"), "!keep.log\n").unwrap();
+        for path in [
+            "app.rs",
+            "src/界.rs",
+            ".hidden",
+            "bad.log",
+            "src/keep.log",
+            "src/bad.log",
+            "src/generated/keep.rs",
+        ] {
+            fs::write(root.join(path), "preview").unwrap();
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root, root.join("src/cycle")).unwrap();
+        let mut worker = FileWorker::default();
+        let mut last = None;
+        worker.run(job(root, ""), |result| last = Some(result));
+        let result = last.unwrap();
+        let labels: Vec<_> = result
+            .items
+            .iter()
+            .map(|i| i.entry.label.as_str())
+            .collect();
+        assert_eq!(labels, ["app.rs", "src/keep.log", "src/界.rs"]);
+        assert!(!result.scanning);
+        worker.run(job(root, "界"), |result| {
+            assert_eq!(result.items.len(), 1);
+            assert_eq!(result.items[0].entry.value, root.join("src/界.rs"));
+        });
+        let cancelled = job(root, "");
+        cancelled.cancellation.cancel();
+        worker.run(cancelled, |_| panic!("cancelled result"));
+        let mut close = job(root, "");
+        close.source = None;
+        worker.run(close, |_| panic!("close result"));
+        assert!(worker.index.is_none());
+    }
+
+    #[test]
+    fn cancelling_an_ignore_check_retries_the_consumed_directory_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::create_dir(root.join("src")).unwrap();
+        fs::write(root.join(".gitignore"), "*.log").unwrap();
+        fs::write(root.join("src/keep.txt"), "keep").unwrap();
+        let mut index = Index::new(&job(root, ""));
+        let entry = index
+            .stack
+            .last_mut()
+            .unwrap()
+            .entries
+            .by_ref()
+            .map(Result::unwrap)
+            .find(|entry| entry.file_name() == "src")
+            .unwrap();
+        // Cancellation can arrive after read_dir.next(), before rule matching.
+        let cancelled = Cancellation::default();
+        cancelled.cancel();
+        index.visit(entry, &cancelled);
+        let cancellation = Cancellation::default();
+        while !index.stack.is_empty() {
+            index.scan(&cancellation);
+        }
+        assert_eq!(index.entries.len(), 1);
+        assert_eq!(index.entries[0].label, "src/keep.txt");
+    }
+
+    #[test]
+    fn preview_is_bounded_handles_binary_and_split_utf8_and_never_reads_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file");
+        let cancel = Cancellation::default();
+        fs::write(&path, "hello\n界\n").unwrap();
+        assert_eq!(preview(&path, &cancel).unwrap(), "hello\n界");
+        fs::write(&path, [0, 1, 2]).unwrap();
+        assert!(preview(&path, &cancel).unwrap().contains("Binary"));
+        fs::write(&path, format!("{}界end", "a".repeat(PREVIEW_BYTES - 1))).unwrap();
+        assert!(
+            preview(&path, &cancel)
+                .unwrap()
+                .ends_with("preview truncated")
+        );
+        assert!(preview(directory.path(), &cancel).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires Git; explicit compatibility check, never a runtime dependency"]
+    fn project_ignore_results_agree_with_git() {
+        use std::{
+            collections::BTreeSet,
+            io::Write,
+            process::{Command, Stdio},
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(root.join(".gitignore"), "*.log\n!important.log\n/build/\n!build/keep.txt\nsrc/**/generated?.[ch]\nassets/[a-c]?.tmp\nfoo/**/bar\n[[:digit:]].txt\nspace\\ \n\\#literal\n\\!literal\n").unwrap();
+        let paths = [
+            "keep.rs",
+            "bad.log",
+            "important.log",
+            "src/bad.log",
+            "src/important.log",
+            "build/keep.txt",
+            "src/build/yes.txt",
+            "src/generated1.c",
+            "src/nested/generated2.h",
+            "src/generated11.c",
+            "assets/ab.tmp",
+            "assets/zz.tmp",
+            "foo/bar",
+            "foo/x/bar",
+            "foo/xxbar",
+            "1.txt",
+            "a.txt",
+            "space ",
+            "space",
+            "#literal",
+            "!literal",
+            "src/界.rs",
+        ];
+        for name in paths {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "text").unwrap();
+        }
+        fs::write(root.join("src/.gitignore"), "!bad.log\nimportant.log\n").unwrap();
+        let mut child = Command::new("git")
+            .current_dir(root)
+            .args(["check-ignore", "--no-index", "--stdin", "-z"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        for path in paths {
+            input.write_all(path.as_bytes()).unwrap();
+            input.write_all(&[0]).unwrap();
+        }
+        drop(input);
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let ignored: BTreeSet<_> = output
+            .stdout
+            .split(|&byte| byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| String::from_utf8(path.into()).unwrap())
+            .collect();
+        let expected: BTreeSet<_> = paths
+            .iter()
+            .filter(|path| !ignored.contains(**path))
+            .map(|path| path.to_string())
+            .collect();
+        let mut actual = BTreeSet::new();
+        FileWorker::default().run(job(root, ""), |result| {
+            if !result.scanning {
+                actual = result
+                    .items
+                    .into_iter()
+                    .map(|item| item.entry.label.clone())
+                    .collect();
+            }
+        });
+        assert_eq!(actual, expected);
+    }
+}

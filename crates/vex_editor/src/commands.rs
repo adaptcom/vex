@@ -242,7 +242,14 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
 }
 
 commands! {
-    /// Return to the location before the last successful definition jump.
+    /// Open a fuzzy file picker at the current project root.
+    fn file_picker(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.application_action = Some(crate::ApplicationAction::FilePicker);
+        Ok(())
+    }
+
+    /// Return to the location before the last successful file or definition jump.
     fn jump_back(ctx) {
         ctx.editor.finish_undo_group();
         ctx.editor.language_action = Some(crate::LanguageAction::JumpBack);

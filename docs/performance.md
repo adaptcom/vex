@@ -349,3 +349,19 @@ index after changes, so worker CPU and allocation costs scale with document
 size. Documents above 8 MiB skip LSP. Server startup, Cargo checks, and analysis
 costs have not been benchmarked; the existing rendering numbers do not measure
 them. See [language services](lsp.md) for queue limits and correctness checks.
+
+## File picker
+
+File discovery, ignore-rule evaluation, fuzzy scoring, and previews run on
+background workers. Query changes reuse the current file index and cancel older
+matching work. The main thread receives at most 512 ranked entries per result;
+drawing visits visible rows and does not redraw the covered editor viewport.
+Ignore and fuzzy matching reuse scratch buffers. Match-position traces are
+computed only for retained results, and wildcard matching uses iterative dynamic
+programming rather than recursive backtracking.
+
+These are implementation bounds, not measured latency guarantees. Individual
+filesystem calls and candidate scores are not preemptible; index construction
+and each new query still scale with the candidate set. The current picker has
+not had a large-workspace latency benchmark recorded. See [picker limits and
+validation](pickers.md) for cancellation, memory limits, and terminal checks.

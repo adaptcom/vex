@@ -147,11 +147,17 @@ pub fn run(app: &mut App) -> io::Result<()> {
             if let Some(job) = app.editor.take_syntax_job() {
                 runtime.submit_syntax(job);
             }
+            if let Some(job) = app.take_picker_job() {
+                runtime.submit_picker(job);
+            }
+            if let Some(job) = app.take_preview_job() {
+                runtime.submit_preview(job);
+            }
             redraw = false;
         }
         let Some(mut event) = runtime
             .events
-            .next(Duration::from_millis(100), app.editor.search_waiting())
+            .next(Duration::from_millis(100), app.input_waiting())
         else {
             continue;
         };
@@ -171,6 +177,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Syntax(result)) => {
                     redraw |= app.editor.apply_syntax_result(result);
                 }
+                AppEvent::Background(BackgroundEvent::Files(result)) => {
+                    redraw |= app.handle_picker_result(result)
+                }
+                AppEvent::Background(BackgroundEvent::Preview(result)) => {
+                    redraw |= app.handle_preview_result(result)
+                }
                 AppEvent::Lsp(event) => redraw |= app.handle_lsp_event(event),
                 AppEvent::Failed(error) => return Err(error),
             }
@@ -180,13 +192,16 @@ pub fn run(app: &mut App) -> io::Result<()> {
             if let Some(update) = app.take_lsp_update() {
                 runtime.update_lsp(update);
             }
+            if let Some(job) = app.take_picker_job() {
+                runtime.submit_picker(job);
+            }
+            if let Some(job) = app.take_preview_job() {
+                runtime.submit_preview(job);
+            }
             if app.should_quit() || index == 127 || started.elapsed() >= Duration::from_millis(4) {
                 break;
             }
-            let Some(next) = runtime
-                .events
-                .next(Duration::ZERO, app.editor.search_waiting())
-            else {
+            let Some(next) = runtime.events.next(Duration::ZERO, app.input_waiting()) else {
                 break;
             };
             event = next;

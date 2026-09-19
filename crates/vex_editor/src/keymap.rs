@@ -11,6 +11,9 @@ pub enum Key {
     Escape,
     Enter,
     Tab,
+    BackTab,
+    PageUp,
+    PageDown,
     Backspace,
     Delete,
     Left,
@@ -42,6 +45,14 @@ pub struct Binding<'a> {
 #[derive(Debug)]
 pub struct Keymap {
     bindings: BTreeMap<(Mode, Vec<Key>), &'static Command>,
+    groups: BTreeMap<(Mode, Vec<Key>), String>,
+}
+
+/// Available continuations of a prefix, with descriptions from command Rustdoc.
+#[derive(Debug)]
+pub struct KeyHints<'a> {
+    pub title: &'a str,
+    pub entries: Vec<(Key, &'a str)>,
 }
 
 impl Keymap {
@@ -49,6 +60,7 @@ impl Keymap {
     pub fn empty() -> Self {
         Self {
             bindings: BTreeMap::new(),
+            groups: BTreeMap::new(),
         }
     }
 
@@ -85,6 +97,51 @@ impl Keymap {
                 command,
             })
     }
+
+    /// Name an existing prefix group for discovery. Bind its commands first.
+    /// Prefixes can be nested; naming a group does not change its dispatch.
+    pub fn name_group(&mut self, mode: Mode, prefix: Vec<Key>, title: &str) -> Result<(), Error> {
+        if prefix.is_empty() {
+            return Err(Error::EmptyBinding);
+        }
+        if !self
+            .bindings
+            .keys()
+            .any(|(m, keys)| *m == mode && keys.len() > prefix.len() && keys.starts_with(&prefix))
+        {
+            return Err(Error::ConflictingBinding);
+        }
+        self.groups.insert((mode, prefix), title.into());
+        Ok(())
+    }
+
+    fn hints(&self, mode: Mode, prefix: &[Key]) -> Option<KeyHints<'_>> {
+        if prefix.is_empty() {
+            return None;
+        }
+        let mut entries = BTreeMap::new();
+        for ((m, keys), command) in &self.bindings {
+            if *m != mode || !keys.starts_with(prefix) || keys.len() <= prefix.len() {
+                continue;
+            }
+            let key = keys[prefix.len()];
+            let description = if keys.len() == prefix.len() + 1 {
+                command.description()
+            } else {
+                self.groups
+                    .get(&(mode, keys[..prefix.len() + 1].to_vec()))
+                    .map_or("More commands", String::as_str)
+            };
+            entries.insert(key, description);
+        }
+        (!entries.is_empty()).then(|| KeyHints {
+            title: self
+                .groups
+                .get(&(mode, prefix.to_vec()))
+                .map_or("Keys", String::as_str),
+            entries: entries.into_iter().collect(),
+        })
+    }
 }
 
 /// Vex's default bindings are inspired by Helix's selection-first editing model.
@@ -114,6 +171,8 @@ impl Default for Keymap {
                 (vec![Char('n')], "search_next"),
                 (vec![Char('N')], "search_previous"),
                 (vec![Char('K')], "hover"),
+                (vec![Char(' '), Char('f')], "file_picker"),
+                (vec![Char(' '), Char('k')], "hover"),
                 (vec![Ctrl('o')], "jump_back"),
                 (vec![Char('g'), Char('d')], "goto_definition"),
                 (vec![Char(']'), Char('d')], "goto_next_diagnostic"),
@@ -129,6 +188,14 @@ impl Default for Keymap {
                 keymap
                     .bind(mode, keys, command)
                     .expect("valid default binding");
+            }
+            for (key, title) in [
+                ('g', "Goto"),
+                (' ', "Space"),
+                ('[', "Previous"),
+                (']', "Next"),
+            ] {
+                keymap.name_group(mode, vec![Char(key)], title).unwrap();
             }
         }
         for mode in [Mode::Normal, Mode::Select, Mode::Insert] {
@@ -199,6 +266,10 @@ impl KeyHandler {
         self.count
     }
 
+    pub fn hints(&self) -> Option<KeyHints<'_>> {
+        self.keymap.hints(self.mode?, &self.pending)
+    }
+
     pub fn cancel(&mut self) {
         self.pending.clear();
         self.count = None;
@@ -210,6 +281,10 @@ impl KeyHandler {
         }
         self.mode = Some(editor.mode());
         if key == Key::Escape {
+            if !self.pending.is_empty() || self.count.is_some() {
+                self.cancel();
+                return Ok(Dispatch::Ignored);
+            }
             self.cancel();
             editor.execute("normal_mode", 1)?;
             self.mode = Some(editor.mode());
@@ -282,6 +357,55 @@ mod tests {
         for key in keys.chars() {
             handler.handle(editor, Key::Char(key)).unwrap();
         }
+    }
+
+    #[test]
+    fn named_groups_use_command_docs_and_cancel_without_changing_the_editing_mode() {
+        let mut editor = Editor::new(Document::from("abc"));
+        editor.execute("select_mode", 1).unwrap();
+        let mut keys = KeyHandler::default();
+        press(&mut keys, &mut editor, " g"); // Unknown Space-g leaves the group.
+        assert!(keys.hints().is_none());
+        press(&mut keys, &mut editor, "3g");
+        let hints = keys.hints().unwrap();
+        assert_eq!(hints.title, "Goto");
+        assert!(hints.entries.iter().any(|(key, doc)| *key == Key::Char('d')
+            && *doc == commands::find("goto_definition").unwrap().description()));
+        keys.handle(&mut editor, Key::Escape).unwrap();
+        assert_eq!(editor.mode(), Mode::Select);
+        assert!(keys.hints().is_none());
+        assert_eq!(keys.count(), None);
+        press(&mut keys, &mut editor, " f");
+        assert_eq!(
+            editor.take_application_action(),
+            Some(crate::ApplicationAction::FilePicker)
+        );
+        assert!(keys.hints().is_none());
+        keys.handle(&mut editor, Key::Escape).unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn nested_custom_groups_are_discoverable_and_keep_repeat_counts() {
+        let mut map = Keymap::empty();
+        map.bind(
+            Mode::Normal,
+            vec![Key::Char('+'), Key::Char('m'), Key::Char('r')],
+            "move_right",
+        )
+        .unwrap();
+        map.name_group(Mode::Normal, vec![Key::Char('+')], "Custom")
+            .unwrap();
+        map.name_group(Mode::Normal, vec![Key::Char('+'), Key::Char('m')], "Move")
+            .unwrap();
+        let mut editor = Editor::new(Document::from("abcd"));
+        let mut keys = KeyHandler::new(map);
+        press(&mut keys, &mut editor, "2+");
+        assert_eq!(keys.hints().unwrap().entries, [(Key::Char('m'), "Move")]);
+        press(&mut keys, &mut editor, "m");
+        assert_eq!(keys.hints().unwrap().title, "Move");
+        press(&mut keys, &mut editor, "r");
+        assert_eq!(editor.selections().primary().start(), CharOffset(2));
     }
 
     #[test]

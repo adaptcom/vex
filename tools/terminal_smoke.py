@@ -12,6 +12,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import select
 import signal
 import struct
@@ -135,7 +136,10 @@ class Terminal:
         while time.monotonic() < deadline:
             mark = self.send(b"\x1b[I")
             self.drain(0.05)
-            if needle in self.output[mark:]:
+            # A label can cross cursor, syntax, or fuzzy-match style changes.
+            # Raw escape-sequence assertions still use expect().
+            visible = re.sub(rb"\x1b\[[0-9;:]*m", b"", self.output[mark:])
+            if needle in visible:
                 return
             if self.poll() is not None:
                 break

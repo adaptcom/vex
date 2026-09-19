@@ -16,6 +16,7 @@ use vex_editor::{
 };
 
 mod language;
+mod picker;
 
 enum PromptKind {
     Command,
@@ -58,6 +59,7 @@ pub struct App {
     size: (u16, u16),
     automatic_language: bool,
     language: language::State,
+    picker: picker::State,
 }
 
 impl App {
@@ -86,6 +88,7 @@ impl App {
             size,
             automatic_language: true,
             language: language::State::default(),
+            picker: picker::State::default(),
         }
     }
 
@@ -138,6 +141,9 @@ impl App {
 
     /// Handle one event. Return whether the screen may have changed.
     pub fn handle(&mut self, event: Event) -> bool {
+        if let Some(redraw) = self.handle_picker_input(&event) {
+            return redraw;
+        }
         if matches!(&event, Event::Paste(_))
             || matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
         {
@@ -146,6 +152,7 @@ impl App {
         match event {
             Event::Resize(width, height) => {
                 self.size = (width, height);
+                self.request_picker_preview();
                 true
             }
             Event::FocusGained => true,
@@ -167,6 +174,7 @@ impl App {
             }
             Event::Key(event) if event.kind != KeyEventKind::Release => {
                 if self.prompt.is_none()
+                    && self.keys.pending_keys().is_empty()
                     && event.modifiers.is_empty()
                     && matches!(event.code, KeyCode::PageUp | KeyCode::PageDown)
                 {
@@ -234,6 +242,7 @@ impl App {
                     }
                 }
                 self.open_search_prompt();
+                self.open_requested_picker();
                 true
             }
             _ => false,
@@ -263,11 +272,16 @@ impl App {
         }
         self.editor.execute(name, 1).map_err(io::Error::other)?;
         self.open_search_prompt();
+        self.open_requested_picker();
         Ok(())
     }
 
     pub fn paint(&mut self, frame: &mut Frame) -> io::Result<()> {
+        self.open_requested_picker();
         self.refresh_diagnostics();
+        if self.paint_active_picker(frame) {
+            return Ok(());
+        }
         self.open_search_prompt();
         let filename = self
             .files
@@ -310,6 +324,7 @@ impl App {
         )
         .map_err(io::Error::other)?;
         self.paint_language(frame);
+        self.paint_key_hints(frame);
         Ok(())
     }
 

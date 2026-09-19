@@ -53,6 +53,15 @@ impl Drop for State {
 }
 
 impl App {
+    pub(super) fn record_jump(&mut self) {
+        if let Some(path) = self.files.target() {
+            let origin = (path.to_path_buf(), self.language_cursor());
+            if self.language.jumps.len() == 32 {
+                self.language.jumps.pop_front();
+            }
+            self.language.jumps.push_back(origin);
+        }
+    }
     pub fn enable_lsp(&mut self) {
         self.language.enabled = true;
         self.language.force = true;

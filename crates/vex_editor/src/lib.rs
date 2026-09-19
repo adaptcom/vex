@@ -27,7 +27,7 @@ mod syntax;
 
 pub use commands::{Command, CommandContext};
 pub use error::Error;
-pub use keymap::{Binding, Dispatch, Key, KeyHandler, Keymap};
+pub use keymap::{Binding, Dispatch, Key, KeyHandler, KeyHints, Keymap};
 pub use search::{SearchCancellation, SearchCompletion, SearchJob, SearchResult, SearchStatus};
 pub use syntax::{SyntaxJob, SyntaxResult, SyntaxWorker};
 pub use vex_core::search::Direction as SearchDirection;
@@ -51,6 +51,12 @@ pub enum LanguageAction {
     PreviousDiagnostic(usize),
 }
 
+/// Application UI requested by documented commands without performing file I/O.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApplicationAction {
+    FilePicker,
+}
+
 /// The first editor model: one document and its active view, independent of a TTY.
 /// All selections stay on grapheme boundaries. Insert mode owns zero-width
 /// carets; other modes allow directional ranges and a zero-width EOF cursor.
@@ -65,6 +71,7 @@ pub struct Editor {
     syntax: RefCell<syntax::Highlighting>,
     search: search::Search,
     language_action: Option<LanguageAction>,
+    application_action: Option<ApplicationAction>,
 }
 
 impl Editor {
@@ -82,6 +89,7 @@ impl Editor {
             syntax: RefCell::default(),
             search: search::Search::default(),
             language_action: None,
+            application_action: None,
         }
     }
 
@@ -99,6 +107,11 @@ impl Editor {
     /// transport and applies results; commands remain independent of LSP and I/O.
     pub fn take_language_action(&mut self) -> Option<LanguageAction> {
         self.language_action.take()
+    }
+
+    /// Take an application action after dispatch; the frontend owns its UI.
+    pub fn take_application_action(&mut self) -> Option<ApplicationAction> {
+        self.application_action.take()
     }
 
     /// Direction of an active search prompt, if a search command requested one.
