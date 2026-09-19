@@ -12,6 +12,11 @@ pub enum Error {
     ConflictingBinding,
     ReservedBinding,
     CountOverflow,
+    NoSearch,
+    NoSearchPreview,
+    SearchActive,
+    SearchChanged,
+    NoMatch,
 }
 
 impl From<vex_core::Error> for Error {
@@ -29,7 +34,7 @@ impl fmt::Display for Error {
                 f,
                 "command requires {expected:?} mode, current mode is {actual:?}"
             ),
-            Self::MissingText => write!(f, "insert_text requires text in its command context"),
+            Self::MissingText => write!(f, "command requires text in its command context"),
             Self::EmptyBinding => write!(f, "a keybinding cannot be empty"),
             Self::ConflictingBinding => write!(
                 f,
@@ -39,6 +44,14 @@ impl fmt::Display for Error {
                 write!(f, "Escape and leading repeat-count digits are reserved")
             }
             Self::CountOverflow => write!(f, "repeat count is too large"),
+            Self::NoSearch => write!(f, "no accepted search; use / or ? first"),
+            Self::NoSearchPreview => write!(f, "no active search preview"),
+            Self::SearchActive => write!(f, "accept or cancel the active search first"),
+            Self::SearchChanged => write!(
+                f,
+                "document or mode changed during search; search cancelled"
+            ),
+            Self::NoMatch => write!(f, "no matches"),
         }
     }
 }

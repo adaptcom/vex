@@ -4,6 +4,13 @@ Generated from command Rustdoc and the default keymap.
 
 | Command | Bindings by mode | Description |
 |---|---|---|
+| `search_forward` | Normal: `/`, Select: `/` | Begin a forward literal search from each selection's start, including the current position; accepts a match count. Integrations should open a prompt and send search_update, search_accept, or search_cancel. |
+| `search_backward` | Normal: `?`, Select: `?` | Begin a backward literal search from each selection's start, including the current position; accepts a match count. Matches wrap at document boundaries. |
+| `search_update` |  | Preview the context's literal text from the original selections. Empty or unmatched text restores them; selections expand to whole graphemes in normal and select modes. |
+| `search_accept` |  | Accept a matching preview for n/N navigation. An empty query cancels; an unmatched query keeps the prompt open and preserves the previous accepted search. |
+| `search_cancel` |  | Cancel a search preview and restore its original selections and preferred columns. The terminal integration also restores its saved viewport. |
+| `search_next` | Normal: `n`, Select: `n` | Select the next literal match for each selection, following the accepted search direction and wrapping; accepts a count. Replaces ranges even in select mode. |
+| `search_previous` | Normal: `N`, Select: `N` | Select the previous literal match for each selection, opposite the accepted search direction and wrapping; accepts a count. Replaces ranges even in select mode. |
 | `move_right` | Normal: `l`, Normal: `<Right>`, Select: `l`, Select: `<Right>`, Insert: `<Right>` | Move right by graphemes, extending the selection in select mode. |
 | `move_left` | Normal: `h`, Normal: `<Left>`, Select: `h`, Select: `<Left>`, Insert: `<Left>` | Move left by graphemes, extending the selection in select mode. |
 | `move_down` | Normal: `j`, Normal: `<Down>`, Select: `j`, Select: `<Down>`, Insert: `<Down>` | Move down by logical lines, retaining each cursor's desired display column. |

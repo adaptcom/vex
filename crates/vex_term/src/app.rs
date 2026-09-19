@@ -10,14 +10,43 @@ use crate::{
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use std::{io, path::Path};
 use vex_core::Document;
-use vex_editor::{Editor, Key, KeyHandler, Language, Mode};
+use vex_editor::{Editor, Key, KeyHandler, Language, Mode, SearchDirection, SearchStatus};
+
+enum PromptKind {
+    Command,
+    Search {
+        direction: SearchDirection,
+        viewport: Viewport,
+    },
+}
+
+struct ActivePrompt {
+    input: Prompt,
+    kind: PromptKind,
+}
+
+impl ActivePrompt {
+    fn prefix(&self) -> char {
+        match self.kind {
+            PromptKind::Command => ':',
+            PromptKind::Search {
+                direction: SearchDirection::Forward,
+                ..
+            } => '/',
+            PromptKind::Search {
+                direction: SearchDirection::Backward,
+                ..
+            } => '?',
+        }
+    }
+}
 
 pub struct App {
     pub editor: Editor,
     files: FileState,
     keys: KeyHandler,
     viewport: Viewport,
-    prompt: Option<Prompt>,
+    prompt: Option<ActivePrompt>,
     message: String,
     error: bool,
     quit: bool,
@@ -45,7 +74,7 @@ impl App {
             keys: KeyHandler::default(),
             viewport: Viewport::default(),
             prompt: None,
-            message: "i insert  :w write  :q quit  :help".into(),
+            message: "i insert  / search  :w write  :q quit  :help".into(),
             error: false,
             quit: false,
             size,
@@ -73,8 +102,10 @@ impl App {
             Event::FocusGained => true,
             Event::Paste(text) => {
                 self.clear_message();
-                if let Some(prompt) = &mut self.prompt {
-                    prompt.insert(&text);
+                if let Some(mut prompt) = self.prompt.take() {
+                    prompt.input.insert(&text);
+                    self.preview_search(&prompt);
+                    self.prompt = Some(prompt);
                 } else if self.editor.mode() == Mode::Insert {
                     self.keys.cancel();
                     if let Err(error) = self.editor.insert_paste(&text) {
@@ -109,20 +140,8 @@ impl App {
                     return false;
                 };
                 self.clear_message();
-                if let Some(prompt) = &mut self.prompt {
-                    match key {
-                        Key::Escape | Key::Ctrl('c') => {
-                            self.prompt = None;
-                            self.keys.cancel();
-                        }
-                        Key::Enter => {
-                            let text = self.prompt.take().unwrap().text().to_owned();
-                            if let Err(error) = self.execute(&text) {
-                                self.fail(error);
-                            }
-                        }
-                        _ => prompt.handle(key),
-                    }
+                if self.prompt.is_some() {
+                    self.handle_prompt_key(key);
                 } else {
                     match key {
                         Key::Char(':')
@@ -130,7 +149,10 @@ impl App {
                                 && self.keys.pending_keys().is_empty() =>
                         {
                             self.keys.cancel();
-                            self.prompt = Some(Prompt::default());
+                            self.prompt = Some(ActivePrompt {
+                                input: Prompt::default(),
+                                kind: PromptKind::Command,
+                            });
                         }
                         Key::Ctrl('s') => {
                             self.keys.cancel();
@@ -162,6 +184,7 @@ impl App {
                         }
                     }
                 }
+                self.open_search_prompt();
                 true
             }
             _ => false,
@@ -189,10 +212,13 @@ impl App {
         if !argument.is_empty() || force {
             return Err(io::Error::other("unknown command or unsupported arguments"));
         }
-        self.editor.execute(name, 1).map_err(io::Error::other)
+        self.editor.execute(name, 1).map_err(io::Error::other)?;
+        self.open_search_prompt();
+        Ok(())
     }
 
     pub fn paint(&mut self, frame: &mut Frame) -> io::Result<()> {
+        self.open_search_prompt();
         let filename = self
             .files
             .path()
@@ -217,10 +243,92 @@ impl App {
                 pending: &pending,
                 message: &self.message,
                 error: self.error,
-                prompt: self.prompt.as_ref().map(|p| (p.text(), p.cursor())),
+                prompt: self
+                    .prompt
+                    .as_ref()
+                    .map(|p| (p.prefix(), p.input.text(), p.input.cursor())),
             },
         )
         .map_err(io::Error::other)
+    }
+
+    fn open_search_prompt(&mut self) {
+        if self.prompt.is_none()
+            && let Some(direction) = self.editor.search_direction()
+        {
+            self.keys.cancel();
+            self.prompt = Some(ActivePrompt {
+                input: Prompt::default(),
+                kind: PromptKind::Search {
+                    direction,
+                    viewport: self.viewport,
+                },
+            });
+        }
+    }
+
+    fn preview_search(&mut self, prompt: &ActivePrompt) {
+        if let PromptKind::Search { viewport, .. } = prompt.kind {
+            if let Err(error) = self.editor.update_search(prompt.input.text()) {
+                self.fail(error);
+                return;
+            }
+            self.viewport = viewport;
+            if self.editor.search_status() == Some(SearchStatus::NoMatch) {
+                self.fail("no matches");
+            }
+        }
+    }
+
+    fn handle_prompt_key(&mut self, key: Key) {
+        let mut prompt = self.prompt.take().unwrap();
+        match key {
+            Key::Escape | Key::Ctrl('c') => {
+                self.keys.cancel();
+                if let PromptKind::Search { viewport, .. } = prompt.kind {
+                    match self.editor.execute("search_cancel", 1) {
+                        Ok(()) => self.viewport = viewport,
+                        Err(error) => self.fail(error),
+                    }
+                }
+            }
+            Key::Enter => match prompt.kind {
+                PromptKind::Command => {
+                    if let Err(error) = self.execute(prompt.input.text()) {
+                        self.fail(error);
+                    }
+                }
+                PromptKind::Search { viewport, .. } => {
+                    let empty = self.editor.search_status() == Some(SearchStatus::Empty);
+                    match self.editor.execute("search_accept", 1) {
+                        Ok(()) => {
+                            if empty {
+                                self.viewport = viewport;
+                            }
+                        }
+                        Err(error) => {
+                            self.fail(error);
+                            if self.editor.search_direction().is_some() {
+                                self.prompt = Some(prompt);
+                            }
+                        }
+                    }
+                }
+            },
+            _ => {
+                // Prompt keys only insert/remove bytes or move the caret.
+                let before = prompt.input.text().len();
+                prompt.input.handle(key);
+                if before != prompt.input.text().len() {
+                    self.preview_search(&prompt);
+                } else if matches!(prompt.kind, PromptKind::Search { .. })
+                    && self.editor.search_status() == Some(SearchStatus::NoMatch)
+                {
+                    self.fail("no matches");
+                }
+                self.prompt = Some(prompt);
+            }
+        }
     }
 
     fn clear_message(&mut self) {
@@ -297,7 +405,7 @@ commands! {
     fn help(app, argument, force) ["help", "h"] {
         if force { return Err(io::Error::other("help does not accept !")); }
         app.message = if argument.is_empty() {
-            "i/a insert  Esc normal  v select  hjkl/wbe move  u/U undo/redo  :w [PATH] write  :q[!] quit  :help COMMAND".into()
+            "i/a insert  Esc normal  v select  hjkl/wbe move  /? search  n/N next/previous  u/U undo/redo  :w [PATH] write  :q[!] quit  :help COMMAND".into()
         } else if let Some(command) = vex_editor::commands::find(argument) {
             command.description().into()
         } else if let Some(command) = COMMANDS.iter().find(|c| c.name == argument || c.aliases.contains(&argument)) {
@@ -322,6 +430,155 @@ mod tests {
     }
     fn key(app: &mut App, code: KeyCode) {
         app.handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    fn draw(app: &mut App) -> Frame {
+        let mut frame = Frame::default();
+        frame.reset(app.size.0, app.size.1).unwrap();
+        app.paint(&mut frame).unwrap();
+        frame
+    }
+
+    #[test]
+    fn search_preview_scrolls_and_cancel_restores_selections_and_both_axes() {
+        use vex_core::{CharOffset, Selection, SelectionSet};
+        let source = format!(
+            "{}\n{}{}needle\n",
+            "x".repeat(100),
+            "short\n".repeat(40),
+            "y".repeat(140)
+        );
+        let mut app = App::from_document(Document::from(source.as_str()), (30, 8));
+        let selections = SelectionSet::new(
+            vec![
+                Selection::new(CharOffset(25), CharOffset(20)),
+                Selection::new(CharOffset(80), CharOffset(85)),
+            ],
+            1,
+        )
+        .unwrap();
+        app.editor.set_selections(selections.clone()).unwrap();
+        app.editor.execute("select_mode", 1).unwrap();
+        draw(&mut app);
+        let viewport = app.viewport;
+        assert!(viewport.left_column > 0);
+        press(&mut app, "/needle");
+        let frame = draw(&mut app);
+        assert!(frame.row_text(7).starts_with("/needle"));
+        assert!(app.viewport.top_line > viewport.top_line);
+        assert!(app.viewport.left_column > viewport.left_column);
+        assert_eq!(app.editor.selections().ranges().len(), 1);
+        key(&mut app, KeyCode::Esc);
+        draw(&mut app);
+        assert_eq!(app.viewport, viewport);
+        assert_eq!(app.editor.selections(), &selections);
+        assert_eq!(app.editor.mode(), Mode::Select);
+        assert!(app.prompt.is_none());
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn search_events_accept_repeat_reverse_wrap_and_edit_the_selected_match() {
+        use vex_core::CharOffset;
+        let mut app = App::from_document(Document::from("cat bat cat cat"), (50, 8));
+        press(&mut app, "/cat");
+        assert_eq!(
+            app.editor.selections().primary().range(),
+            CharOffset(0)..CharOffset(3)
+        );
+        key(&mut app, KeyCode::Enter);
+        press(&mut app, "2n");
+        assert_eq!(app.editor.selections().primary().start(), CharOffset(12));
+        press(&mut app, "nN");
+        assert_eq!(app.editor.selections().primary().start(), CharOffset(12));
+        press(&mut app, "?cat");
+        assert!(draw(&mut app).row_text(7).starts_with("?cat"));
+        key(&mut app, KeyCode::Enter);
+        press(&mut app, "n");
+        assert_eq!(app.editor.selections().primary().start(), CharOffset(8));
+        press(&mut app, "d");
+        assert_eq!(app.editor.document().text(), "cat bat  cat");
+        press(&mut app, "u");
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn unmatched_search_reports_failure_and_backspace_recovers_from_the_origin() {
+        use vex_core::CharOffset;
+        let mut app = App::from_document(Document::from("x cat cater"), (70, 8));
+        let original = app.editor.selections().clone();
+        press(&mut app, "/cater");
+        assert_eq!(app.editor.selections().primary().start(), CharOffset(6));
+        key(&mut app, KeyCode::Backspace);
+        key(&mut app, KeyCode::Backspace);
+        assert_eq!(app.editor.selections().primary().start(), CharOffset(2));
+        press(&mut app, "z");
+        assert_eq!(app.editor.selections(), &original);
+        let frame = draw(&mut app);
+        assert!(frame.row_text(6).contains("no matches"));
+        assert_eq!(frame.style_at(0, 7), Some(crate::screen::Style::Error));
+        key(&mut app, KeyCode::Enter);
+        assert!(app.prompt.is_some());
+        key(&mut app, KeyCode::Left);
+        assert!(app.error);
+        key(&mut app, KeyCode::Delete);
+        assert!(!app.error);
+        assert_eq!(app.editor.selections().primary().start(), CharOffset(2));
+        key(&mut app, KeyCode::Enter);
+        assert!(app.prompt.is_none());
+        press(&mut app, "n");
+        assert_eq!(app.editor.selections().primary().start(), CharOffset(6));
+    }
+
+    #[test]
+    fn search_prompt_paste_unicode_resize_empty_accept_and_control_c_are_safe() {
+        let query = "界e\u{301}🦀".repeat(15);
+        let source = format!("before\n{query}\nafter");
+        let mut app = App::from_document(Document::from(source.as_str()), (12, 5));
+        let original = app.editor.selections().clone();
+        press(&mut app, "/");
+        app.handle(Event::Paste(format!("{query}\r\n")));
+        assert_eq!(app.prompt.as_ref().unwrap().input.text(), query);
+        assert_eq!(app.editor.search_status(), Some(SearchStatus::Match));
+        let frame = draw(&mut app);
+        assert!(frame.cursor.unwrap().x < 12);
+        for size in [(1, 1), (0, 0), (80, 24)] {
+            app.handle(Event::Resize(size.0, size.1));
+            draw(&mut app);
+        }
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.editor.selections(), &original);
+        assert!(app.prompt.is_none());
+        press(&mut app, "/");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.prompt.is_none());
+        assert_eq!(app.editor.selections(), &original);
+        assert!(!app.should_quit());
+        assert!(!app.is_dirty());
+        press(&mut app, "i/?nN");
+        assert!(app.editor.document().text().to_string().starts_with("/?nN"));
+    }
+
+    #[test]
+    fn search_commands_open_prompts_through_colon_or_custom_bindings() {
+        use vex_editor::Keymap;
+        let mut app = App::from_document(Document::from("one two one"), (40, 6));
+        press(&mut app, ":search_backward");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.prompt.as_ref().unwrap().prefix(), '?');
+        key(&mut app, KeyCode::Esc);
+        let mut map = Keymap::empty();
+        map.bind(Mode::Normal, vec![Key::Char('s')], "search_forward")
+            .unwrap();
+        app.keys = KeyHandler::new(map);
+        press(&mut app, "sone");
+        assert_eq!(app.editor.search_status(), Some(SearchStatus::Match));
+        key(&mut app, KeyCode::Enter);
+        app.execute("help search_next").unwrap();
+        assert!(app.message.contains("literal match"));
     }
 
     #[test]

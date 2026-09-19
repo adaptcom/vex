@@ -4,7 +4,7 @@ A terminal text editor in Rust, inspired by Helix's selection-first editing mode
 
 `vex_core` provides rope-backed documents, directional multiple selections,
 atomic transactions, revision-checked snapshots, undo/redo, and grapheme-aware
-movement. `vex_editor` adds normal/select/insert modes, documented command
+movement and streaming literal search. `vex_editor` adds normal/select/insert modes, documented command
 functions, configurable keybindings, and repeat counts. `vex_syntax` adds
 Tree-sitter parsing and Rust syntax highlighting. All three work without a
 terminal. `vex_term` provides the interactive application, using Crossterm for
@@ -24,6 +24,8 @@ require `:q!` to discard. `:wq` saves and quits. Use `:help` or
 The interface includes line numbers, selection highlighting, cursor-following
 scrolling, a status line, and an editable command prompt. Unicode graphemes,
 wide characters, tabs, bracketed paste, and terminal resizing are supported.
+Use `/` or `?` for incremental literal search, Enter to accept, Escape to restore
+your selections and scroll position, and `n` / `N` to repeat. See [search behavior](docs/search.md).
 Rust files (`.rs`) use syntax colors automatically. Use `:language rust` for a
 scratch buffer, `:language text` to disable colors, or `:language auto` to restore
 file-extension detection. See [syntax support and limits](docs/syntax.md).
@@ -36,6 +38,7 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 cargo bench -p vex_core --bench editing --locked -- --noplot
+cargo bench -p vex_core --bench search --locked -- --noplot
 cargo bench -p vex_editor --bench commands --locked -- --noplot
 cargo bench -p vex_term --bench rendering --locked -- --noplot
 cargo run --release -p vex_term --example long_lines --locked -- 10 100
@@ -181,8 +184,9 @@ Soft wrapping is not implemented yet.
 
 ## Next milestone
 
-The first interactive loop can open, select, edit, undo groups, and save. Incremental
-search is next, followed by registers, pickers, more syntax languages, and LSP. Further layout
+The interactive loop can open, search, select, edit, undo groups, and save.
+Registers are next, followed by pickers, more syntax languages, and LSP. Background
+parsing and search can keep large buffers responsive. Further layout
 work can address cold indexing and updates near the beginning of a huge line.
 
 See [the benchmark notes](docs/performance.md) for the initial performance baseline.

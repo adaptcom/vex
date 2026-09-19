@@ -22,10 +22,13 @@ use vex_syntax::Syntax;
 pub mod commands;
 mod error;
 mod keymap;
+mod search;
 
 pub use commands::{Command, CommandContext};
 pub use error::Error;
 pub use keymap::{Binding, Dispatch, Key, KeyHandler, Keymap};
+pub use search::SearchStatus;
+pub use vex_core::search::Direction as SearchDirection;
 pub use vex_syntax::{Highlight, HighlightSpan, Language};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -48,6 +51,7 @@ pub struct Editor {
     tab_width: NonZeroUsize,
     layout: RefCell<LayoutCache>,
     syntax: RefCell<Option<Syntax>>,
+    search: search::Search,
 }
 
 impl Editor {
@@ -63,6 +67,7 @@ impl Editor {
             tab_width: NonZeroUsize::new(4).unwrap(),
             layout: RefCell::default(),
             syntax: RefCell::default(),
+            search: search::Search::default(),
         }
     }
 
@@ -74,6 +79,26 @@ impl Editor {
     }
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// Direction of an active search prompt, if a search command requested one.
+    pub fn search_direction(&self) -> Option<SearchDirection> {
+        self.search
+            .preview
+            .as_ref()
+            .map(|preview| preview.direction)
+    }
+
+    pub fn search_status(&self) -> Option<SearchStatus> {
+        self.search.preview.as_ref().map(|preview| preview.status)
+    }
+
+    /// Preview literal matches from the selections saved by search_forward or
+    /// search_backward. The empty query restores those selections.
+    pub fn update_search(&mut self, text: &str) -> Result<(), Error> {
+        let mut context = CommandContext::new(self);
+        context.text = Some(text);
+        commands::search_update(&mut context)
     }
     pub fn tab_width(&self) -> NonZeroUsize {
         self.tab_width

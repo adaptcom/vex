@@ -58,6 +58,11 @@ also separates typing but does not change the savepoint.
 
 ## Command prompt
 
+`/` searches forward and `?` backward in normal or select mode. Typing previews
+literal matches; Enter accepts and Escape or Ctrl-c restores the original
+selections and viewport. `n` repeats in the accepted direction, `N` reverses it,
+and both wrap and accept counts. See [search semantics and limits](search.md).
+
 | Command | Action |
 |---|---|
 | `:write [PATH]`, `:w [PATH]` | Save to the current or supplied path |

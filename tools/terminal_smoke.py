@@ -218,6 +218,31 @@ def main():
             assert rust_path.read_text() == 'fn main() { let message = "界"; }\n'
         print("PASS: Rust syntax colors, editing, undo, and clean quit")
 
+        search_path = Path(directory) / "search.txt"
+        search_path.write_text("start cat one\nmid cat two\nend cat three\n")
+        with Terminal([binary, str(search_path)]) as terminal:
+            terminal.start()
+            # Force a full redraw when inspecting status text: a normal diff
+            # can emit only the changed column digit, omitting the row and colon.
+            mark = terminal.send(b"/cat\x1b[I")
+            terminal.expect(b"1:9", mark)
+            mark = terminal.send(b"\rn\x1b[I")
+            terminal.expect(b"2:7", mark)
+            mark = terminal.send(b"/missing\x1b[I")
+            terminal.expect(b"no matches", mark)
+            mark = terminal.send(b"\x1b")
+            terminal.expect(b"\x1b[?2026l", mark)
+            mark = terminal.send(b"n\x1b[I")
+            terminal.expect(b"3:7", mark)
+            mark = terminal.send(b"?cat\rn\x1b[I")
+            terminal.expect(b"2:5", mark)
+            mark = terminal.send(b"d\x13")
+            terminal.expect(b"wrote", mark)
+            assert search_path.read_text() == "start cat one\nmid  two\nend cat three\n"
+            terminal.send(b"\x11")
+            terminal.finish()
+        print("PASS: search preview, accept, cancel, forward/backward repeats, and edit match")
+
         with Terminal([binary]) as terminal:
             terminal.start()
             mark = terminal.send(b"i")

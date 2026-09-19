@@ -36,7 +36,7 @@ pub fn key(event: KeyEvent) -> Option<Key> {
     })
 }
 
-/// An editable command prompt with a UTF-8 byte cursor on grapheme boundaries.
+/// Editable prompt text with a UTF-8 byte cursor on grapheme boundaries.
 #[derive(Debug, Default)]
 pub struct Prompt {
     text: String,

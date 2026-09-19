@@ -68,11 +68,31 @@ fn commands(c: &mut Criterion) {
     });
 }
 
+fn search(c: &mut Criterion) {
+    let mut group = c.benchmark_group("search_next_previous");
+    for bytes in [1 << 20, 100 << 20] {
+        let line = "fn main() { let value = 123; }\n";
+        let rope = Rope::from_str(&line.repeat(bytes / line.len()));
+        let mut editor = editor(&rope, 1);
+        editor.execute("search_forward", 1).unwrap();
+        editor.update_search("value").unwrap();
+        editor.execute("search_accept", 1).unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(bytes), &bytes, |b, _| {
+            b.iter(|| {
+                editor.execute(black_box("search_next"), 1).unwrap();
+                editor.execute(black_box("search_previous"), 1).unwrap();
+                black_box(editor.selections());
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = commands
+    targets = commands, search
 }
 criterion_main!(benches);

@@ -242,6 +242,27 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
 }
 
 commands! {
+    /// Begin a forward literal search from each selection's start, including the current position; accepts a match count. Integrations should open a prompt and send search_update, search_accept, or search_cancel.
+    fn search_forward(ctx) { crate::search::begin(ctx, crate::SearchDirection::Forward) }
+
+    /// Begin a backward literal search from each selection's start, including the current position; accepts a match count. Matches wrap at document boundaries.
+    fn search_backward(ctx) { crate::search::begin(ctx, crate::SearchDirection::Backward) }
+
+    /// Preview the context's literal text from the original selections. Empty or unmatched text restores them; selections expand to whole graphemes in normal and select modes.
+    fn search_update(ctx) { crate::search::update(ctx.editor, ctx.text.ok_or(Error::MissingText)?) }
+
+    /// Accept a matching preview for n/N navigation. An empty query cancels; an unmatched query keeps the prompt open and preserves the previous accepted search.
+    fn search_accept(ctx) { crate::search::accept(ctx.editor) }
+
+    /// Cancel a search preview and restore its original selections and preferred columns. The terminal integration also restores its saved viewport.
+    fn search_cancel(ctx) { crate::search::cancel(ctx.editor) }
+
+    /// Select the next literal match for each selection, following the accepted search direction and wrapping; accepts a count. Replaces ranges even in select mode.
+    fn search_next(ctx) { crate::search::repeat(ctx, false) }
+
+    /// Select the previous literal match for each selection, opposite the accepted search direction and wrapping; accepts a count. Replaces ranges even in select mode.
+    fn search_previous(ctx) { crate::search::repeat(ctx, true) }
+
     /// Move right by graphemes, extending the selection in select mode.
     fn move_right(ctx) {
         move_to(ctx, |editor, selection, count| Ok(grapheme::next(editor.document.text(), position(editor, selection)?, count)?))

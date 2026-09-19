@@ -7,7 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use vex_core::{ByteOffset, CharOffset, display, grapheme, motion};
 use vex_editor::{Editor, Mode};
 
-#[derive(Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Viewport {
     pub top_line: usize,
     pub left_column: usize,
@@ -19,7 +19,7 @@ pub struct Chrome<'a> {
     pub pending: &'a str,
     pub message: &'a str,
     pub error: bool,
-    pub prompt: Option<(&'a str, usize)>,
+    pub prompt: Option<(char, &'a str, usize)>,
 }
 
 /// Paint the document, selections, status, and command/message line.
@@ -234,7 +234,11 @@ pub fn paint(
             " {mode}{} {} {}",
             if chrome.dirty { " [+]" } else { "" },
             chrome.pending,
-            chrome.filename
+            if chrome.prompt.is_some() && chrome.error {
+                chrome.message
+            } else {
+                chrome.filename
+            }
         );
         frame.label(0, status_row, &left, Style::Status);
         let right = format!(
@@ -253,8 +257,17 @@ pub fn paint(
         }
     }
     let bottom = (height - 1) as u16;
-    if let Some((prompt, caret)) = chrome.prompt {
-        frame.put(0, bottom, ":", Style::Text);
+    if let Some((prefix, prompt, caret)) = chrome.prompt {
+        frame.put(
+            0,
+            bottom,
+            prefix.encode_utf8(&mut [0; 4]),
+            if chrome.error {
+                Style::Error
+            } else {
+                Style::Text
+            },
+        );
         let tabs = NonZeroUsize::new(4).unwrap();
         let prompt_column = prompt[..caret].graphemes(true).fold(0usize, |col, g| {
             col.saturating_add(display::width(g, col, tabs))

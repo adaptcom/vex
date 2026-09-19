@@ -231,3 +231,39 @@ See [syntax behavior and limits](syntax.md).
 The existing plain-text movement + draw cases at 120 × 40 measured 0.170 ms
 for 1 MiB source and 0.177 ms for 100 MiB source after integration. Criterion
 detected no significant change from their prior 0.169 ms and 0.178 ms estimates.
+
+## Literal search
+
+Recorded on 2026-09-19 on the same development machine and release profile:
+
+```sh
+cargo bench -p vex_core --bench search --locked -- --noplot
+cargo bench -p vex_editor --bench commands --locked -- search_next_previous --noplot
+```
+
+| Buffer | Nearby forward match | Nearby backward match | Missing query, forward | Missing query, backward |
+|---|---:|---:|---:|---:|
+| 1 MiB | 66 ns | 70 ns | 2.10 ms | 1.34 ms |
+| 10 MiB | 67 ns | 73 ns | 19.6 ms | 13.4 ms |
+| 100 MiB | 91 ns | 100 ns | 197 ms | 134 ms |
+
+The core fixture repeats `fn main() { let value = 123; }` with LF endings.
+Nearby cases find `value` from the corresponding document edge; missing cases
+search the whole buffer for `value_missing`. The query is compiled before timing,
+and the rope is already in memory. Each measurement includes constructing the
+streaming iterator and seeking into the rope. It excludes selection normalization,
+prompt processing, rendering, and disk I/O. Core search uses 10 samples, a 200 ms
+warmup, and a 500 ms measurement target extended for expensive cases.
+
+The editor benchmark measures a pair of documented `search_next` /
+`search_previous` commands around the middle of the same fixture. It includes
+command dispatch, matching, grapheme normalization, and selection updates for one
+selection. The pair took **0.820 µs at 1 MiB** and **0.931 µs at 100 MiB**, using
+the existing command suite's 30 samples, 500 ms warmup, and one-second target.
+These are central estimates, not terminal input latency or p95 bounds.
+
+Search has no document-sized allocation or match list. It stops when the requested
+match is found, but missing queries still take linear time. Preview scans run
+synchronously after each text-changing prompt event; many selections can each
+require a traversal. Worker-based search and cancellation remain future work.
+See [search behavior](search.md).

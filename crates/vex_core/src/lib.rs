@@ -28,6 +28,7 @@ mod history;
 pub mod layout;
 pub mod motion;
 mod position;
+pub mod search;
 mod selection;
 mod transaction;
 
