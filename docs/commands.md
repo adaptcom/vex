@@ -36,7 +36,8 @@ Generated from command Rustdoc and the default keymap.
 | `append_mode` | Normal: `a`, Select: `a` | Enter insert mode with a caret after every selection. |
 | `open_below` | Normal: `o`, Select: `o` | Open lines below each selection and enter insert mode, copying indentation. A count creates that many lines and carets; opening and subsequent typing share one undo step.  Uses the loaded line ending; multiple selections ending on the same line share the new lines. |
 | `open_above` | Normal: `O`, Select: `O` | Open lines above each selection and enter insert mode, copying indentation. A count creates that many lines and carets; opening and subsequent typing share one undo step.  Uses the loaded line ending; multiple selections starting on the same line share the new lines. |
-| `insert_text` | Insert: unbound printable characters, Enter, Tab; direct text events | Insert the context's text at all carets, continuing the typing undo group; requires insert mode. |
+| `insert_newline` | Insert: `<Enter>` | Insert a newline at every insert caret, copying leading tabs and spaces before that caret. Uses the loaded line ending and continues the typing undo group; requires insert mode.  Indentation is copied literally, without language-specific increases or decreases. Pasted and directly inserted text remains unchanged. |
+| `insert_text` | Insert: unbound printable characters, Tab; direct text events | Insert the context's text at all carets, continuing the typing undo group; requires insert mode. |
 | `insert_paste` | Insert: bracketed paste; direct paste events | Insert the context's pasted text at all carets as a separate undo step; requires insert mode. |
 | `delete_selection` | Normal: `d`, Select: `d` | Delete selected text atomically, leaving normal-mode cursors at the edit locations. |
 | `change_selection` | Normal: `c`, Select: `c` | Delete selected text and enter insert mode; the deletion and subsequent typing share one undo step. |

@@ -225,6 +225,9 @@ impl Default for Keymap {
             .bind(Mode::Insert, vec![Delete], "delete_forward")
             .unwrap();
         keymap
+            .bind(Mode::Insert, vec![Enter], "insert_newline")
+            .unwrap();
+        keymap
             .bind(Mode::Insert, vec![Ctrl('x')], "completion")
             .unwrap();
         keymap
@@ -344,7 +347,6 @@ impl KeyHandler {
             let mut buffer = [0; 4];
             let text = match key {
                 Key::Char(ch) if !ch.is_control() => ch.encode_utf8(&mut buffer),
-                Key::Enter => editor.newline(),
                 Key::Tab => "\t",
                 _ => return Ok(Dispatch::Ignored),
             };
@@ -553,6 +555,30 @@ mod tests {
             press(&mut keys, &mut editor, "O");
             assert_eq!(editor.document().text(), newline.repeat(2).as_str());
         }
+    }
+
+    #[test]
+    fn enter_uses_a_remappable_documented_newline_command() {
+        let mut editor = Editor::new(Document::from("  one"));
+        let mut keys = KeyHandler::default();
+        press(&mut keys, &mut editor, "gei");
+        assert_eq!(
+            keys.handle(&mut editor, Key::Enter).unwrap(),
+            Dispatch::Executed("insert_newline")
+        );
+        press(&mut keys, &mut editor, "two");
+        assert_eq!(editor.document().text(), "  one\n  two");
+        assert_eq!(editor.document().undo_depth(), 1);
+
+        let mut map = Keymap::default();
+        map.bind(Mode::Insert, vec![Key::Enter], "delete_backward")
+            .unwrap();
+        let mut keys = KeyHandler::new(map);
+        assert_eq!(
+            keys.handle(&mut editor, Key::Enter).unwrap(),
+            Dispatch::Executed("delete_backward")
+        );
+        assert_eq!(editor.document().text(), "  one\n  tw");
     }
 
     #[test]

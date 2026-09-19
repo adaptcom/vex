@@ -30,6 +30,7 @@ and calls that existing dispatcher.
 | Page Up, Page Down | Move by roughly one viewport of logical lines |
 | `i`, `a` | Insert before/after the selection |
 | `o`, `O` | Open lines below/above selections and enter insert mode |
+| Enter in insert mode | Split the line and copy indentation before the caret |
 | Backspace, Ctrl-h in insert mode | Delete the preceding grapheme |
 | `v` | Enter select mode |
 | `d`, `c` | Delete/change the selection |
@@ -49,9 +50,12 @@ supports background discovery and fuzzy matching, Unicode query editing, a previ
 on wide terminals, and Ctrl-o return jumps. It protects unsaved changes when opening
 another file.
 Enter in insert mode and `o`/`O` follow the loaded file's first line ending (LF,
-CRLF, or CR), retained even after deleting all line breaks. The open-line commands
-copy leading tabs and spaces; counts such as `3o` create three lines with a caret
-on each. Tab inserts a literal tab, displayed at the editor's configured tab stops.
+CRLF, or CR), retained even after deleting all line breaks. They copy leading tabs
+and spaces literally, without language-specific indentation rules. Enter copies
+only indentation before the caret, so splitting leading whitespace preserves the
+remaining indentation without duplicating it. Counts such as `3o` create three
+lines with a caret on each. Tab inserts a literal tab, displayed at the editor's
+configured tab stops.
 Bracketed paste in insert mode is a separate undo step, preserving the pasted
 bytes. Pasting in normal/select mode shows a message to enter insert mode. Pasting
 into the prompt removes control characters and never submits a command.

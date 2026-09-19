@@ -230,6 +230,20 @@ def main():
             assert opened_lines.read_bytes() == b"\tfirst\r\n\tbelow\r\nlast"
         print("PASS: o/O, indentation, CRLF, grouped undo, both Backspace encodings")
 
+        indented_lines = Path(directory) / "indented lines.txt"
+        indented_lines.write_bytes(b"\t  first\r\nlast")
+        with Terminal([binary, str(indented_lines)]) as terminal:
+            terminal.start()
+            terminal.send(b"gla\rsecond")
+            terminal.expect_screen(b"second")
+            terminal.send(b"\x03u")
+            terminal.expect_screen(b"first")
+            # Redo must restore the newline, mixed indentation, and typed text.
+            terminal.send(b"U:wq\r")
+            terminal.finish()
+            assert indented_lines.read_bytes() == b"\t  first\r\n\t  second\r\nlast"
+        print("PASS: Enter copies mixed indentation, preserves CRLF, and groups undo/redo")
+
         saved_group = Path(directory) / "saved group.txt"
         saved_group.write_text("")
         with Terminal([binary, str(saved_group)]) as terminal:

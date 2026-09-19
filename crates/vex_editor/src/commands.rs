@@ -198,6 +198,13 @@ fn enter_insert(editor: &mut Editor, append: bool) -> Result<(), Error> {
     Ok(())
 }
 
+/// Preserve the exact whitespace prefix, independent of language or tab width.
+fn leading_indent(text: vex_core::RopeSlice<'_>) -> String {
+    text.chars()
+        .take_while(|ch| matches!(ch, ' ' | '\t'))
+        .collect()
+}
+
 fn open_lines(ctx: &mut CommandContext<'_>, below: bool) -> Result<(), Error> {
     let editor = &mut *ctx.editor;
     let text = editor.document.text();
@@ -232,11 +239,7 @@ fn open_lines(ctx: &mut CommandContext<'_>, below: bool) -> Result<(), Error> {
         .ranges()
         .iter()
         .map(|line| {
-            let indent: String = text
-                .slice(line.head.0..)
-                .chars()
-                .take_while(|ch| matches!(ch, ' ' | '\t'))
-                .collect();
+            let indent = leading_indent(text.slice(line.head.0..));
             let unit = if below {
                 format!("{}{indent}", editor.newline())
             } else {
@@ -502,6 +505,25 @@ commands! {
     /// Open lines above each selection and enter insert mode, copying indentation. A count creates that many lines and carets; opening and subsequent typing share one undo step.
     /// Uses the loaded line ending; multiple selections starting on the same line share the new lines.
     fn open_above(ctx) { open_lines(ctx, false) }
+
+    /// Insert a newline at every insert caret, copying leading tabs and spaces before that caret. Uses the loaded line ending and continues the typing undo group; requires insert mode.
+    /// Indentation is copied literally, without language-specific increases or decreases. Pasted and directly inserted text remains unchanged.
+    fn insert_newline(ctx) {
+        let editor = &mut *ctx.editor;
+        require_insert(editor)?;
+        let text = editor.document.text();
+        let edits = editor.selections.ranges().iter().map(|selection| {
+            let head = selection.head;
+            let start = motion::line_start(text, head)?;
+            // If the caret splits indentation, only copy the prefix before it:
+            // the remaining whitespace already follows the caret on the new line.
+            let indent = leading_indent(text.slice(start.0..head.0));
+            Ok(Edit::insert(head, format!("{}{indent}", editor.newline())))
+        }).collect::<Result<Vec<_>, vex_core::Error>>()?;
+        let transaction = editor.document.transaction(edits)?;
+        editor.apply(transaction, true)?;
+        normalize(editor)
+    }
 
     /// Insert the context's text at all carets, continuing the typing undo group; requires insert mode.
     fn insert_text(ctx) { insert(ctx, true) }
@@ -798,6 +820,112 @@ mod tests {
             };
             assert_eq!(editor.document().text(), expected);
         }
+    }
+
+    #[test]
+    fn newline_copies_indentation_without_duplicating_whitespace_after_the_caret() {
+        for (source, expected) in [
+            ("|", "\n|"),
+            ("plain|", "plain\n|"),
+            ("  item|", "  item\n  |"),
+            ("    item|", "    item\n    |"),
+            ("\titem|", "\titem\n\t|"),
+            ("\t  a|b", "\t  a\n\t  |b"),
+            ("|    item", "\n|    item"),
+            ("  |  item", "  \n  |  item"),
+            ("    |item", "    \n    |item"),
+            ("\t | item", "\t \n\t | item"),
+            ("  |  ", "  \n  |  "),
+            ("   |", "   \n   |"),
+            ("\t界e\u{301}|🦀", "\t界e\u{301}\n\t|🦀"),
+            // Copying indentation does not infer another level from syntax.
+            ("  if ready {|", "  if ready {\n  |"),
+            ("  if ready:|", "  if ready:\n  |"),
+        ] {
+            let (before, after) = source.split_once('|').unwrap();
+            let document = Document::from(format!("{before}{after}").as_str());
+            let mut editor = Editor::new(document);
+            editor.execute("insert_mode", 1).unwrap();
+            let pos = before.chars().count();
+            editor
+                .set_selections(SelectionSet::single(range(pos, pos)))
+                .unwrap();
+            insert_newline(&mut CommandContext::new(&mut editor)).unwrap();
+            let (before, after) = expected.split_once('|').unwrap();
+            assert_eq!(
+                editor.document().text(),
+                format!("{before}{after}").as_str(),
+                "{source:?}"
+            );
+            let pos = before.chars().count();
+            assert_eq!(editor.selections().primary(), range(pos, pos), "{source:?}");
+        }
+    }
+
+    #[test]
+    fn newline_preserves_line_endings_and_groups_with_typing() {
+        for newline in ["\n", "\r\n", "\r"] {
+            let source = format!("  one{newline}\t two");
+            let mut editor = Editor::new(Document::from(source.as_str()));
+            editor.execute("goto_file_end", 1).unwrap();
+            editor.execute("insert_mode", 1).unwrap();
+            let selections = editor.selections().clone();
+            editor.insert_text("A").unwrap();
+            editor.execute("insert_newline", 1).unwrap();
+            editor.insert_text("B").unwrap();
+            let expected = format!("{source}A{newline}\t B");
+            assert_eq!(editor.document().text(), expected.as_str());
+            assert_eq!(editor.document().undo_depth(), 1);
+            editor.execute("undo", 1).unwrap();
+            assert_eq!(editor.document().text(), source.as_str());
+            assert_eq!(editor.selections(), &selections);
+            editor.execute("redo", 1).unwrap();
+            assert_eq!(editor.document().text(), expected.as_str());
+        }
+    }
+
+    #[test]
+    fn newline_handles_multiple_carets_on_the_same_and_different_lines_atomically() {
+        let mut editor = Editor::new(Document::from("  ab\n\tcd"));
+        editor.execute("insert_mode", 1).unwrap();
+        let before = SelectionSet::new(vec![range(3, 3), range(4, 4), range(8, 8)], 2).unwrap();
+        editor.set_selections(before.clone()).unwrap();
+        editor.execute("insert_newline", 1).unwrap();
+        assert_eq!(editor.document().text(), "  a\n  b\n  \n\tcd\n\t");
+        assert_eq!(
+            editor.selections().ranges(),
+            &[range(6, 6), range(10, 10), range(16, 16)]
+        );
+        assert_eq!(editor.selections().primary_index(), 2);
+        assert_eq!(editor.document().revision().get(), 1);
+        editor.insert_text("x").unwrap();
+        assert_eq!(editor.document().text(), "  a\n  xb\n  x\n\tcd\n\tx");
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "  ab\n\tcd");
+        assert_eq!(editor.selections(), &before);
+    }
+
+    #[test]
+    fn newline_requires_insert_mode_and_raw_text_and_paste_keep_literal_newlines() {
+        let mut editor = Editor::new(Document::from("  one"));
+        for mode in [Mode::Normal, Mode::Select] {
+            assert_eq!(editor.mode(), mode);
+            assert_eq!(
+                editor.execute("insert_newline", 1),
+                Err(Error::WrongMode {
+                    expected: Mode::Insert,
+                    actual: mode
+                })
+            );
+            assert_eq!(editor.document().text(), "  one");
+            assert_eq!(editor.document().undo_depth(), 0);
+            editor.execute("select_mode", 1).unwrap();
+        }
+        editor.execute("goto_file_end", 1).unwrap();
+        editor.execute("insert_mode", 1).unwrap();
+        editor.insert_text("\n  raw").unwrap();
+        editor.insert_paste("\n  pasted\nend").unwrap();
+        assert_eq!(editor.document().text(), "  one\n  raw\n  pasted\nend");
     }
 
     #[test]

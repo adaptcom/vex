@@ -165,16 +165,21 @@ commands; `Keymap::name_group` gives custom groups a title. Escape cancels pendi
 input while preserving the mode, or enters normal mode when no input is pending.
 Digits build a repeat count outside insert mode; overflow
 returns an error and clears the count. An unbound sequence also clears pending
-input. Insert mode treats unbound printable characters as text; Enter uses the
-loaded line ending (LF by default) and Tab inserts a literal tab. Text events call
-`Editor::insert_text`; paste events call `Editor::insert_paste` to get a separate
-undo step.
+input. Insert mode treats unbound printable characters as text; Enter is bound to
+`insert_newline`, which uses the loaded line ending (LF by default) and copies
+the current line's indentation before the caret. Tab inserts a literal tab.
+Text events call `Editor::insert_text`; paste events call `Editor::insert_paste`
+to get a separate undo step.
 
 The implemented commands cover `hjkl`, arrows, `w`/`b`/`e`, line/document bounds,
 line selection, mode changes, deletion/change, insertion, `o`/`O` to open lines
 below/above selections, insert-mode Backspace/`Ctrl-h`, and undo/redo.
 Open-line commands copy leading tabs and spaces; a count creates a caret on each
 new line. Multiple selections opening the same line share those carets.
+Enter uses the same whitespace-copying rule, capped at the caret when splitting
+leading whitespace. Tabs and spaces are preserved exactly across all file types;
+language-specific indentation changes are not inferred yet. Direct text and paste
+events preserve literal newlines without adding indentation.
 Normal-mode character movements place a block cursor; select-mode movements retain
 the anchor, including when crossing it. Word movements select the traversed text.
 All selections participate in a command. Vertical motion uses logical lines,
