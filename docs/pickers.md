@@ -44,11 +44,25 @@ query has no results yet, Enter waits for its ranking to finish. Subsequent
 editing keys stay queued until the file opens; Escape/Ctrl-c can cancel when next
 in key order, and resize/focus events still work.
 
-At widths of at least 94 columns, the selected file has a plain-text preview.
-Preview reads are limited to 64 KiB and 200 lines; binary/non-UTF-8 files show a
-message. Resizing to a narrow terminal cancels preview work. Previews never edit
-the document. Opening another file requires saving current changes first; an
-error leaves the picker open. Successful opens add the origin to the existing
+The picker floats in two independently bordered boxes: the query, results, and
+footer on the left, and a preview on the right. The current document remains
+visible around the boxes and through the gap between them. The preview has its
+own title showing the selected path and uses its full interior height. Narrow
+terminals show only the file list; margins shrink on small terminals, and
+terminals too small for results show a resize message.
+
+Rust previews reuse the editor's Tree-sitter
+grammar, highlight query, and syntax colors. Reading, parsing, and querying all
+run on the preview worker; the UI receives text and semantic spans together.
+Other file types remain plain text. Preview reads are limited to 64 KiB and 200
+lines; binary/non-UTF-8 files show a message. Parsing uses the displayed prefix
+and the existing syntax time/capture limits, falling back to plain text if a
+limit is reached. Tabs use four-column stops, and Unicode graphemes are clipped
+without crossing the pane border.
+
+Resizing to a narrow terminal cancels preview work. Previews never edit the
+document or start a language server. Opening another file requires saving current
+changes first; an error leaves the picker open. Successful opens add the origin to the existing
 Ctrl-o jump list. As with definition jumps, switching files currently reloads
 from disk and creates fresh undo history.
 
@@ -59,9 +73,10 @@ the outermost enclosing Cargo project, otherwise the working directory captured
 when opening the picker. Scratch buffers start discovery from the working
 directory. No language server or Git executable is required.
 
-Vex owns its directory walker, ignore parser, and fuzzy scorer; this feature adds
-no dependencies. Project `.gitignore` files are applied relative to their own
-directories, with deeper files and later rules taking precedence. Supported
+Vex owns its directory walker, ignore parser, and fuzzy scorer; the picker uses
+existing workspace crates without new external dependencies. Project `.gitignore`
+files are applied relative to their own directories, with deeper files and later
+rules taking precedence. Supported
 patterns include `*`, `?`, character ranges/negated classes, ASCII POSIX classes,
 `**`, anchored paths, directory-only rules, escaped characters, comments, trailing
 spaces, and negation. Ignored directories are pruned, so a child cannot be
@@ -90,8 +105,8 @@ and match positions. Additional providers can reuse this view for buffers,
 commands, symbols, or diagnostics.
 
 Directory traversal and matching run on one persistent worker, interleaving
-small scan/ranking batches. Preview reads use a second worker. Both reuse the
-existing latest-job mailbox and cancellation tokens, with separate result slots
+small scan/ranking batches. Preview reads and syntax use a second worker. Both
+reuse the existing latest-job mailbox and cancellation tokens, with separate result slots
 in the shared terminal event queue. Enumeration stays in the worker's index;
 only bounded result snapshots cross to the UI. Closing releases the index on
 the worker. Session, query, and preview identities reject obsolete completions.
@@ -113,5 +128,6 @@ cargo build --release -p vex_term --locked
 python3 tools/picker_smoke.py
 ```
 
-The PTY check covers hints, Unicode queries, previews, resizing, cancellation,
-early Enter followed by edit/save, jump-back, unsaved buffers, and terminal cleanup.
+The PTY check covers hints, Unicode queries, floating borders, highlighted
+previews, resizing, cancellation, early Enter followed by edit/save, jump-back,
+unsaved buffers, and terminal cleanup.

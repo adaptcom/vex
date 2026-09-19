@@ -1099,6 +1099,7 @@ dependencies = [
  "vex_core",
  "vex_editor",
  "vex_lsp",
+ "vex_syntax",
 ]
 
 [[package]]

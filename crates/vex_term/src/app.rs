@@ -279,9 +279,6 @@ impl App {
     pub fn paint(&mut self, frame: &mut Frame) -> io::Result<()> {
         self.open_requested_picker();
         self.refresh_diagnostics();
-        if self.paint_active_picker(frame) {
-            return Ok(());
-        }
         self.open_search_prompt();
         let filename = self
             .files
@@ -325,6 +322,7 @@ impl App {
         .map_err(io::Error::other)?;
         self.paint_language(frame);
         self.paint_key_hints(frame);
+        self.paint_active_picker(frame);
         Ok(())
     }
 

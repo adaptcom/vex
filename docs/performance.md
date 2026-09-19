@@ -355,7 +355,11 @@ them. See [language services](lsp.md) for queue limits and correctness checks.
 File discovery, ignore-rule evaluation, fuzzy scoring, and previews run on
 background workers. Query changes reuse the current file index and cancel older
 matching work. The main thread receives at most 512 ranked entries per result;
-drawing visits visible rows and does not redraw the covered editor viewport.
+drawing composes the visible editor viewport with the floating picker. The grid
+diff emits only changed cells. Picker content drawing visits visible rows and
+columns. Preview parsing and highlighting use the existing syntax budgets on
+the preview worker, limited to the first 64 KiB / 200 lines of source; drawing
+uses the returned spans without parsing.
 Ignore and fuzzy matching reuse scratch buffers. Match-position traces are
 computed only for retained results, and wildcard matching uses iterative dynamic
 programming rather than recursive backtracking.

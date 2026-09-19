@@ -2,7 +2,7 @@
 //! Query changes retain the scan/index; closing a picker releases them off the UI.
 
 use super::{
-    Entry, Item,
+    Entry, Item, Preview,
     fuzzy::{Matcher, Query},
     ignore::{Rules, Scratch},
 };
@@ -15,7 +15,9 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use vex_core::{ByteOffset, Document};
 use vex_editor::background::Cancellation;
+use vex_syntax::{Language, Syntax};
 
 pub(crate) const MAX_RESULTS: usize = 512;
 const MAX_FILES: usize = 200_000;
@@ -346,7 +348,7 @@ pub(crate) struct PreviewResult {
     pub session: u64,
     pub request: u64,
     pub path: PathBuf,
-    pub text: String,
+    pub preview: Preview,
 }
 
 impl PreviewJob {
@@ -354,18 +356,18 @@ impl PreviewJob {
         if self.cancellation.is_cancelled() {
             return None;
         }
-        let text = preview(&self.path, &self.cancellation)
-            .unwrap_or_else(|error| format!("Preview unavailable: {error}"));
+        let preview = preview(&self.path, &self.cancellation)
+            .unwrap_or_else(|error| Preview::plain(format!("Preview unavailable: {error}")));
         (!self.cancellation.is_cancelled()).then_some(PreviewResult {
             session: self.session,
             request: self.request,
             path: self.path,
-            text,
+            preview,
         })
     }
 }
 
-fn preview(path: &Path, cancellation: &Cancellation) -> io::Result<String> {
+fn preview(path: &Path, cancellation: &Cancellation) -> io::Result<Preview> {
     if !fs::symlink_metadata(path)?.is_file() {
         return Err(io::Error::other("not a regular file"));
     }
@@ -374,7 +376,7 @@ fn preview(path: &Path, cancellation: &Cancellation) -> io::Result<String> {
     let mut chunk = [0; 4096];
     loop {
         if cancellation.is_cancelled() {
-            return Ok(String::new());
+            return Ok(Preview::default());
         }
         let n = file.read(&mut chunk)?;
         if n == 0 {
@@ -385,19 +387,31 @@ fn preview(path: &Path, cancellation: &Cancellation) -> io::Result<String> {
     let truncated = bytes.len() > PREVIEW_BYTES;
     bytes.truncate(PREVIEW_BYTES);
     if bytes.contains(&0) {
-        return Ok("Binary file — no preview".into());
+        return Ok(Preview::plain("Binary file — no preview"));
     }
     let text = match std::str::from_utf8(&bytes) {
         Ok(text) => text,
         Err(error) if truncated && error.error_len().is_none() => {
             std::str::from_utf8(&bytes[..error.valid_up_to()]).unwrap()
         }
-        Err(_) => return Ok("Non-UTF-8 file — no preview".into()),
+        Err(_) => return Ok(Preview::plain("Non-UTF-8 file — no preview")),
     };
     let mut lines = text.lines();
-    let mut preview = lines.by_ref().take(200).collect::<Vec<_>>().join("\n");
+    let mut preview = Preview::plain(lines.by_ref().take(200).collect::<Vec<_>>().join("\n"));
+    if !cancellation.is_cancelled()
+        && let Some(language) = Language::from_path(path)
+    {
+        // Parse exactly the displayed prefix, before appending any UI notices.
+        // The existing parser/query budgets fall back to plain text on timeout.
+        let document = Document::from(preview.text.as_str());
+        let mut syntax = Syntax::new(language, &document);
+        preview.highlights = syntax
+            .highlights_current(ByteOffset(0)..ByteOffset(preview.text.len()), || {
+                cancellation.is_cancelled()
+            });
+    }
     if truncated || lines.next().is_some() {
-        preview.push_str("\n… preview truncated");
+        preview.text.push_str("\n… preview truncated");
     }
     Ok(preview)
 }
@@ -501,16 +515,74 @@ mod tests {
         let path = directory.path().join("file");
         let cancel = Cancellation::default();
         fs::write(&path, "hello\n界\n").unwrap();
-        assert_eq!(preview(&path, &cancel).unwrap(), "hello\n界");
+        assert_eq!(preview(&path, &cancel).unwrap().text, "hello\n界");
         fs::write(&path, [0, 1, 2]).unwrap();
-        assert!(preview(&path, &cancel).unwrap().contains("Binary"));
+        assert!(preview(&path, &cancel).unwrap().text.contains("Binary"));
         fs::write(&path, format!("{}界end", "a".repeat(PREVIEW_BYTES - 1))).unwrap();
         assert!(
             preview(&path, &cancel)
                 .unwrap()
+                .text
                 .ends_with("preview truncated")
         );
         assert!(preview(directory.path(), &cancel).is_err());
+    }
+
+    #[test]
+    fn rust_preview_highlights_displayed_bytes_and_keeps_notices_and_unknown_files_plain() {
+        use vex_syntax::Highlight;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("example.rs");
+        let cancel = Cancellation::default();
+        fs::write(
+            &path,
+            "// 界e\u{301}\r\nfn main() { let s = \"hello\"; }\r\n",
+        )
+        .unwrap();
+        let rust = preview(&path, &cancel).unwrap();
+        for (token, highlight) in [
+            ("// 界e\u{301}", Highlight::Comment),
+            ("fn", Highlight::Keyword),
+            ("\"hello\"", Highlight::String),
+        ] {
+            let byte = rust.text.find(token).unwrap();
+            assert!(
+                rust.highlights
+                    .iter()
+                    .any(|span| span.highlight == highlight
+                        && span.range.contains(&ByteOffset(byte))),
+                "missing {highlight:?}: {:?}",
+                rust.highlights
+            );
+        }
+        let plain_path = directory.path().join("example.txt");
+        fs::write(&plain_path, &rust.text).unwrap();
+        assert!(preview(&plain_path, &cancel).unwrap().highlights.is_empty());
+        fs::write(&path, "/* comment\n".repeat(201)).unwrap();
+        let truncated = preview(&path, &cancel).unwrap();
+        assert_eq!(truncated.text.lines().count(), 201);
+        let notice = truncated.text.find("\n… preview truncated").unwrap();
+        assert!(
+            truncated
+                .highlights
+                .iter()
+                .all(|span| span.range.end.0 <= notice)
+        );
+        for bytes in [&[0, 1][..], &[0xff, 0xfe][..]] {
+            fs::write(&path, bytes).unwrap();
+            assert!(preview(&path, &cancel).unwrap().highlights.is_empty());
+        }
+        cancel.cancel();
+        assert!(
+            PreviewJob {
+                session: 1,
+                request: 1,
+                path,
+                cancellation: cancel
+            }
+            .run()
+            .is_none()
+        );
     }
 
     #[test]

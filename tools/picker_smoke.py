@@ -26,6 +26,7 @@ def main():
         target = root / "src/界 target.txt"
         origin.write_text("original document\n")
         target.write_text("unique preview contents\n")
+        (root / "src/preview.rs").write_text('fn main() { let text = "hello"; }\n')
         with Terminal([binary, str(origin)]) as terminal:
             terminal.start()
             terminal.resize(120, 20)
@@ -34,6 +35,16 @@ def main():
             terminal.send(b"\x03")  # Cancel and return to normal mode.
             terminal.send(b" f")
             terminal.expect_screen("Files ·".encode())
+            terminal.expect_screen("┌─".encode())
+            terminal.expect_screen(b"original document")
+            mark = terminal.send(b"preview.rs")
+            terminal.expect_screen("Preview · src/preview.rs".encode())
+            terminal.expect_screen(b'fn main() { let text = "hello"; }')
+            terminal.expect(b"\x1b[38;5;13m\x1b[49mfn", mark)
+            terminal.expect(b'\x1b[38;5;10m\x1b[49m"hello"', mark)
+            terminal.send(b"\x03")
+            terminal.expect_screen(b"original document")
+            terminal.send(b" f")
             terminal.send("界".encode())
             terminal.expect_screen(b"unique preview contents")
             terminal.resize(44, 9)
@@ -53,7 +64,7 @@ def main():
             terminal.expect_screen(b"Save this buffer")
             terminal.send(b"\x03:q!\r")
             terminal.finish()
-        print("PASS: group hints, Unicode fuzzy query, preview, resize, cancellation, early Enter/edit/save, jump back, dirty-buffer protection, terminal cleanup")
+        print("PASS: group hints, floating borders, visible original buffer, syntax preview, Unicode fuzzy query, resize, cancellation, early Enter/edit/save, jump back, dirty-buffer protection, terminal cleanup")
 
 
 if __name__ == "__main__":

@@ -75,6 +75,13 @@ are converted at line starts and advanced by whole grapheme byte lengths while
 drawing, preserving wide cells, tabs, and horizontal clipping. The existing cell
 diff detects color-only changes and emits nothing for identical frames.
 
+The [file picker](pickers.md) reuses `vex_syntax` for Rust previews. Its separate
+preview worker detects the language from the selected path, parses the bounded
+displayed prefix, and returns text and highlight spans as one result. The UI
+uses the same syntax palette, with no parser work or language-server startup.
+Changing the selection or query, hiding the preview on resize, and closing the
+picker cancel obsolete work; preview identities reject late text and colors.
+
 ## Initial limits
 
 Parsing runs on the syntax worker with a cooperative 25 ms budget per attempt and a

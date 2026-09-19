@@ -5,7 +5,7 @@ use crate::{
     files::FileState,
     input,
     picker::{
-        self, Action, Picker,
+        self, Action, Layout, Picker, Preview,
         files::{FileJob, FileResult, PreviewJob, PreviewResult},
     },
     render::Viewport,
@@ -97,7 +97,9 @@ impl App {
         let Some(active) = &mut self.picker.active else {
             return;
         };
-        let path = (self.size.0 >= 94 && self.size.1 >= 5)
+        let path = Layout::new(self.size.0, self.size.1)
+            .preview_left()
+            .is_some()
             .then(|| active.view.selected().map(|entry| entry.value.clone()))
             .flatten();
         if path == active.preview_path {
@@ -108,9 +110,9 @@ impl App {
         active.preview_request += 1;
         active.preview_path = path.clone();
         active.view.preview = if path.is_some() {
-            "Loading preview…".into()
+            Preview::plain("Loading preview…")
         } else {
-            String::new()
+            Preview::default()
         };
         self.picker.preview_job = path.map(|path| PreviewJob {
             session: active.session,
@@ -162,9 +164,10 @@ impl App {
                 let Some(key) = input::key(*key) else {
                     return Some(false);
                 };
-                active
-                    .view
-                    .handle(key, usize::from(self.size.1).saturating_sub(5))
+                active.view.handle(
+                    key,
+                    usize::from(Layout::new(self.size.0, self.size.1).rows()),
+                )
             }
             Event::Resize(..) | Event::FocusGained | Event::FocusLost => return None,
             _ => return Some(false),
@@ -222,7 +225,7 @@ impl App {
         {
             return false;
         }
-        active.view.preview = result.text;
+        active.view.preview = result.preview;
         true
     }
 
@@ -279,12 +282,10 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn paint_active_picker(&mut self, frame: &mut Frame) -> bool {
+    pub(super) fn paint_active_picker(&mut self, frame: &mut Frame) {
         if let Some(active) = &mut self.picker.active {
             active.view.paint(frame);
-            return true;
         }
-        false
     }
 
     pub(super) fn paint_key_hints(&self, frame: &mut Frame) {
@@ -373,10 +374,16 @@ mod tests {
     #[test]
     fn hints_and_picker_render_and_escape_preserves_selection_viewport_and_document() {
         let (_directory, mut app) = fixture();
-        press(&mut app, "vl ");
+        press(&mut app, "vl");
         let selection = app.editor.selections().clone();
         let revision = app.editor.document().revision();
         let mut frame = Frame::default();
+        frame.reset(120, 18).unwrap();
+        app.paint(&mut frame).unwrap();
+        let origin = frame.row_text(0);
+        let status = frame.row_text(16);
+        let viewport = app.viewport;
+        press(&mut app, " ");
         frame.reset(120, 18).unwrap();
         app.paint(&mut frame).unwrap();
         assert!((0..18).any(|row| frame.row_text(row).contains("Space · Esc cancel")));
@@ -386,7 +393,11 @@ mod tests {
         assert!(app.handle_preview_result(preview));
         frame.reset(120, 18).unwrap();
         app.paint(&mut frame).unwrap();
-        assert!((0..18).any(|row| frame.row_text(row).contains("alpha contents")));
+        assert_eq!(frame.row_text(0), origin);
+        assert_eq!(frame.row_text(16), status);
+        assert!((2..16).any(|row| frame.row_text(row).contains("alpha contents")));
+        assert!(frame.row_text(2).contains('┌'));
+        assert_eq!(app.viewport, viewport);
         press(&mut app, "beta");
         app.handle(key(KeyCode::Esc));
         assert!(app.picker.active.is_none());
@@ -394,6 +405,60 @@ mod tests {
         assert_eq!(app.editor.selections(), &selection);
         assert_eq!(app.editor.document().revision(), revision);
         assert_eq!(app.editor.document().text(), "alpha contents");
+        frame.reset(120, 18).unwrap();
+        app.paint(&mut frame).unwrap();
+        assert_eq!(frame.row_text(0), origin);
+        assert_eq!(app.viewport, viewport);
+    }
+
+    #[test]
+    fn highlighted_previews_cancel_on_resize_and_do_not_color_another_selection() {
+        let (directory, mut app) = fixture();
+        fs::write(directory.path().join("example.rs"), "fn main() {}\n").unwrap();
+        let mut worker = FileWorker::default();
+        press(&mut app, " fexample");
+        finish(&mut app, &mut worker);
+        let preview = app.take_preview_job().unwrap().run().unwrap();
+        assert!(!preview.preview.highlights.is_empty());
+        app.handle(Event::Resize(44, 9));
+        assert!(!app.handle_preview_result(preview));
+        assert!(app.take_preview_job().is_none());
+        assert!(
+            app.picker
+                .active
+                .as_ref()
+                .unwrap()
+                .view
+                .preview
+                .highlights
+                .is_empty()
+        );
+        app.handle(Event::Resize(120, 18));
+        let preview = app.take_preview_job().unwrap().run().unwrap();
+        assert!(app.handle_preview_result(preview));
+        let mut frame = Frame::default();
+        frame.reset(120, 18).unwrap();
+        app.paint(&mut frame).unwrap();
+        assert_eq!(
+            frame.style_at(63, 3),
+            Some(Style::Syntax(vex_editor::Highlight::Keyword))
+        );
+        assert_eq!(app.editor.document().text(), "alpha contents");
+        app.handle(key(KeyCode::Backspace));
+        assert!(
+            app.picker
+                .active
+                .as_ref()
+                .unwrap()
+                .view
+                .preview
+                .highlights
+                .is_empty()
+        );
+        finish(&mut app, &mut worker);
+        let late = app.take_preview_job().unwrap().run().unwrap();
+        app.handle(key(KeyCode::Esc));
+        assert!(!app.handle_preview_result(late));
     }
 
     #[test]

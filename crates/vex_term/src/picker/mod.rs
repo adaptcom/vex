@@ -4,6 +4,9 @@
 pub(crate) mod files;
 mod fuzzy;
 mod ignore;
+mod preview;
+
+pub(crate) use preview::Preview;
 
 use crate::{
     input::Prompt,
@@ -16,6 +19,45 @@ use vex_core::display;
 use vex_editor::Key;
 
 const MAX_QUERY_BYTES: usize = 1024;
+
+/// Shared geometry for drawing, paging, and deciding whether to load a preview.
+/// Bounds are exclusive; margins leave the current document visible behind us.
+pub(crate) struct Layout {
+    left: u16,
+    top: u16,
+    right: u16,
+    bottom: u16,
+}
+
+impl Layout {
+    pub fn new(width: u16, height: u16) -> Self {
+        let x = if width >= 40 { width / 12 } else { 0 };
+        let y = if height >= 10 { height / 8 } else { 0 };
+        Self {
+            left: x,
+            top: y,
+            right: width - x,
+            bottom: height - y,
+        }
+    }
+
+    pub fn rows(&self) -> u16 {
+        if self.right - self.left < 5 {
+            return 0;
+        }
+        (self.bottom - self.top).saturating_sub(6)
+    }
+
+    pub fn preview_left(&self) -> Option<u16> {
+        (self.rows() > 0 && self.right - self.left >= 82)
+            .then_some(self.left + (self.right - self.left) / 2 + 1)
+    }
+
+    fn list_right(&self) -> u16 {
+        // Two untouched columns separate the independently bordered panels.
+        self.preview_left().map_or(self.right, |left| left - 2)
+    }
+}
 
 pub(crate) struct Entry<T> {
     pub label: String,
@@ -45,7 +87,7 @@ pub(crate) struct Picker<T> {
     pub total: usize,
     pub title: String,
     pub notice: String,
-    pub preview: String,
+    pub preview: Preview,
 }
 
 impl<T: Eq> Picker<T> {
@@ -61,7 +103,7 @@ impl<T: Eq> Picker<T> {
             total: 0,
             title,
             notice: String::new(),
-            preview: String::new(),
+            preview: Preview::default(),
         }
     }
 
@@ -127,7 +169,7 @@ impl<T: Eq> Picker<T> {
         self.touched = false;
         self.pending = true;
         self.matched = 0;
-        self.preview.clear();
+        self.preview = Preview::default();
         self.notice.clear();
     }
 
@@ -140,49 +182,64 @@ impl<T: Eq> Picker<T> {
     }
 
     pub fn paint(&mut self, frame: &mut Frame) {
-        let width = frame.width();
-        let height = frame.height();
-        if width == 0 || height == 0 {
+        frame.cursor = None;
+        let layout = Layout::new(frame.width(), frame.height());
+        let Layout {
+            left, top, bottom, ..
+        } = layout;
+        let right = layout.list_right();
+        paint_box(
+            frame,
+            left,
+            top,
+            right,
+            bottom,
+            &format!(" Files · {} ", self.title),
+        );
+        if let Some(preview_left) = layout.preview_left() {
+            let title = self.selected().map_or_else(
+                || " Preview ".to_owned(),
+                |entry| format!(" Preview · {} ", entry.label),
+            );
+            paint_box(frame, preview_left, top, layout.right, bottom, &title);
+            self.preview.paint(
+                frame,
+                preview_left + 2,
+                top + 1,
+                layout.right - preview_left - 3,
+                usize::from(bottom - top - 2),
+            );
+        }
+        if right - left < 2 || bottom - top < 2 {
             return;
         }
-        let x = if width >= 40 { 2 } else { 0 };
-        let y = if height >= 10 { 1 } else { 0 };
-        let right = width - x;
-        let bottom = height - y;
-        for row in y..bottom {
-            for col in x..right {
-                frame.put(col, row, " ", Style::Text);
+        let rows = usize::from(layout.rows());
+        if rows == 0 {
+            if bottom - top > 2 {
+                label(
+                    frame,
+                    left + 1,
+                    top + 1,
+                    right - left - 2,
+                    "Esc close · resize for picker",
+                    Style::Gutter,
+                );
             }
+            return;
         }
-        for col in x..right {
-            frame.put(col, y, " ", Style::Status);
-        }
-        label(
-            frame,
-            x,
-            y,
-            right - x,
-            &format!(" Files · {}", self.title),
-            Style::Status,
-        );
+        // From here x/right and y/bottom describe the inside of the border.
+        let x = left + 1;
+        let right = right - 1;
+        let y = top + 1;
+        let bottom = bottom - 1;
+        rule(frame, left, right + 1, y + 1, "├", "┤");
+        rule(frame, left, right + 1, bottom - 2, "├", "┤");
         for col in x..right {
             frame.put(col, bottom - 1, " ", Style::Status);
         }
-        if bottom - y < 5 {
-            label(
-                frame,
-                x,
-                bottom - 1,
-                right - x,
-                "Esc close · resize for picker",
-                Style::Status,
-            );
-            frame.cursor = None;
-            return;
-        }
-        frame.put(x, y + 1, ">", Style::Message);
+        frame.put(x, y, ">", Style::Message);
         // Keep the prompt caret visible, scrolling at grapheme boundaries.
-        let room = usize::from((right - x).saturating_sub(3));
+        let room = usize::from(right - x - 2);
         let before = &self.query.text()[..self.query.cursor()];
         let mut start = self.query.cursor();
         let mut columns = 0;
@@ -196,20 +253,17 @@ impl<T: Eq> Picker<T> {
         }
         label(
             frame,
-            x.saturating_add(2),
-            y + 1,
-            (right - x).saturating_sub(2),
+            x + 2,
+            y,
+            right - x - 2,
             &self.query.text()[start..],
             Style::Text,
         );
-        frame.cursor = (right - x >= 3).then_some(Cursor {
-            x: (x + 2 + columns as u16).min(right - 1),
-            y: y + 1,
+        frame.cursor = Some(Cursor {
+            x: x + 2 + columns as u16,
+            y,
             shape: CursorShape::Bar,
         });
-        let preview = right - x >= 90;
-        let divider = if preview { x + (right - x) / 2 } else { right };
-        let rows = usize::from(bottom - y - 3);
         self.top = self.top.min(self.selected);
         if self.selected >= self.top + rows {
             self.top = self.selected + 1 - rows;
@@ -219,7 +273,7 @@ impl<T: Eq> Picker<T> {
                 frame,
                 x + 1,
                 y + 2,
-                divider.saturating_sub(x + 1),
+                right - x - 1,
                 if self.pending {
                     "Scanning / matching…"
                 } else {
@@ -236,14 +290,14 @@ impl<T: Eq> Picker<T> {
             } else {
                 Style::Text
             };
-            for col in x..divider {
+            for col in x..right {
                 frame.put(col, row, " ", base);
             }
             frame.put(x, row, if selected { ">" } else { " " }, base);
             let mut col = x + 2;
             for (byte, grapheme) in item.entry.label.grapheme_indices(true) {
                 let size = display::visible(grapheme).width() as u16;
-                if col.saturating_add(size) > divider.saturating_sub(1) {
+                if col.saturating_add(size) > right.saturating_sub(1) {
                     break;
                 }
                 let found = item
@@ -267,21 +321,6 @@ impl<T: Eq> Picker<T> {
                 col += size;
             }
         }
-        if preview {
-            for row in y + 2..bottom - 1 {
-                frame.put(divider, row, "│", Style::Gutter);
-            }
-            for (offset, line) in self.preview.lines().take(rows).enumerate() {
-                label(
-                    frame,
-                    divider + 2,
-                    y + 2 + offset as u16,
-                    right.saturating_sub(divider + 2),
-                    line,
-                    Style::Text,
-                );
-            }
-        }
         let status = if !self.notice.is_empty() {
             self.notice.clone()
         } else {
@@ -295,6 +334,39 @@ impl<T: Eq> Picker<T> {
         };
         label(frame, x, bottom - 1, right - x, &status, Style::Status);
     }
+}
+
+fn paint_box(frame: &mut Frame, left: u16, top: u16, right: u16, bottom: u16, title: &str) {
+    for row in top..bottom {
+        for col in left..right {
+            frame.put(col, row, " ", Style::Text);
+        }
+    }
+    if right - left < 2 || bottom - top < 2 {
+        return;
+    }
+    for row in top + 1..bottom - 1 {
+        frame.put(left, row, "│", Style::Gutter);
+        frame.put(right - 1, row, "│", Style::Gutter);
+    }
+    rule(frame, left, right, top, "┌", "┐");
+    rule(frame, left, right, bottom - 1, "└", "┘");
+    label(
+        frame,
+        left + 2,
+        top,
+        (right - left).saturating_sub(4),
+        title,
+        Style::Message,
+    );
+}
+
+fn rule(frame: &mut Frame, left: u16, right: u16, row: u16, start: &str, end: &str) {
+    frame.put(left, row, start, Style::Gutter);
+    for col in left + 1..right - 1 {
+        frame.put(col, row, "─", Style::Gutter);
+    }
+    frame.put(right - 1, row, end, Style::Gutter);
 }
 
 /// Labels clipped to a panel rather than the whole terminal, with the same
@@ -314,6 +386,74 @@ pub(crate) fn label(frame: &mut Frame, mut x: u16, y: u16, width: u16, text: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floating_boxes_preserve_background_and_clip_content_and_cursor_inside_borders() {
+        let mut picker = Picker::new("界project".repeat(60));
+        picker.paste(&"界e\u{301}".repeat(60));
+        picker.replace(vec![Item {
+            entry: Arc::new(Entry {
+                label: "界filename".repeat(60),
+                value: 0,
+            }),
+            matched: vec![0],
+        }]);
+        picker.preview = Preview::plain("界preview".repeat(60));
+        for width in [0, 1, 2, 3, 4, 5, 39, 40, 80, 97, 98, 99, 120] {
+            for height in [0, 1, 2, 3, 6, 7, 8, 9, 10, 18, 24] {
+                let mut frame = Frame::default();
+                frame.reset(width, height).unwrap();
+                let background = "x".repeat(usize::from(width));
+                for row in 0..height {
+                    frame.label(0, row, &background, Style::Error);
+                }
+                picker.paint(&mut frame);
+                let layout = Layout::new(width, height);
+                for row in 0..height {
+                    let text = frame.row_text(row);
+                    if row < layout.top || row >= layout.bottom {
+                        assert_eq!(text, background);
+                    } else {
+                        assert!(text.starts_with(&"x".repeat(usize::from(layout.left))));
+                        assert!(text.ends_with(&"x".repeat(usize::from(width - layout.right))));
+                    }
+                }
+                if layout.right - layout.left >= 2 && layout.bottom - layout.top >= 2 {
+                    let boxes = 1 + usize::from(layout.preview_left().is_some());
+                    assert_eq!(frame.row_text(layout.top).matches('┌').count(), boxes);
+                    assert_eq!(frame.row_text(layout.top).matches('┐').count(), boxes);
+                    assert_eq!(
+                        frame.row_text(layout.bottom - 1).matches('└').count(),
+                        boxes
+                    );
+                    assert_eq!(
+                        frame.row_text(layout.bottom - 1).matches('┘').count(),
+                        boxes
+                    );
+                    for row in layout.top + 1..layout.bottom - 1 {
+                        assert_eq!(frame.style_at(layout.left, row), Some(Style::Gutter));
+                        assert_eq!(frame.style_at(layout.right - 1, row), Some(Style::Gutter));
+                    }
+                }
+                if let Some(preview_left) = layout.preview_left() {
+                    for row in layout.top..layout.bottom {
+                        for col in layout.list_right()..preview_left {
+                            assert_eq!(frame.style_at(col, row), Some(Style::Error));
+                        }
+                        assert_eq!(
+                            frame.style_at(layout.list_right() - 1, row),
+                            Some(Style::Gutter)
+                        );
+                        assert_eq!(frame.style_at(preview_left, row), Some(Style::Gutter));
+                    }
+                }
+                assert!(frame.cursor.is_none_or(|cursor| cursor.x > layout.left
+                    && cursor.x < layout.list_right() - 1
+                    && cursor.y > layout.top
+                    && cursor.y < layout.bottom - 1));
+            }
+        }
+    }
 
     #[test]
     fn picker_edits_query_navigates_preserves_selected_identity_and_clips_small_frames() {
