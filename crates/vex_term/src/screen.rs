@@ -49,14 +49,14 @@ impl Style {
                 Reset,
             ),
             Self::Gutter => (DarkGrey, Reset),
-            Self::Status => (White, DarkBlue),
+            Self::Status => (Black, Grey),
             Self::Message => (DarkCyan, Reset),
             Self::Error => (Red, Reset),
-            Self::Selection => (White, DarkBlue),
+            Self::Selection => (Black, Grey),
             Self::PrimaryCursor => (Black, Cyan),
             Self::SecondaryCursor => (Black, DarkCyan),
             Self::PickerMatch => (Yellow, Reset),
-            Self::PickerSelectedMatch => (Yellow, DarkBlue),
+            Self::PickerSelectedMatch => (DarkYellow, Grey),
         }
     }
 }
