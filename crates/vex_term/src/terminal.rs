@@ -2,7 +2,7 @@
 
 use crate::{
     app::App,
-    events::{AppEvent, Runtime},
+    events::{AppEvent, BackgroundEvent, Runtime},
     screen::Renderer,
 };
 use crossterm::{
@@ -125,6 +125,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
     let _session = Session::enter()?;
     let runtime = Runtime::start()?;
     app.editor.set_background_search(true);
+    app.editor.set_background_syntax(true);
     let mut renderer = Renderer::default();
     let mut output = io::stdout();
     let mut redraw = true;
@@ -139,6 +140,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             let (width, height) = app.size();
             app.paint(renderer.frame(width, height)?)?;
             renderer.present(&mut output)?;
+            if let Some(job) = app.editor.take_syntax_job() {
+                runtime.submit_syntax(job);
+            }
             redraw = false;
         }
         let Some(mut event) = runtime
@@ -157,7 +161,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
                     }
                     redraw |= app.handle(event);
                 }
-                AppEvent::Search(result) => redraw |= app.handle_search_result(result),
+                AppEvent::Background(BackgroundEvent::Search(result)) => {
+                    redraw |= app.handle_search_result(result);
+                }
+                AppEvent::Background(BackgroundEvent::Syntax(result)) => {
+                    redraw |= app.editor.apply_syntax_result(result);
+                }
                 AppEvent::Failed(error) => return Err(error),
             }
             if let Some(job) = app.editor.take_search_job() {

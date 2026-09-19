@@ -187,7 +187,7 @@ Soft wrapping is not implemented yet.
 ## Next milestone
 
 The interactive loop can open, search, select, edit, undo groups, and save.
-Background syntax parsing can build on the event queue used by search. Registers,
+Search and syntax run on independent workers through a shared event queue. Registers,
 pickers, more syntax languages, and LSP remain upcoming milestones. Further layout
 work can address cold indexing and updates near the beginning of a huge line.
 

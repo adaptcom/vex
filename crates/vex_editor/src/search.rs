@@ -2,10 +2,7 @@
 //! worker; only the editor applies results after validating request and view state.
 
 use crate::{CommandContext, Editor, Error, Mode, SearchDirection};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 use vex_core::{
     ByteOffset, CharOffset, DocumentId, Revision, Rope, Selection, SelectionSet, Snapshot,
     grapheme, search::Literal,
@@ -21,20 +18,8 @@ pub enum SearchStatus {
     NoMatch,
 }
 
-/// Cooperative cancellation shared by the editor and its worker.
-#[derive(Clone, Debug, Default)]
-pub struct SearchCancellation(Arc<AtomicBool>);
-impl SearchCancellation {
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-    pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
-    }
-    fn same_request(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
+/// Cancellation shared by the editor and its search worker.
+pub type SearchCancellation = crate::background::Cancellation;
 
 #[derive(Debug)]
 enum Pattern {

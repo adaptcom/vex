@@ -18,9 +18,9 @@ use tree_sitter::{
     InputEdit, Node, ParseOptions, Parser, Point, Query, QueryCursor, QueryCursorOptions,
     StreamingIterator, Tree,
 };
-use vex_core::{ByteOffset, Document, Rope, RopeSlice, Snapshot};
+use vex_core::{ByteOffset, ChangeExtent, Document, Rope, RopeSlice, Snapshot};
 
-/// Initial synchronous parsing ceiling. Larger documents remain editable as text.
+/// Initial parsing ceiling. Larger documents remain editable as text.
 pub const MAX_HIGHLIGHT_BYTES: usize = 2 << 20;
 const PARSE_BUDGET: Duration = Duration::from_millis(25);
 const QUERY_BUDGET: Duration = Duration::from_millis(2);
@@ -161,6 +161,11 @@ impl fmt::Debug for Syntax {
 
 impl Syntax {
     pub fn new(language: Language, document: &Document) -> Self {
+        Self::from_snapshot(language, document.snapshot())
+    }
+
+    /// Construct parser state on the thread that will own it.
+    pub fn from_snapshot(language: Language, snapshot: Snapshot) -> Self {
         let configuration = language.configuration();
         let mut parser = Parser::new();
         parser
@@ -173,8 +178,8 @@ impl Syntax {
             configuration,
             parser,
             tree: None,
-            snapshot: document.snapshot(),
-            lf_count: initial_lf_count(document.text()),
+            lf_count: initial_lf_count(snapshot.text()),
+            snapshot,
             dirty: true,
             cursor,
             cache: VecDeque::new(),
@@ -191,18 +196,30 @@ impl Syntax {
         self.language
     }
 
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
+
     /// Update tree coordinates without parsing. Adjacent edits can be batched
     /// before a draw, including a counted undo that crosses several groups.
     pub fn synchronize(&mut self, document: &Document) {
-        if self.snapshot.id() == document.id() && self.snapshot.revision() == document.revision() {
+        self.synchronize_snapshot(document.snapshot(), document.change_since(&self.snapshot));
+    }
+
+    /// Advance to a snapshot using a conservative edit covering all intervening
+    /// changes. The caller must provide unchanged prefix/suffix coordinates
+    /// relative to this syntax snapshot and the new snapshot, or None to reparse.
+    pub fn synchronize_snapshot(&mut self, snapshot: Snapshot, change: Option<ChangeExtent>) {
+        if self.snapshot.id() == snapshot.id() && self.snapshot.revision() == snapshot.revision() {
             return;
         }
         self.cache.clear();
         let old = self.snapshot.text();
-        let new = document.text();
+        let new = snapshot.text();
         if old.len_bytes() <= MAX_HIGHLIGHT_BYTES
             && new.len_bytes() <= MAX_HIGHLIGHT_BYTES
-            && let Some(change) = document.change_since(&self.snapshot)
+            && self.snapshot.id() == snapshot.id()
+            && let Some(change) = change
         {
             let old_compatible = old.len_lines() - 1 == self.lf_count;
             self.lf_count = self.lf_count - count_lf(old.slice(change.start.0..change.old_end.0))
@@ -232,12 +249,12 @@ impl Syntax {
             self.lf_count = initial_lf_count(new);
         }
         self.parser.reset();
-        self.snapshot = document.snapshot();
+        self.snapshot = snapshot;
         self.dirty = true;
     }
 
-    fn parse(&mut self) {
-        if !self.dirty {
+    fn parse(&mut self, cancelled: &impl Fn() -> bool) {
+        if !self.dirty || cancelled() {
             return;
         }
         self.dirty = false;
@@ -254,19 +271,25 @@ impl Syntax {
         let start = Instant::now();
         let budget = self.parse_budget;
         let mut progress = |_: &tree_sitter::ParseState| {
-            if start.elapsed() >= budget {
+            if cancelled() || start.elapsed() >= budget {
                 ControlFlow::Break(())
             } else {
                 ControlFlow::Continue(())
             }
         };
-        self.tree = self.parser.parse_with_options(
+        let tree = self.parser.parse_with_options(
             &mut |byte, _| chunk_from(text, byte),
             self.tree.as_ref(),
             Some(ParseOptions::new().progress_callback(&mut progress)),
         );
-        // Cancellation leaves resumable parser state. We deliberately retry on
-        // the next revision instead of resuming with different input.
+        // Superseded viewport requests may retry this revision. Keep the edited
+        // old tree, but reset resumable parser state before using different input.
+        if cancelled() {
+            self.dirty = true;
+            self.parser.reset();
+            return;
+        }
+        self.tree = tree;
         if self.tree.is_none() {
             self.parser.reset();
         }
@@ -281,8 +304,18 @@ impl Syntax {
         range: Range<ByteOffset>,
     ) -> Arc<[HighlightSpan]> {
         self.synchronize(document);
+        self.highlights_current(range, || false)
+    }
+
+    /// Query the current snapshot with cooperative cancellation. Cancelled work
+    /// is never cached; time-budget failures remain cached until invalidation.
+    pub fn highlights_current(
+        &mut self,
+        range: Range<ByteOffset>,
+        is_cancelled: impl Fn() -> bool,
+    ) -> Arc<[HighlightSpan]> {
         let text = self.snapshot.text();
-        if range.start >= range.end || range.end.0 > text.len_bytes() {
+        if is_cancelled() || range.start >= range.end || range.end.0 > text.len_bytes() {
             return Arc::from([]);
         }
         if let Some(index) = self.cache.iter().position(|entry| entry.range == range) {
@@ -291,7 +324,10 @@ impl Syntax {
             self.cache.push_back(entry);
             return spans;
         }
-        self.parse();
+        self.parse(&is_cancelled);
+        if is_cancelled() {
+            return Arc::from([]);
+        }
         let Some(tree) = &self.tree else {
             return Arc::from([]);
         };
@@ -302,7 +338,7 @@ impl Syntax {
         let budget = self.query_budget;
         let cancelled = Cell::new(budget.is_zero());
         let mut progress = |_: &tree_sitter::QueryCursorState| {
-            if start.elapsed() >= budget {
+            if is_cancelled() || start.elapsed() >= budget {
                 cancelled.set(true);
                 ControlFlow::Break(())
             } else {
@@ -320,7 +356,7 @@ impl Syntax {
                 QueryCursorOptions::new().progress_callback(&mut progress),
             );
             while let Some((matched, index)) = captures.next() {
-                if raw.len() == MAX_CAPTURES || start.elapsed() >= budget {
+                if is_cancelled() || raw.len() == MAX_CAPTURES || start.elapsed() >= budget {
                     cancelled.set(true);
                     break;
                 }
@@ -340,6 +376,9 @@ impl Syntax {
                     });
                 }
             }
+        }
+        if is_cancelled() {
+            return Arc::from([]);
         }
         let spans: Arc<[HighlightSpan]> = if cancelled.get() || self.cursor.did_exceed_match_limit()
         {
@@ -460,7 +499,7 @@ mod tests {
 
     fn assert_matches_fresh_parse(syntax: &mut Syntax, document: &Document) {
         syntax.synchronize(document);
-        syntax.parse();
+        syntax.parse(&|| false);
         let tree = syntax.tree.as_ref().unwrap();
         let mut parser = Parser::new();
         parser
@@ -513,6 +552,67 @@ mod tests {
                 pending.push((actual.child(index).unwrap(), expected.child(index).unwrap()));
             }
         }
+    }
+
+    #[test]
+    fn cancelled_parses_and_queries_retry_the_same_revision_without_partial_caches() {
+        let document = Document::from("fn demo() { let value = 42; }\n".repeat(4_096).as_str());
+        let mut syntax = syntax(&document);
+        let range = ByteOffset(0)..ByteOffset(29);
+        let checks = Cell::new(0);
+        let cancelled = || {
+            checks.set(checks.get() + 1);
+            checks.get() >= 3
+        };
+        assert!(
+            syntax
+                .highlights_current(range.clone(), cancelled)
+                .is_empty()
+        );
+        assert!(checks.get() >= 3);
+        assert!(syntax.dirty);
+        assert!(syntax.cache.is_empty());
+        let spans = syntax.highlights_current(range.clone(), || false);
+        assert!(!spans.is_empty());
+        assert!(!syntax.dirty);
+        // Use an already parsed tree and an empty range cache to interrupt
+        // querying. No cancelled range may enter the cache.
+        syntax.cache.clear();
+        checks.set(0);
+        assert!(
+            syntax
+                .highlights_current(range.clone(), || {
+                    checks.set(checks.get() + 1);
+                    checks.get() >= 4
+                })
+                .is_empty()
+        );
+        assert!(checks.get() >= 4);
+        assert!(syntax.cache.is_empty());
+        assert_eq!(syntax.highlights_current(range, || false), spans);
+    }
+
+    #[test]
+    fn snapshot_edits_reuse_the_tree_across_coalesced_revisions() {
+        let mut document = Document::from("fn main() {}\r\n");
+        let mut syntax = syntax(&document);
+        all(&mut syntax, &document);
+        let mut selections = SelectionSet::single(Selection::cursor(CharOffset(0)));
+        for text in ["/", "/", "界", "\r\n"] {
+            let edit = document.replace_selections(&selections, text).unwrap();
+            document.apply_grouped(edit, &mut selections).unwrap();
+        }
+        syntax.synchronize_snapshot(
+            document.snapshot(),
+            Some(ChangeExtent {
+                start: CharOffset(0),
+                old_end: CharOffset(0),
+                new_end: CharOffset(5),
+            }),
+        );
+        assert_matches_fresh_parse(&mut syntax, &document);
+        assert_eq!(syntax.parses, 2);
+        assert_eq!(syntax.incremental_parses, 1);
     }
 
     #[test]

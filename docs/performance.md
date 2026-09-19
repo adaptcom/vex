@@ -222,7 +222,9 @@ not reparse. Typing changes a function name halfway through the file, processes
 eight distinct input events before drawing, then undoes the group and draws again.
 It includes two incremental parses and two sets of visible-range queries.
 
-This is synchronous, budgeted highlighting: files above 2 MiB and parse/query
+These historical measurements use the synchronous integration path, which remains
+available for embedding and comparison. The terminal now uses a syntax worker.
+Both paths retain the work limits: files above 2 MiB and parse/query
 budget failures fall back to plain text. Syntax work still depends on the tree
 and changed region; these figures do not establish constant time or p95 bounds.
 Background parsing, more languages, and finer invalidation remain future work.
@@ -300,4 +302,36 @@ Cancellation is checked during query compilation, every 4096 scanned bytes,
 during long KMP fallback chains, and between matches/selections. Allocation and
 grapheme-boundary routines remain indivisible. Queued editing keys that depend on
 a pending search destination wait for that result, with key order preserved.
-Background syntax parsing and file I/O remain future work.
+Syntax now uses a separate worker in the same runtime; file I/O remains synchronous.
+
+## Background syntax
+
+Recorded on 2026-09-19 using the same release profile and Rust fixtures at 120 × 40:
+
+```sh
+cargo bench -p vex_term --bench rendering --locked -- background_syntax --noplot
+```
+
+| Rust source | First plain-text frame + syntax request | Type 8 / draw / request / grouped undo / draw / request |
+|---|---:|---:|
+| 64 KiB | 0.341 ms | 0.532 ms |
+| 256 KiB | 0.375 ms | 0.599 ms |
+
+These Criterion central estimates use 30 samples, 500 ms warmup, and a one-second
+measurement target. First frame includes construction of the editor over a shared
+rope, lazy language selection, cell-grid drawing, ANSI output to a sink, and
+building/dropping the syntax request. The typing benchmark inserts eight characters
+at the beginning of the file, undoes the group, and includes both frames and
+requests. It exercises cancellation and the bounded edit-metadata log.
+
+These measure work left on the UI thread. No worker runs in these benchmarks:
+parsing, grammar initialization, queries, thread scheduling, completion delivery,
+and physical terminal display latency are excluded. The earlier synchronous
+first-draw numbers include completed colors; these first frames display plain
+text while highlighting is pending. This is not a reduction in parser CPU cost
+or a measurement of time until colors arrive.
+
+Source tests check independent worker progress, completion wakeups, cancellation,
+stale-result rejection, incremental reuse across coalesced edits, and bounded
+caches. The PTY smoke test waits for initial, edited, and undo-restored colors
+without sending extra input to wake the loop.

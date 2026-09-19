@@ -1,5 +1,5 @@
 //! Wakeable event inbox and owned producer threads. Terminal input is bounded;
-//! search has one replaceable job slot and one replaceable completion slot.
+//! independent services have typed completions and explicit delivery policies.
 
 use crossterm::event::{self, Event};
 use std::{
@@ -10,20 +10,30 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-use vex_editor::{Key, SearchCancellation, SearchJob, SearchResult};
+use vex_editor::{
+    Key, SearchJob, SearchResult, SyntaxJob, SyntaxResult, SyntaxWorker, background::Cancellation,
+};
 
 const INPUT_CAPACITY: usize = 256;
 
 pub(crate) enum AppEvent {
     Terminal(Event),
-    Search(SearchResult),
+    Background(BackgroundEvent),
     Failed(io::Error),
+}
+
+/// These snapshot services keep only their latest completion. Future services
+/// with ordered protocol messages must get a FIFO policy, not share these slots.
+pub(crate) enum BackgroundEvent {
+    Search(SearchResult),
+    Syntax(SyntaxResult),
 }
 
 #[derive(Default)]
 struct Inbox {
     input: VecDeque<Event>,
-    search: Option<SearchResult>,
+    background: [Option<BackgroundEvent>; 2],
+    next_background: usize,
     failure: Option<io::Error>,
     closed: bool,
 }
@@ -52,10 +62,14 @@ impl EventQueue {
         true
     }
 
-    fn search(&self, result: SearchResult) {
+    fn background(&self, result: BackgroundEvent) {
         let mut state = self.0.state.lock().unwrap();
         if !state.closed {
-            state.search = Some(result);
+            let slot = match &result {
+                BackgroundEvent::Search(_) => 0,
+                BackgroundEvent::Syntax(_) => 1,
+            };
+            state.background[slot] = Some(result);
             self.0.ready.notify_one();
         }
     }
@@ -70,7 +84,7 @@ impl EventQueue {
         let mut state = self.0.state.lock().unwrap();
         state.closed = true;
         state.input.clear();
-        state.search = None;
+        state.background = [None, None];
         self.0.ready.notify_all();
         self.0.space.notify_all();
     }
@@ -83,7 +97,7 @@ impl EventQueue {
     /// by subsequent keys, hold those keys in FIFO order. Resize/focus events
     /// can pass them; Escape/Ctrl-c cancel when next in key order. An Escape
     /// after a queued change command must not discard that edit. The completion
-    /// slot cannot be blocked by input.
+    /// slots cannot be blocked by input, and alternate when both are ready.
     pub(crate) fn next(&self, timeout: Duration, waiting: bool) -> Option<AppEvent> {
         let deadline = Instant::now() + timeout;
         let mut state = self.0.state.lock().unwrap();
@@ -99,8 +113,12 @@ impl EventQueue {
                 self.0.space.notify_one();
                 return Some(AppEvent::Terminal(event));
             }
-            if let Some(result) = state.search.take() {
-                return Some(AppEvent::Search(result));
+            for offset in 0..state.background.len() {
+                let index = (state.next_background + offset) % state.background.len();
+                if let Some(result) = state.background[index].take() {
+                    state.next_background = (index + 1) % state.background.len();
+                    return Some(AppEvent::Background(result));
+                }
             }
             if waiting
                 && let Some(index) = state.input.iter().position(|event| {
@@ -131,25 +149,41 @@ fn cancels_search(event: &Event) -> bool {
     matches!(event, Event::Key(key) if matches!(crate::input::key(*key), Some(Key::Escape | Key::Ctrl('c'))))
 }
 
-#[derive(Default)]
-struct Work {
-    pending: Option<SearchJob>,
-    running: Option<SearchCancellation>,
+trait Job: Send + 'static {
+    fn cancellation(&self) -> Cancellation;
+}
+
+impl Job for SearchJob {
+    fn cancellation(&self) -> Cancellation {
+        self.cancellation()
+    }
+}
+
+impl Job for SyntaxJob {
+    fn cancellation(&self) -> Cancellation {
+        self.cancellation()
+    }
+}
+
+struct Work<J> {
+    pending: Option<J>,
+    running: Option<Cancellation>,
     closed: bool,
 }
 
-#[derive(Default)]
-struct Mailbox {
-    state: Mutex<Work>,
+struct Mailbox<J> {
+    state: Mutex<Work<J>>,
     ready: Condvar,
 }
 
-struct SearchWorker {
-    mailbox: Arc<Mailbox>,
+struct LatestWorker<J: Job> {
+    mailbox: Arc<Mailbox<J>>,
     thread: Option<JoinHandle<()>>,
 }
 
-impl SearchWorker {
+type SearchWorker = LatestWorker<SearchJob>;
+
+impl LatestWorker<SearchJob> {
     fn start(events: EventQueue) -> io::Result<Self> {
         Self::with_runner(events, SearchJob::run)
     }
@@ -158,42 +192,59 @@ impl SearchWorker {
         events: EventQueue,
         run: impl Fn(SearchJob) -> Option<SearchResult> + Send + 'static,
     ) -> io::Result<Self> {
-        let mailbox = Arc::new(Mailbox::default());
+        Self::spawn("vex-search", events, move |job| {
+            run(job).map(BackgroundEvent::Search)
+        })
+    }
+}
+
+impl<J: Job> LatestWorker<J> {
+    fn spawn(
+        name: &'static str,
+        events: EventQueue,
+        mut run: impl FnMut(J) -> Option<BackgroundEvent> + Send + 'static,
+    ) -> io::Result<Self> {
+        let mailbox = Arc::new(Mailbox {
+            state: Mutex::new(Work::<J> {
+                pending: None,
+                running: None,
+                closed: false,
+            }),
+            ready: Condvar::new(),
+        });
         let shared = Arc::clone(&mailbox);
-        let thread = thread::Builder::new()
-            .name("vex-search".into())
-            .spawn(move || {
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    loop {
-                        let job = {
-                            let mut state = shared.state.lock().unwrap();
-                            while state.pending.is_none() && !state.closed {
-                                state = shared.ready.wait(state).unwrap();
-                            }
-                            if state.closed {
-                                break;
-                            }
-                            let job = state.pending.take().unwrap();
-                            state.running = Some(job.cancellation());
-                            job
-                        };
-                        if let Some(result) = run(job) {
-                            events.search(result);
+        let thread = thread::Builder::new().name(name.into()).spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                loop {
+                    let job = {
+                        let mut state = shared.state.lock().unwrap();
+                        while state.pending.is_none() && !state.closed {
+                            state = shared.ready.wait(state).unwrap();
                         }
-                        shared.state.lock().unwrap().running = None;
+                        if state.closed {
+                            break;
+                        }
+                        let job = state.pending.take().unwrap();
+                        state.running = Some(job.cancellation());
+                        job
+                    };
+                    if let Some(result) = run(job) {
+                        events.background(result);
                     }
-                }));
-                if result.is_err() {
-                    events.fail(io::Error::other("search worker panicked"));
+                    shared.state.lock().unwrap().running = None;
                 }
-            })?;
+            }));
+            if result.is_err() {
+                events.fail(io::Error::other(format!("{name} worker panicked")));
+            }
+        })?;
         Ok(Self {
             mailbox,
             thread: Some(thread),
         })
     }
 
-    fn submit(&self, job: SearchJob) {
+    fn submit(&self, job: J) {
         let mut state = self.mailbox.state.lock().unwrap();
         if let Some(running) = &state.running {
             running.cancel();
@@ -203,21 +254,23 @@ impl SearchWorker {
         }
         self.mailbox.ready.notify_one();
     }
+
+    fn stop(&self) {
+        let mut state = self.mailbox.state.lock().unwrap();
+        state.closed = true;
+        if let Some(running) = &state.running {
+            running.cancel();
+        }
+        if let Some(job) = state.pending.take() {
+            job.cancellation().cancel();
+        }
+        self.mailbox.ready.notify_all();
+    }
 }
 
-impl Drop for SearchWorker {
+impl<J: Job> Drop for LatestWorker<J> {
     fn drop(&mut self) {
-        {
-            let mut state = self.mailbox.state.lock().unwrap();
-            state.closed = true;
-            if let Some(running) = &state.running {
-                running.cancel();
-            }
-            if let Some(job) = state.pending.take() {
-                job.cancellation().cancel();
-            }
-            self.mailbox.ready.notify_all();
-        }
+        self.stop();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -228,6 +281,7 @@ impl Drop for SearchWorker {
 pub(crate) struct Runtime {
     pub events: EventQueue,
     search: Option<SearchWorker>,
+    syntax: Option<LatestWorker<SyntaxJob>>,
     input: Option<JoinHandle<()>>,
 }
 
@@ -235,6 +289,10 @@ impl Runtime {
     pub(crate) fn start() -> io::Result<Self> {
         let events = EventQueue::default();
         let search = SearchWorker::start(events.clone())?;
+        let mut syntax_state = SyntaxWorker::default();
+        let syntax = LatestWorker::spawn("vex-syntax", events.clone(), move |job| {
+            syntax_state.run(job).map(BackgroundEvent::Syntax)
+        })?;
         let queue = events.clone();
         let input = thread::Builder::new()
             .name("vex-input".into())
@@ -259,6 +317,7 @@ impl Runtime {
         Ok(Self {
             events,
             search: Some(search),
+            syntax: Some(syntax),
             input: Some(input),
         })
     }
@@ -266,12 +325,19 @@ impl Runtime {
     pub(crate) fn submit(&self, job: SearchJob) {
         self.search.as_ref().unwrap().submit(job);
     }
+
+    pub(crate) fn submit_syntax(&self, job: SyntaxJob) {
+        self.syntax.as_ref().unwrap().submit(job);
+    }
 }
 
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.events.close();
+        self.search.as_ref().unwrap().stop();
+        self.syntax.as_ref().unwrap().stop();
         self.search.take();
+        self.syntax.take();
         if let Some(thread) = self.input.take() {
             let _ = thread.join();
         }
@@ -303,8 +369,11 @@ mod tests {
             AppEvent::Terminal(event) => {
                 app.handle(event);
             }
-            AppEvent::Search(result) => {
+            AppEvent::Background(BackgroundEvent::Search(result)) => {
                 app.handle_search_result(result);
+            }
+            AppEvent::Background(BackgroundEvent::Syntax(result)) => {
+                app.editor.apply_syntax_result(result);
             }
             AppEvent::Failed(error) => panic!("{error}"),
         }
@@ -314,6 +383,98 @@ mod tests {
         editor.set_background_search(true);
         editor.execute("search_forward", 1).unwrap();
         editor
+    }
+
+    fn syntax_job(editor: &mut Editor) -> SyntaxJob {
+        editor.begin_syntax_frame();
+        editor.syntax_highlights(
+            vex_core::ByteOffset(0)..vex_core::ByteOffset(editor.document().text().len_bytes()),
+        );
+        editor.take_syntax_job().unwrap()
+    }
+
+    #[test]
+    fn services_keep_independent_latest_completions_and_alternate_when_ready() {
+        let events = EventQueue::default();
+        for _ in 0..INPUT_CAPACITY {
+            events.terminal(key(KeyCode::Char('x')));
+        }
+        let mut editor = Editor::new(Document::from("fn main() {}\n"));
+        editor.set_language(Some(vex_editor::Language::Rust));
+        editor.set_background_syntax(true);
+        let mut syntax = SyntaxWorker::default();
+        events.background(BackgroundEvent::Syntax(
+            syntax.run(syntax_job(&mut editor)).unwrap(),
+        ));
+        editor.set_language(Some(vex_editor::Language::Rust));
+        events.background(BackgroundEvent::Syntax(
+            syntax.run(syntax_job(&mut editor)).unwrap(),
+        ));
+        let mut search = searching();
+        search.update_search("last").unwrap();
+        events.background(BackgroundEvent::Search(
+            search.take_search_job().unwrap().run().unwrap(),
+        ));
+        assert!(matches!(
+            events.next(Duration::ZERO, true),
+            Some(AppEvent::Background(BackgroundEvent::Search(_)))
+        ));
+        // Replenishing search cannot starve syntax, or overwrite its latest result.
+        search.update_search("last").unwrap();
+        events.background(BackgroundEvent::Search(
+            search.take_search_job().unwrap().run().unwrap(),
+        ));
+        let Some(AppEvent::Background(BackgroundEvent::Syntax(result))) =
+            events.next(Duration::ZERO, true)
+        else {
+            panic!("syntax completion was lost or starved");
+        };
+        assert!(editor.apply_syntax_result(result));
+        assert!(matches!(
+            events.next(Duration::ZERO, true),
+            Some(AppEvent::Background(BackgroundEvent::Search(_)))
+        ));
+        assert!(events.next(Duration::ZERO, true).is_none());
+        assert_eq!(events.0.state.lock().unwrap().input.len(), INPUT_CAPACITY);
+    }
+
+    #[test]
+    fn syntax_wakes_the_ui_while_search_is_still_running() {
+        let events = EventQueue::default();
+        let (started, observed) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let search = SearchWorker::with_runner(events.clone(), move |job| {
+            started.send(()).unwrap();
+            gate.recv_timeout(Duration::from_secs(3)).unwrap();
+            job.run()
+        })
+        .unwrap();
+        let mut editor = searching();
+        editor.update_search("last").unwrap();
+        search.submit(editor.take_search_job().unwrap());
+        observed.recv_timeout(Duration::from_secs(3)).unwrap();
+        editor.set_language(Some(vex_editor::Language::Rust));
+        editor.set_background_syntax(true);
+        let mut state = SyntaxWorker::default();
+        let syntax = LatestWorker::spawn("test-syntax", events.clone(), move |job| {
+            state.run(job).map(BackgroundEvent::Syntax)
+        })
+        .unwrap();
+        syntax.submit(syntax_job(&mut editor));
+        let Some(AppEvent::Background(BackgroundEvent::Syntax(result))) =
+            events.next(Duration::from_secs(3), true)
+        else {
+            panic!("syntax must complete independently of search");
+        };
+        assert!(editor.apply_syntax_result(result));
+        assert!(editor.search_pending());
+        release.send(()).unwrap();
+        let Some(AppEvent::Background(BackgroundEvent::Search(result))) =
+            events.next(Duration::from_secs(3), true)
+        else {
+            panic!("search completion missing");
+        };
+        editor.apply_search_result(result).unwrap();
     }
 
     #[test]
@@ -326,7 +487,9 @@ mod tests {
         let mut editor = searching();
         editor.update_search("last").unwrap();
         worker.submit(editor.take_search_job().unwrap());
-        let Some(AppEvent::Search(result)) = events.next(Duration::from_secs(3), true) else {
+        let Some(AppEvent::Background(BackgroundEvent::Search(result))) =
+            events.next(Duration::from_secs(3), true)
+        else {
             panic!("completion must wake an idle UI even with full input");
         };
         assert_eq!(
@@ -400,15 +563,13 @@ mod tests {
             worker.submit(job);
         }
         assert!(first.is_cancelled());
-        assert!(
-            superseded[..99]
-                .iter()
-                .all(SearchCancellation::is_cancelled)
-        );
+        assert!(superseded[..99].iter().all(Cancellation::is_cancelled));
         assert!(!superseded[99].is_cancelled());
         assert!(worker.mailbox.state.lock().unwrap().pending.is_some());
         release.send(()).unwrap();
-        let Some(AppEvent::Search(result)) = events.next(Duration::from_secs(3), false) else {
+        let Some(AppEvent::Background(BackgroundEvent::Search(result))) =
+            events.next(Duration::from_secs(3), false)
+        else {
             panic!("missing latest result");
         };
         assert_eq!(
@@ -468,7 +629,7 @@ mod tests {
         assert_eq!(app.size(), (60, 10));
         assert!(events.next(Duration::ZERO, true).is_none());
         assert_eq!(app.editor.document().text(), "x cat");
-        events.search(result);
+        events.background(BackgroundEvent::Search(result));
         while let Some(event) = events.next(Duration::ZERO, app.editor.search_waiting()) {
             deliver(&mut app, event);
         }
@@ -487,12 +648,14 @@ mod tests {
         let result = app.editor.take_search_job().unwrap().run().unwrap();
         app.handle(key(KeyCode::Enter));
         let events = EventQueue::default();
-        events.search(result);
+        events.background(BackgroundEvent::Search(result));
         events.terminal(key(KeyCode::Esc));
         deliver(&mut app, events.next(Duration::ZERO, true).unwrap());
         assert!(!app.editor.search_waiting());
         assert_eq!(app.editor.search_direction(), None);
-        let Some(AppEvent::Search(result)) = events.next(Duration::ZERO, false) else {
+        let Some(AppEvent::Background(BackgroundEvent::Search(result))) =
+            events.next(Duration::ZERO, false)
+        else {
             panic!("queued result");
         };
         assert!(!app.handle_search_result(result));

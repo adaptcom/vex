@@ -14,20 +14,22 @@
 //! # Ok::<(), vex_editor::Error>(())
 //! ```
 
-use std::{cell::RefCell, num::NonZeroUsize, ops::Range, sync::Arc};
+use std::{cell::RefCell, num::NonZeroUsize};
 use vex_core::layout::LayoutCache;
-use vex_core::{ByteOffset, CharOffset, Document, Selection, SelectionSet, grapheme, motion};
-use vex_syntax::Syntax;
+use vex_core::{CharOffset, Document, Selection, SelectionSet, grapheme, motion};
 
+pub mod background;
 pub mod commands;
 mod error;
 mod keymap;
 mod search;
+mod syntax;
 
 pub use commands::{Command, CommandContext};
 pub use error::Error;
 pub use keymap::{Binding, Dispatch, Key, KeyHandler, Keymap};
 pub use search::{SearchCancellation, SearchCompletion, SearchJob, SearchResult, SearchStatus};
+pub use syntax::{SyntaxJob, SyntaxResult, SyntaxWorker};
 pub use vex_core::search::Direction as SearchDirection;
 pub use vex_syntax::{Highlight, HighlightSpan, Language};
 
@@ -50,7 +52,7 @@ pub struct Editor {
     preferred_columns: Option<Vec<usize>>,
     tab_width: NonZeroUsize,
     layout: RefCell<LayoutCache>,
-    syntax: RefCell<Option<Syntax>>,
+    syntax: RefCell<syntax::Highlighting>,
     search: search::Search,
 }
 
@@ -139,25 +141,6 @@ impl Editor {
         self.preferred_columns = None;
     }
 
-    /// Select a bundled syntax language, or None for plain text. This resets
-    /// derived syntax state without changing the document or undo history.
-    pub fn set_language(&mut self, language: Option<Language>) {
-        *self.syntax.get_mut() = language.map(|language| Syntax::new(language, &self.document));
-    }
-
-    pub fn language(&self) -> Option<Language> {
-        self.syntax.borrow().as_ref().map(Syntax::language)
-    }
-
-    /// Syntax highlights for visible bytes. Parsing is deferred until needed;
-    /// unchanged ranges reuse cached spans. Empty results mean plain text.
-    pub fn syntax_highlights(&self, range: Range<ByteOffset>) -> Arc<[HighlightSpan]> {
-        match self.syntax.borrow_mut().as_mut() {
-            Some(syntax) => syntax.highlights(&self.document, range),
-            None => Arc::from([]),
-        }
-    }
-
     /// Cached display column, using the same width conventions as vertical motion.
     /// Filling derived layout data does not mutate the document or selections.
     pub fn display_column(&self, position: CharOffset) -> Result<usize, vex_core::Error> {
@@ -181,9 +164,7 @@ impl Editor {
     fn synchronize_caches(&mut self) {
         self.search.invalidate();
         self.layout.get_mut().synchronize(&self.document);
-        if let Some(syntax) = self.syntax.get_mut() {
-            syntax.synchronize(&self.document);
-        }
+        self.syntax.get_mut().synchronize(&self.document);
     }
 
     // Every text command goes through here, including each event in a batch.
@@ -275,6 +256,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vex_core::ByteOffset;
 
     #[test]
     fn external_selections_snap_outward_and_invalid_ones_do_not_mutate_state() {

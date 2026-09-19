@@ -95,8 +95,8 @@ take precedence over syntax colors. See [syntax architecture and limits](syntax.
 encoding. It has no UI framework or Ratatui dependency:
 
 - `input` converts terminal keys to editor keys and owns prompt editing.
-- `events` combines terminal input and search completions in a wakeable inbox,
-  with one input thread and one persistent search worker.
+- `events` combines terminal input and typed background completions in a wakeable
+  inbox, with one input thread and independent search and syntax workers.
 - `app` combines editor state, key dispatch, file state, prompt, and viewport.
 - `render` paints visible logical lines, selections, line numbers, status, and
   the prompt into a cell grid. It borrows rope slices where possible. Horizontal
@@ -130,16 +130,23 @@ SIGHUP handlers notify the event loop to unwind through the same cleanup.
 ## Event queue and background work
 
 The main thread owns `App`, editing commands, and drawing. One producer thread
-exclusively owns Crossterm's `poll` / `read` calls. A second thread compiles and
-executes search jobs over immutable rope snapshots. Both notify the same inbox,
-so a search result is handled even when no new key arrives. No async runtime or
-shared mutable editor lock is required.
+exclusively owns Crossterm's `poll` / `read` calls. Independent persistent workers
+execute search and syntax jobs over immutable rope snapshots. All producers
+notify the same inbox, so completions are handled even when no new key arrives.
+No async runtime or shared mutable editor lock is required.
 
 The inbox holds up to 256 terminal events and applies backpressure to the input
-producer. Search has a separate completion slot, so full input cannot block a
-result needed by queued editing keys. There is at most one running and one
-pending search job; each new query replaces pending work and cancels older work.
-Only obsolete search completions may be replaced. Input keys stay in FIFO order.
+producer. Search and syntax each have a separate latest-completion slot, so they
+cannot overwrite each other and full input cannot block a needed result. Ready
+services alternate to prevent starvation. Each service uses the same worker
+mailbox implementation: at most one running and one replaceable pending job,
+with cooperative cancellation of older work. Input keys stay in FIFO order.
+
+`BackgroundEvent` carries typed service results. Service-specific validation and
+state updates happen on the main thread. Future Git status snapshots can use a
+similar latest-result policy; LSP responses and ordered protocol messages need
+their own FIFO delivery policy. Adding an event variant does not imply that
+every service may discard messages. LSP and Git integration are not implemented.
 
 An early Enter or `n` / `N` may depend on an unfinished search. The inbox then
 holds later keys until the destination is ready, preserving sequences such as
@@ -147,12 +154,12 @@ holds later keys until the destination is ready, preserving sequences such as
 cancel when next in key order, and ready completions take priority over further
 ordinary input. This avoids applying edits to an unresolved search position.
 
-Closing the runtime wakes blocked producers, cancels queued/running search, and
-joins both threads before restoring terminal state. Input errors and worker
+Closing the runtime wakes blocked producers, cancels queued/running jobs for
+both services, and joins all three threads before restoring terminal state. Input errors and worker
 failures wake the main loop and unwind through cleanup. Input polling has a
 50 ms shutdown check; the main inbox wait checks signal flags at most every
-100 ms while idle. Search cancellation is cooperative; details and remaining
-synchronous work are documented in [search](search.md).
+100 ms while idle. Cancellation is cooperative; service limits and remaining
+synchronous work are documented in [search](search.md) and [syntax](syntax.md).
 
 ## Files and current limits
 
@@ -173,8 +180,8 @@ concurrent writers, and the parent directory is not synced for crash durability.
 This version has one buffer and view. File I/O is synchronous. Rendering stops
 at the right edge. Cached display columns avoid repeatedly scanning hidden line
 prefixes; cold queries and reindexing after an early edit can still be expensive.
-Syntax currently supports Rust, with size and work budgets for synchronous parsing.
-Clipboard integration, mouse input, search, and LSP are not implemented.
+Syntax currently supports Rust, with size and work budgets on a background worker.
+Clipboard integration, mouse input, and LSP are not implemented.
 
 ## Layout cache
 

@@ -221,16 +221,19 @@ def main():
         rust_path.write_text('fn main() { let message = "界"; }\n')
         with Terminal([binary, str(rust_path)]) as terminal:
             terminal.start()
-            # The keyword's foreground color must reach the actual terminal.
+            # Completion must wake an idle terminal without another input event.
             terminal.expect(b"\x1b[38;5;13m")
             mark = terminal.send(b"i")
             terminal.expect(b"INS", mark)
             mark = terminal.send(b"//\x1b")
             terminal.expect(b"NOR", mark)
-            terminal.send(b"u\x11")
+            terminal.expect(b"\x1b[38;5;8m", mark)  # Entire line becomes a comment.
+            mark = terminal.send(b"u")
+            terminal.expect(b"\x1b[38;5;13m", mark)  # Undo produces fresh keywords.
+            terminal.send(b"\x11")
             terminal.finish()
             assert rust_path.read_text() == 'fn main() { let message = "界"; }\n'
-        print("PASS: Rust syntax colors, editing, undo, and clean quit")
+        print("PASS: idle background syntax completion, comment edit, undo, and clean quit")
 
         search_path = Path(directory) / "search.txt"
         search_path.write_text("start cat one\nmid cat two\nend cat three\n")

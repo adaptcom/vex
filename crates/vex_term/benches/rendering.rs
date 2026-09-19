@@ -194,11 +194,51 @@ fn rust_syntax(c: &mut Criterion) {
     group.finish();
 }
 
+fn background_syntax(c: &mut Criterion) {
+    let mut group = c.benchmark_group("background_syntax");
+    let size = (120, 40);
+    for kib in [64usize, 256] {
+        let pattern = "fn demo(value: u32) -> u32 { /* note */ value + 42 }\n";
+        let document = Document::from(pattern.repeat((kib << 10).div_ceil(pattern.len())).as_str());
+        let label = format!("{kib}KiB");
+        group.bench_function(BenchmarkId::new("first_frame", &label), |b| {
+            b.iter(|| {
+                let mut app = App::from_document(Document::from(document.text().clone()), size);
+                app.editor.set_language(Some(Language::Rust));
+                app.editor.set_background_syntax(true);
+                let mut renderer = Renderer::default();
+                black_box(paint(&mut app, &mut renderer, size));
+                black_box(app.editor.take_syntax_job().unwrap());
+            });
+        });
+        let mut app = App::from_document(Document::from(document.text().clone()), size);
+        app.editor.set_language(Some(Language::Rust));
+        app.editor.set_background_syntax(true);
+        app.editor.execute("insert_mode", 1).unwrap();
+        let mut renderer = Renderer::default();
+        paint(&mut app, &mut renderer, size);
+        black_box(app.editor.take_syntax_job().unwrap());
+        group.bench_function(BenchmarkId::new("type_8_schedule_undo", &label), |b| {
+            b.iter(|| {
+                for _ in 0..8 {
+                    app.editor.insert_text("z").unwrap();
+                }
+                black_box(paint(&mut app, &mut renderer, size));
+                black_box(app.editor.take_syntax_job().unwrap());
+                app.editor.execute("undo", 1).unwrap();
+                black_box(paint(&mut app, &mut renderer, size));
+                black_box(app.editor.take_syntax_job().unwrap());
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = rendering, long_lines, rust_syntax
+    targets = rendering, long_lines, rust_syntax, background_syntax
 }
 criterion_main!(benches);

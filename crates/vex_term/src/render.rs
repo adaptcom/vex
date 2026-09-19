@@ -29,6 +29,7 @@ pub fn paint(
     viewport: &mut Viewport,
     chrome: Chrome<'_>,
 ) -> Result<(), vex_core::Error> {
+    editor.begin_syntax_frame();
     let width = usize::from(frame.width());
     let height = usize::from(frame.height());
     if width == 0 || height == 0 {
