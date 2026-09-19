@@ -113,7 +113,7 @@ fn long_lines(c: &mut Criterion) {
                                 app.editor.insert_text("z").unwrap();
                             }
                             black_box(paint(&mut app, &mut renderer, size));
-                            app.editor.execute("undo", count).unwrap();
+                            app.editor.execute("undo", 1).unwrap();
                             black_box(paint(&mut app, &mut renderer, size));
                         });
                     },

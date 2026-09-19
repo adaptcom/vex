@@ -57,7 +57,7 @@ fn replace_ranges(editor: &mut Editor, ranges: &SelectionSet, text: &str) -> Res
     let transaction = editor.document.replace_selections(ranges, text)?;
     let after = transaction.map_selections(&editor.selections, Affinity::After)?;
     let transaction = transaction.with_selections(after)?;
-    editor.apply(transaction)?;
+    editor.apply(transaction, false)?;
     editor.preferred_columns = None;
     Ok(())
 }
@@ -90,6 +90,7 @@ fn move_to(
     destination: impl Fn(&Editor, Selection, usize) -> Result<CharOffset, Error>,
 ) -> Result<(), Error> {
     let editor = &mut *ctx.editor;
+    editor.finish_undo_group();
     let ranges = editor
         .selections
         .ranges()
@@ -117,6 +118,7 @@ fn position(editor: &Editor, selection: Selection) -> Result<CharOffset, Error> 
 
 fn vertical(ctx: &mut CommandContext<'_>, down: bool) -> Result<(), Error> {
     let editor = &mut *ctx.editor;
+    editor.finish_undo_group();
     let text = editor.document.text();
     let mut columns = Vec::with_capacity(editor.selections.ranges().len());
     let mut ranges = Vec::with_capacity(editor.selections.ranges().len());
@@ -155,6 +157,7 @@ fn word(
     movement: fn(&vex_core::Rope, Selection, usize) -> Result<Selection, vex_core::Error>,
 ) -> Result<(), Error> {
     let editor = &mut *ctx.editor;
+    editor.finish_undo_group();
     let text = editor.document.text();
     let ranges = editor
         .selections
@@ -182,6 +185,7 @@ fn word(
 }
 
 fn enter_insert(editor: &mut Editor, append: bool) -> Result<(), Error> {
+    editor.finish_undo_group();
     let ranges = editor
         .selections
         .ranges()
@@ -224,6 +228,17 @@ fn require_insert(editor: &Editor) -> Result<(), Error> {
         });
     }
     Ok(())
+}
+
+fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
+    let editor = &mut *ctx.editor;
+    require_insert(editor)?;
+    let text = ctx.text.ok_or(Error::MissingText)?;
+    let transaction = editor
+        .document
+        .replace_selections(&editor.selections, text)?;
+    editor.apply(transaction, grouped)?;
+    normalize(editor)
 }
 
 commands! {
@@ -278,6 +293,7 @@ commands! {
     /// Select logical lines from each cursor, including line endings; accepts a count.
     fn select_line(ctx) {
         let editor = &mut *ctx.editor;
+        editor.finish_undo_group();
         let text = editor.document.text();
         let ranges = editor.selections.ranges().iter().map(|&selection| {
             let pos = position(editor, selection)?;
@@ -295,6 +311,7 @@ commands! {
 
     /// Toggle select mode; movements in select mode retain the anchor grapheme.
     fn select_mode(ctx) {
+        ctx.editor.finish_undo_group();
         ctx.editor.mode = if ctx.editor.mode == Mode::Select { Mode::Normal } else { Mode::Select };
         normalize(ctx.editor)
     }
@@ -302,6 +319,7 @@ commands! {
     /// Enter normal mode. Leaving insert mode places the cursor on the preceding grapheme in the same line.
     fn normal_mode(ctx) {
         let editor = &mut *ctx.editor;
+        editor.finish_undo_group();
         if editor.mode == Mode::Insert {
             let text = editor.document.text();
             let ranges = editor.selections.ranges().iter().map(|selection| {
@@ -321,41 +339,38 @@ commands! {
     /// Enter insert mode with a caret after every selection.
     fn append_mode(ctx) { enter_insert(ctx.editor, true) }
 
-    /// Insert the context's text at all carets as one undo step; requires insert mode.
-    fn insert_text(ctx) {
-        let editor = &mut *ctx.editor;
-        require_insert(editor)?;
-        let text = ctx.text.ok_or(Error::MissingText)?;
-        let transaction = editor.document.replace_selections(&editor.selections, text)?;
-        editor.apply(transaction)?;
-        normalize(editor)
-    }
+    /// Insert the context's text at all carets, continuing the typing undo group; requires insert mode.
+    fn insert_text(ctx) { insert(ctx, true) }
+
+    /// Insert the context's pasted text at all carets as a separate undo step; requires insert mode.
+    fn insert_paste(ctx) { insert(ctx, false) }
 
     /// Delete selected text atomically, leaving normal-mode cursors at the edit locations.
     fn delete_selection(ctx) {
         let editor = &mut *ctx.editor;
         let transaction = editor.document.replace_selections(&editor.selections, "")?;
-        editor.apply(transaction)?;
+        editor.apply(transaction, false)?;
         editor.mode = Mode::Normal;
         normalize(editor)
     }
 
-    /// Delete selected text and enter insert mode at all edit locations.
+    /// Delete selected text and enter insert mode; the deletion and subsequent typing share one undo step.
     fn change_selection(ctx) {
         let editor = &mut *ctx.editor;
+        editor.finish_undo_group();
         let transaction = editor.document.replace_selections(&editor.selections, "")?;
-        editor.apply(transaction)?;
+        editor.apply(transaction, true)?;
         editor.mode = Mode::Insert;
         normalize(editor)
     }
 
-    /// Delete preceding graphemes at all insert carets; accepts a count.
+    /// Delete preceding graphemes at all insert carets as a separate undo step; accepts a count.
     fn delete_backward(ctx) { erase(ctx, true) }
 
-    /// Delete following graphemes at all insert carets; accepts a count.
+    /// Delete following graphemes at all insert carets as a separate undo step; accepts a count.
     fn delete_forward(ctx) { erase(ctx, false) }
 
-    /// Undo transactions and restore their selections; accepts a count.
+    /// Undo edit groups and restore their selections; accepts a count of groups.
     fn undo(ctx) {
         for _ in 0..ctx.count.get() {
             if !ctx.editor.document.undo(&mut ctx.editor.selections)? { break; }
@@ -364,7 +379,7 @@ commands! {
         normalize(ctx.editor)
     }
 
-    /// Redo transactions and restore their selections; accepts a count.
+    /// Redo edit groups and restore their selections; accepts a count of groups.
     fn redo(ctx) {
         for _ in 0..ctx.count.get() {
             if !ctx.editor.document.redo(&mut ctx.editor.selections)? { break; }
@@ -522,5 +537,120 @@ mod tests {
         editor.execute("undo", 1).unwrap();
         assert_eq!(editor.document().text(), "ab");
         assert_eq!(editor.selections().ranges(), &[range(0, 0), range(2, 2)]);
+    }
+
+    #[test]
+    fn directly_called_movements_and_mode_commands_separate_typing() {
+        let boundaries = [
+            move_left,
+            move_right,
+            move_up,
+            move_down,
+            move_word_forward,
+            move_word_backward,
+            move_word_end,
+            goto_line_start,
+            goto_line_end,
+            goto_file_start,
+            goto_file_end,
+            select_line,
+            select_mode,
+            normal_mode,
+            insert_mode,
+            append_mode,
+        ];
+        for boundary in boundaries {
+            let mut editor = Editor::new(Document::from("one\ntwo"));
+            insert_mode(&mut CommandContext::new(&mut editor)).unwrap();
+            editor.insert_text("a").unwrap();
+            editor.insert_text("b").unwrap();
+            let before = editor.document().snapshot();
+            boundary(&mut CommandContext::new(&mut editor)).unwrap();
+            if editor.mode() != Mode::Insert {
+                insert_mode(&mut CommandContext::new(&mut editor)).unwrap();
+            }
+            let selections = editor.selections().clone();
+            editor.insert_text("c").unwrap();
+            editor.insert_text("d").unwrap();
+            assert_eq!(editor.document().undo_depth(), 2);
+            undo(&mut CommandContext::new(&mut editor)).unwrap();
+            assert!(editor.document().text().is_instance(before.text()));
+            assert_eq!(editor.selections(), &selections);
+        }
+    }
+
+    #[test]
+    fn changing_multiple_selections_and_typing_is_one_undo_group() {
+        let mut editor = Editor::new(Document::from("one\ntwo"));
+        let before = SelectionSet::new(vec![range(3, 0), range(4, 7)], 1).unwrap();
+        editor.set_selections(before.clone()).unwrap();
+        change_selection(&mut CommandContext::new(&mut editor)).unwrap();
+        for text in ["e", "\u{301}", "🦀"] {
+            editor.insert_text(text).unwrap();
+        }
+        assert_eq!(editor.document().text(), "e\u{301}🦀\ne\u{301}🦀");
+        assert_eq!(editor.document().undo_depth(), 1);
+        normal_mode(&mut CommandContext::new(&mut editor)).unwrap();
+        undo(&mut CommandContext::new(&mut editor)).unwrap();
+        assert_eq!(editor.document().text(), "one\ntwo");
+        assert_eq!(editor.selections(), &before);
+        redo(&mut CommandContext::new(&mut editor)).unwrap();
+        assert_eq!(editor.document().text(), "e\u{301}🦀\ne\u{301}🦀");
+        assert_eq!(editor.selections().ranges(), &[range(3, 4), range(7, 7)]);
+        assert_eq!(editor.selections().primary_index(), 1);
+    }
+
+    #[test]
+    fn backspace_and_delete_are_separate_from_typing_on_both_sides() {
+        for command in [delete_backward, delete_forward] {
+            let mut editor = Editor::new(Document::from("xyz"));
+            insert_mode(&mut CommandContext::new(&mut editor)).unwrap();
+            editor.insert_text("a").unwrap();
+            editor.insert_text("b").unwrap();
+            command(&mut CommandContext::new(&mut editor)).unwrap();
+            let deleted = editor.document().snapshot();
+            editor.insert_text("c").unwrap();
+            editor.insert_text("d").unwrap();
+            assert_eq!(editor.document().undo_depth(), 3);
+            editor.execute("undo", 1).unwrap();
+            assert!(editor.document().text().is_instance(deleted.text()));
+            editor.execute("undo", 1).unwrap();
+            assert_eq!(editor.document().text(), "abxyz");
+            editor.execute("undo", 1).unwrap();
+            assert_eq!(editor.document().text(), "xyz");
+        }
+    }
+
+    #[test]
+    fn paste_separates_typing_and_restores_multiple_carets() {
+        let mut editor = Editor::new(Document::from("a\nb"));
+        insert_mode(&mut CommandContext::new(&mut editor)).unwrap();
+        editor
+            .set_selections(SelectionSet::new(vec![range(0, 0), range(2, 2)], 1).unwrap())
+            .unwrap();
+        editor.insert_text("x").unwrap();
+        editor.insert_text("y").unwrap();
+        let before = editor.document().snapshot();
+        let before_carets = editor.selections().clone();
+        editor.insert_paste("e\u{301}🦀\r\n").unwrap();
+        let pasted = editor.document().snapshot();
+        let pasted_carets = editor.selections().clone();
+        editor.insert_text("z").unwrap();
+        editor.insert_text("!").unwrap();
+        assert_eq!(editor.document().undo_depth(), 3);
+        editor.execute("undo", 1).unwrap();
+        assert!(editor.document().text().is_instance(pasted.text()));
+        assert_eq!(editor.selections(), &pasted_carets);
+        editor.execute("undo", 1).unwrap();
+        assert!(editor.document().text().is_instance(before.text()));
+        assert_eq!(editor.selections(), &before_carets);
+        editor.execute("redo", 1).unwrap();
+        assert_eq!(editor.selections(), &pasted_carets);
+        // Editing after undo abandons the remaining redo branch.
+        editor.set_selections(before_carets).unwrap();
+        editor.insert_text("new").unwrap();
+        assert_eq!(editor.document().redo_depth(), 0);
+        editor.execute("undo", 1).unwrap();
+        assert!(editor.document().text().is_instance(pasted.text()));
     }
 }

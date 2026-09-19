@@ -345,6 +345,30 @@ mod tests {
     }
 
     #[test]
+    fn typing_sessions_and_counts_operate_on_undo_groups() {
+        let mut editor = Editor::new(Document::default());
+        let mut keys = KeyHandler::default();
+        press(&mut keys, &mut editor, "ihello");
+        keys.handle(&mut editor, Key::Escape).unwrap();
+        press(&mut keys, &mut editor, "a world");
+        keys.handle(&mut editor, Key::Escape).unwrap();
+        assert_eq!(editor.document().text(), "hello world");
+        assert_eq!(editor.document().undo_depth(), 2);
+        press(&mut keys, &mut editor, "u");
+        assert_eq!(editor.document().text(), "hello");
+        press(&mut keys, &mut editor, "u2U");
+        assert_eq!(editor.document().text(), "hello world");
+        press(&mut keys, &mut editor, "2u");
+        assert_eq!(editor.document().text(), "");
+        // Typing on a new branch cannot keep the abandoned redo groups.
+        press(&mut keys, &mut editor, "ifresh");
+        keys.handle(&mut editor, Key::Escape).unwrap();
+        assert_eq!(editor.document().redo_depth(), 0);
+        press(&mut keys, &mut editor, "u");
+        assert_eq!(editor.document().text(), "");
+    }
+
+    #[test]
     fn custom_bindings_resolve_to_the_same_documented_function() {
         let mut map = Keymap::default();
         map.bind(Mode::Normal, vec![Key::Char('z')], "move_word_forward")

@@ -21,6 +21,7 @@ pub(crate) struct History {
     done: VecDeque<Entry>,
     undone: Vec<Entry>,
     limit: usize,
+    open_group: bool,
 }
 
 impl Default for History {
@@ -29,14 +30,27 @@ impl Default for History {
             done: VecDeque::new(),
             undone: Vec::new(),
             limit: 1_000,
+            open_group: false,
         }
     }
 }
 
 impl History {
-    pub fn record(&mut self, before: State, after: State, change: ChangeExtent) {
+    pub fn record(&mut self, before: State, after: State, change: ChangeExtent, grouped: bool) {
         self.undone.clear();
-        if self.limit != 0 {
+        if grouped && self.open_group {
+            let entry = self.done.back_mut().expect("open group has an entry");
+            // Keep only the group's endpoints. A prefix/suffix survives the
+            // whole group only if it survives both the old group and this edit.
+            let suffix = (entry.before.text.len_chars() - entry.change.old_end.0)
+                .min(before.text.len_chars() - change.old_end.0);
+            entry.change = ChangeExtent {
+                start: entry.change.start.min(change.start),
+                old_end: crate::CharOffset(entry.before.text.len_chars() - suffix),
+                new_end: crate::CharOffset(after.text.len_chars() - suffix),
+            };
+            entry.after = after;
+        } else if self.limit != 0 {
             self.done.push_back(Entry {
                 before,
                 after,
@@ -46,6 +60,11 @@ impl History {
                 self.done.pop_front();
             }
         }
+        self.open_group = grouped && self.limit != 0;
+    }
+
+    pub fn finish_group(&mut self) {
+        self.open_group = false;
     }
 
     pub fn undo(&mut self) -> Option<(State, ChangeExtent)> {
@@ -71,6 +90,7 @@ impl History {
     }
 
     pub fn set_limit(&mut self, limit: usize) {
+        self.finish_group();
         self.limit = limit;
         self.undone.clear();
         while self.done.len() > limit {

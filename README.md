@@ -97,18 +97,21 @@ text. Document identities prevent accidental application to another buffer.
   result selections can override it. `replace_selections` produces one caret
   after each replacement, including adjacent replacements. Mapping one position
   uses a binary search over edits and never scans the text.
-- Each nonempty transaction is one undo step. Undo/redo restores the caller's
-  selections and always advances the document revision. New edits discard redo.
+- `Document::apply` makes each nonempty transaction a separate undo step.
+  `apply_grouped` joins consecutive edits until `finish_undo_group`, a standalone
+  edit, or undo/redo. Each edit still advances the revision. Undo/redo restores
+  the group's text and selections and advances the revision. New edits discard redo.
   An empty insertion is a no-op; replacing text with identical text still counts
   as an edit. Empty transactions may change explicit selections without adding
   history or invalidating redo.
-- History uses shared rope snapshots and retains up to 1,000 transactions by
-  default. The configurable limit counts entries, not bytes. Setting it to zero
-  disables retained history; changing it clears redo and trims old undo entries.
+- History uses shared rope snapshots and retains up to 1,000 undo steps by
+  default. A group retains its initial and final states, releasing intermediate
+  snapshots. The configurable limit counts groups, not bytes. Setting it to zero
+  disables retained history; changing it closes the group, clears redo, and trims
+  old undo entries.
 - Selections are owned by the caller, so future views can have independent
   cursors. The editor currently has one active view; it will need to map inactive views through edits and
-  undo/redo. Insert-session grouping, history branches, and a byte-based history
-  budget are not implemented yet.
+  undo/redo. History branches and a byte-based history budget are not implemented yet.
 
 ## Commands and keybindings
 
@@ -142,7 +145,8 @@ bindings are rejected, so dispatch needs no timeout. Escape cancels pending inpu
 and enters normal mode. Digits build a repeat count outside insert mode; overflow
 returns an error and clears the count. An unbound sequence also clears pending
 input. Insert mode treats unbound printable characters as text; Enter inserts LF
-and Tab inserts a literal tab. Whole text/paste events can call `Editor::insert_text`.
+and Tab inserts a literal tab. Text events call `Editor::insert_text`; paste events
+call `Editor::insert_paste` to get a separate undo step.
 
 The implemented commands cover `hjkl`, arrows, `w`/`b`/`e`, line/document bounds,
 line selection, mode changes, deletion/change, insertion, backspace, and undo/redo.
@@ -161,17 +165,20 @@ cargo run -p vex_editor --example command_reference --locked > docs/commands.md
 This is an initial set of bindings inspired by Helix, without a compatibility
 guarantee. Word categories currently group Unicode letters/numbers and underscore,
 punctuation, and whitespace; language-specific segmentation is not implemented.
-Each text event is an undo step; insert-session grouping is still pending. Vertical
-movement and rendering share a bounded, lazy display-column cache. Edits retain
+Consecutive typing, including Enter and Tab, shares one undo group. Movement,
+mode/selection changes, save attempts, paste, and explicit deletions separate
+groups. `c` groups its deletion with the following replacement text. Undo/redo
+counts refer to groups. Integrations call `Editor::finish_undo_group` at savepoints.
+
+Vertical movement and rendering share a bounded, lazy display-column cache. Edits retain
 the unaffected prefix and shift indexes for unchanged later lines; undo/redo
 updates the same cache. The first visit to an unindexed prefix still scans it.
 Soft wrapping is not implemented yet.
 
 ## Next milestone
 
-The first interactive loop can open, select, edit, undo, and save. Search, pickers,
-Tree-sitter, and LSP follow. Insert-session undo grouping is the next improvement
-to the editing loop. Further layout work can address cold indexing and updates
-near the beginning of a huge line.
+The first interactive loop can open, select, edit, undo groups, and save. Incremental
+search is next, followed by registers, pickers, Tree-sitter, and LSP. Further layout
+work can address cold indexing and updates near the beginning of a huge line.
 
 See [the benchmark notes](docs/performance.md) for the initial performance baseline.

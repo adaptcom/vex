@@ -189,7 +189,8 @@ impl Document {
         transaction.with_selections(after)
     }
 
-    /// Apply all edits as one undo step. Validation completes before mutation.
+    /// Apply all edits as a separate undo step, closing any open group.
+    /// Validation completes before mutation.
     ///
     /// By default both selection endpoints follow inserted text. An explicit
     /// `Transaction::with_selections` overrides this. Returns whether edits were
@@ -199,6 +200,37 @@ impl Document {
         &mut self,
         transaction: Transaction,
         selections: &mut SelectionSet,
+    ) -> Result<bool, Error> {
+        self.apply_with_history(transaction, selections, false)
+    }
+
+    /// Apply edits to the open undo group, starting one if needed. A group stores
+    /// its initial text/selections and its latest result; intermediate snapshots
+    /// are released. Every nonempty transaction still advances the revision.
+    ///
+    /// Call [`Self::finish_undo_group`] before navigation, saving, or another
+    /// action that should separate edits. [`Self::apply`], undo, redo, and changing
+    /// the history limit also close groups. Validation and empty edits behave as
+    /// in `apply`; an empty transaction that changes selections closes the group.
+    pub fn apply_grouped(
+        &mut self,
+        transaction: Transaction,
+        selections: &mut SelectionSet,
+    ) -> Result<bool, Error> {
+        self.apply_with_history(transaction, selections, true)
+    }
+
+    /// End a group without changing text, selections, revision, or redo history.
+    /// The next grouped edit starts a new undo step. Repeated calls are harmless.
+    pub fn finish_undo_group(&mut self) {
+        self.history.finish_group();
+    }
+
+    fn apply_with_history(
+        &mut self,
+        transaction: Transaction,
+        selections: &mut SelectionSet,
+        grouped: bool,
     ) -> Result<bool, Error> {
         if transaction.document_id != self.id {
             return Err(Error::WrongDocument);
@@ -215,6 +247,9 @@ impl Document {
             None => transaction.map_selections(selections, Affinity::After)?,
         };
         if transaction.is_empty() {
+            if !grouped || *selections != after_selections {
+                self.finish_undo_group();
+            }
             *selections = after_selections;
             return Ok(false);
         }
@@ -246,7 +281,7 @@ impl Document {
             old_end,
             new_end: CharOffset(text.len_chars() - (self.text.len_chars() - old_end.0)),
         };
-        self.history.record(before, after, change);
+        self.history.record(before, after, change, grouped);
         self.change = change;
         self.text = text;
         self.revision = revision;
@@ -255,6 +290,7 @@ impl Document {
     }
 
     pub fn undo(&mut self, selections: &mut SelectionSet) -> Result<bool, Error> {
+        self.finish_undo_group();
         if self.history.undo_depth() == 0 {
             return Ok(false);
         }
@@ -268,6 +304,7 @@ impl Document {
     }
 
     pub fn redo(&mut self, selections: &mut SelectionSet) -> Result<bool, Error> {
+        self.finish_undo_group();
         if self.history.redo_depth() == 0 {
             return Ok(false);
         }
@@ -288,9 +325,10 @@ impl Document {
         self.history.redo_depth()
     }
 
-    /// Default: 1,000 transactions. Zero disables retained history. Changing the
-    /// limit discards redo and trims the oldest undo entries. This is an entry
-    /// limit, not a byte budget; large edits can still retain substantial memory.
+    /// Default: 1,000 undo steps (groups count as one). Zero disables retained
+    /// history. Changing the limit closes the group, discards redo, and trims the
+    /// oldest undo entries. This is an entry limit, not a byte budget; large edits
+    /// can still retain substantial memory.
     pub fn set_history_limit(&mut self, limit: usize) {
         self.history.set_limit(limit);
     }
@@ -333,6 +371,113 @@ mod tests {
     fn replace(document: &mut Document, selections: &mut SelectionSet, text: &str) {
         let transaction = document.replace_selections(selections, text).unwrap();
         document.apply(transaction, selections).unwrap();
+    }
+
+    fn type_text(document: &mut Document, selections: &mut SelectionSet, text: &str) {
+        let transaction = document.replace_selections(selections, text).unwrap();
+        document.apply_grouped(transaction, selections).unwrap();
+    }
+
+    #[test]
+    fn grouped_edits_restore_endpoint_snapshots_and_all_selections() {
+        let mut document = Document::from("one\ntwo");
+        let original = document.snapshot();
+        let before = SelectionSet::new(vec![range(0, 0), range(4, 4)], 1).unwrap();
+        let mut selections = before.clone();
+        for text in ["e", "\u{301}", "🦀", "\r\n"] {
+            type_text(&mut document, &mut selections, text);
+        }
+        let after = selections.clone();
+        let result = document.snapshot();
+        assert_eq!(result.text(), "e\u{301}🦀\r\none\ne\u{301}🦀\r\ntwo");
+        assert_eq!(document.undo_depth(), 1);
+        assert_eq!(document.revision().get(), 4);
+        document.undo(&mut selections).unwrap();
+        assert!(document.text().is_instance(original.text()));
+        assert_eq!(selections, before);
+        assert_eq!(document.revision().get(), 5);
+        document.redo(&mut selections).unwrap();
+        assert!(document.text().is_instance(result.text()));
+        assert_eq!(selections, after);
+        assert_eq!(document.revision().get(), 6);
+
+        // Redo closes the restored group. New typing must not extend it.
+        type_text(&mut document, &mut selections, "!");
+        assert_eq!(document.undo_depth(), 2);
+        document.undo(&mut selections).unwrap();
+        assert!(document.text().is_instance(result.text()));
+        document.undo(&mut selections).unwrap();
+        // A new branch starts its own group and discards both redo entries.
+        type_text(&mut document, &mut selections, "new");
+        assert_eq!(document.redo_depth(), 0);
+        document.undo(&mut selections).unwrap();
+        assert!(document.text().is_instance(original.text()));
+    }
+
+    #[test]
+    fn grouping_handles_noops_rejected_edits_and_explicit_boundaries() {
+        let mut document = Document::default();
+        let mut selections = SelectionSet::default();
+        let stale = document
+            .transaction([Edit::insert(CharOffset(0), "old")])
+            .unwrap();
+        type_text(&mut document, &mut selections, "a");
+        assert!(document.apply_grouped(stale, &mut selections).is_err());
+        type_text(&mut document, &mut selections, "");
+        type_text(&mut document, &mut selections, "b");
+        assert_eq!(document.undo_depth(), 1);
+        assert_eq!(document.revision().get(), 2);
+
+        // An empty standalone edit closes a group without creating an entry.
+        replace(&mut document, &mut selections, "");
+        type_text(&mut document, &mut selections, "c");
+        assert_eq!(document.undo_depth(), 2);
+        // Even an unavailable redo is an explicit boundary.
+        assert!(!document.redo(&mut selections).unwrap());
+        type_text(&mut document, &mut selections, "d");
+        assert_eq!(document.undo_depth(), 3);
+        let navigation = document
+            .transaction([])
+            .unwrap()
+            .with_selections(SelectionSet::single(range(0, 0)))
+            .unwrap();
+        assert!(!document.apply_grouped(navigation, &mut selections).unwrap());
+        type_text(&mut document, &mut selections, "e");
+        assert_eq!(document.undo_depth(), 4);
+        document.undo(&mut selections).unwrap();
+        type_text(&mut document, &mut selections, "");
+        document.finish_undo_group();
+        assert_eq!(document.redo_depth(), 1);
+        assert_eq!(document.text(), "abcd");
+    }
+
+    #[test]
+    fn history_limit_counts_groups_and_closes_them_when_changed() {
+        let mut document = Document::default();
+        let mut selections = SelectionSet::default();
+        document.set_history_limit(2);
+        for _ in 0..4 {
+            for _ in 0..3 {
+                type_text(&mut document, &mut selections, "a");
+            }
+            document.finish_undo_group();
+        }
+        assert_eq!(document.undo_depth(), 2);
+        document.undo(&mut selections).unwrap();
+        document.undo(&mut selections).unwrap();
+        assert!(!document.undo(&mut selections).unwrap());
+        assert_eq!(document.text(), "aaaaaa");
+        document.set_history_limit(0);
+        type_text(&mut document, &mut selections, "b");
+        assert_eq!(document.undo_depth(), 0);
+        assert_eq!(document.redo_depth(), 0);
+        document.set_history_limit(2);
+        type_text(&mut document, &mut selections, "c");
+        document.set_history_limit(2);
+        type_text(&mut document, &mut selections, "d");
+        assert_eq!(document.undo_depth(), 2);
+        document.undo(&mut selections).unwrap();
+        assert_eq!(document.text(), "aaaaaabc");
     }
 
     #[test]
@@ -705,19 +850,24 @@ mod property_tests {
         }
 
         #[test]
-        fn history_matches_a_snapshot_model_across_edit_and_navigation_sequences(
+        fn history_matches_a_snapshot_model_across_groups_edits_and_navigation(
             original in text(40),
-            actions in prop::collection::vec((0u8..6, any::<usize>(), any::<usize>(), text(10)), 1..100),
+            actions in prop::collection::vec((0u8..10, any::<usize>(), any::<usize>(), text(10)), 1..100),
         ) {
             let mut document = Document::from(original.as_str());
             let mut selections = SelectionSet::default();
             let mut model: (Vec<char>, SelectionSet) = (original.chars().collect(), selections.clone());
-            let mut past = Vec::new();
+            let mut past: Vec<(_, _)> = Vec::new();
             let mut future = Vec::new();
             let mut revision = 0;
+            let mut open_group = false;
             for (kind, a, h, inserted) in actions {
+                let previous = document.text().clone();
+                let previous_revision = revision;
                 match kind {
-                    0..=2 => {
+                    0..=2 | 6..=8 => {
+                        let grouped = kind >= 6;
+                        let kind = kind % 3;
                         let a = a % (model.0.len() + 1);
                         let h = if kind == 0 { a } else { h % (model.0.len() + 1) };
                         let inserted = if kind == 1 { "" } else { inserted.as_str() };
@@ -728,15 +878,27 @@ mod property_tests {
                         let caret = a.min(h) + inserted.chars().count();
                         model.1 = SelectionSet::single(range(caret, caret));
                         let transaction = document.replace_selections(&selections, inserted).unwrap();
-                        let changed = document.apply(transaction, &mut selections).unwrap();
+                        let changed = if grouped {
+                            document.apply_grouped(transaction, &mut selections).unwrap()
+                        } else {
+                            document.apply(transaction, &mut selections).unwrap()
+                        };
                         prop_assert_eq!(changed, a != h || !inserted.is_empty());
                         if changed {
-                            past.push((before, model.clone()));
+                            if grouped && open_group {
+                                past.last_mut().unwrap().1 = model.clone();
+                            } else {
+                                past.push((before, model.clone()));
+                            }
                             future.clear();
                             revision += 1;
+                            open_group = grouped;
+                        } else if !grouped {
+                            open_group = false;
                         }
                     }
                     3 => {
+                        open_group = false;
                         let changed = document.undo(&mut selections).unwrap();
                         prop_assert_eq!(changed, !past.is_empty());
                         if let Some(entry) = past.pop() {
@@ -746,6 +908,7 @@ mod property_tests {
                         }
                     }
                     4 => {
+                        open_group = false;
                         let changed = document.redo(&mut selections).unwrap();
                         prop_assert_eq!(changed, !future.is_empty());
                         if let Some(entry) = future.pop() {
@@ -755,6 +918,8 @@ mod property_tests {
                         }
                     }
                     _ => {
+                        document.finish_undo_group();
+                        open_group = false;
                         selections = SelectionSet::single(range(a % (model.0.len() + 1), h % (model.0.len() + 1)));
                         model.1 = selections.clone();
                     }
@@ -764,6 +929,15 @@ mod property_tests {
                 prop_assert_eq!(document.revision().get(), revision);
                 prop_assert_eq!(document.undo_depth(), past.len());
                 prop_assert_eq!(document.redo_depth(), future.len());
+                if revision != previous_revision {
+                    // Layout invalidation may retain only unchanged prefix and
+                    // suffix text, including after undoing a composed group.
+                    let change = document.change;
+                    prop_assert!(change.start <= change.old_end && change.old_end.0 <= previous.len_chars());
+                    prop_assert!(change.start <= change.new_end && change.new_end.0 <= document.text().len_chars());
+                    prop_assert_eq!(previous.slice(..change.start.0), document.text().slice(..change.start.0));
+                    prop_assert_eq!(previous.slice(change.old_end.0..), document.text().slice(change.new_end.0..));
+                }
             }
         }
     }

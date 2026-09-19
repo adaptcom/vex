@@ -41,9 +41,20 @@ and calls that existing dispatcher.
 See the [editing command reference](commands.md) for exact movement semantics.
 Enter in insert mode follows the loaded file's first line ending (LF, CRLF, or
 CR). Tab inserts a literal tab, displayed at the editor's configured tab stops.
-Bracketed paste in insert mode is one edit, preserving the pasted bytes. Pasting
-in normal/select mode shows a message to enter insert mode. Pasting into the
-prompt removes control characters and never submits a command.
+Bracketed paste in insert mode is a separate undo step, preserving the pasted
+bytes. Pasting in normal/select mode shows a message to enter insert mode. Pasting
+into the prompt removes control characters and never submits a command.
+
+Consecutive typing (including Enter and Tab) shares one undo group. Movement,
+mode/selection changes, and save attempts end it. `c` and its following replacement
+text share a group; `d`, Backspace, Delete, and each paste get their own steps.
+Typing after those actions starts a new group. For example, `ihello<Esc>u` removes
+the whole word, and `2u` undoes two groups. Undo/redo restores every selection,
+adjusted to the current mode; it does not switch modes.
+
+Saving with Ctrl-s while still inserting closes the group. Typing more and undoing
+once returns to the saved state and clears the modified indicator. A failed save
+also separates typing but does not change the savepoint.
 
 ## Command prompt
 
@@ -174,7 +185,8 @@ cargo run --release -p vex_term --example long_lines --locked -- 10 100
 ```
 
 The Unix smoke script launches the real executable with a controlling
-pseudo-terminal. It exercises paste, CRLF, undo/redo, dirty quit, save, resize,
+pseudo-terminal. It exercises paste, CRLF, grouped undo/redo, insert-mode savepoints,
+dirty quit, save, resize,
 focus, seeking/editing at the end of a 1 MiB line, and terminal cleanup. It also
 runs the panic-cleanup source test under a
 PTY; this test returns early in the normal noninteractive Cargo test run.

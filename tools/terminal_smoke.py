@@ -186,6 +186,20 @@ def main():
             terminal.finish()
         print("PASS: Unicode paste, CRLF, undo/redo, dirty quit, resize, save, clean quit")
 
+        saved_group = Path(directory) / "saved group.txt"
+        saved_group.write_text("")
+        with Terminal([binary, str(saved_group)]) as terminal:
+            terminal.start()
+            mark = terminal.send(b"ihello\x13")  # Save while still in insert mode.
+            terminal.expect(b"wrote", mark)
+            assert saved_group.read_text() == "hello"
+            mark = terminal.send(b" world\x1b")
+            terminal.expect(b"NOR", mark)
+            terminal.send(b"u\x11")  # One undo reaches the savepoint; quit must succeed.
+            terminal.finish()
+            assert saved_group.read_text() == "hello"
+        print("PASS: grouped typing and undo to an insert-mode savepoint")
+
         with Terminal([binary]) as terminal:
             terminal.start()
             mark = terminal.send(b"i")

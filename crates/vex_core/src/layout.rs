@@ -417,10 +417,16 @@ mod tests {
             (CharOffset(len - 80), len - 80)
         );
         let mut selections = SelectionSet::default();
-        let transaction = document
-            .transaction([Edit::insert(CharOffset(len - 2), "e\u{301}")])
-            .unwrap();
-        document.apply(transaction, &mut selections).unwrap();
+        for (position, text) in [(len - 2, "e"), (len - 1, "\u{301}")] {
+            let transaction = document
+                .transaction([Edit::insert(CharOffset(position), text)])
+                .unwrap();
+            document
+                .apply_grouped(transaction, &mut selections)
+                .unwrap();
+            cache.synchronize(&document);
+        }
+        assert_eq!(document.undo_depth(), 1);
         assert_eq!(
             cache.column(&document, CharOffset(len + 2), tabs).unwrap(),
             len + 1
@@ -540,7 +546,11 @@ mod tests {
                             vec![Edit::new(CharOffset(a.min(b))..CharOffset(a.max(b)), text)]
                         };
                         let transaction = document.transaction(edits).unwrap();
-                        document.apply(transaction, &mut selections).unwrap();
+                        if kind < 4 {
+                            document.apply(transaction, &mut selections).unwrap();
+                        } else {
+                            document.apply_grouped(transaction, &mut selections).unwrap();
+                        }
                     }
                 }
                 cache.synchronize(&document);

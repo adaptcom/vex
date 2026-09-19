@@ -160,20 +160,25 @@ of measurement as the viewport benchmarks:
 cargo bench -p vex_term --bench rendering --locked -- deep_line --noplot
 ```
 
-| Each line | Horizontal move + draw | Vertical move + draw | Type 1 / draw / undo / draw | Type 8 / draw / undo 8 / draw |
+The typing columns were rerun after adding undo grouping, using the filter
+`deep_line/type`; movement columns retain the earlier cache baseline.
+
+| Each line | Horizontal move + draw | Vertical move + draw | Type 1 / draw / undo / draw | Type 8 / draw / undo group / draw |
 |---|---:|---:|---:|---:|
-| 1 MiB ASCII | 0.062 ms | 0.063 ms | 0.129 ms | 0.131 ms |
-| 1 MiB Unicode/tabs | 0.051 ms | 0.051 ms | 0.106 ms | 0.111 ms |
-| 10 MiB ASCII | 0.058 ms | 0.059 ms | 0.123 ms | 0.125 ms |
-| 10 MiB Unicode/tabs | 0.051 ms | 0.052 ms | 0.106 ms | 0.111 ms |
+| 1 MiB ASCII | 0.062 ms | 0.063 ms | 0.123 ms | 0.124 ms |
+| 1 MiB Unicode/tabs | 0.051 ms | 0.051 ms | 0.106 ms | 0.109 ms |
+| 10 MiB ASCII | 0.058 ms | 0.059 ms | 0.118 ms | 0.119 ms |
+| 10 MiB Unicode/tabs | 0.051 ms | 0.052 ms | 0.105 ms | 0.109 ms |
 
 These are Criterion central estimates. Movement alternates neighboring positions
 or lines. Typing always edits the first line, forcing the second line's cached
 start to shift. The eight-character case processes eight distinct text events
-before drawing, then undoes all eight before another draw. It checks that event
-batching and repeated undo preserve useful indexes. Source tests separately check
-cache reuse using scanned-character counters and compare results with flat Unicode
-segmentation through edits, line joins, tab-width changes, and history operations.
+before drawing, then undoes the whole group in one step before another draw.
+Each edit still advances the revision and synchronizes layout; grouped undo uses
+the combined change extent to retain unaffected indexes. Source tests separately
+check cache reuse using scanned-character counters and compare results with flat
+Unicode segmentation through edits, line joins, tab-width changes, and grouped
+history operations.
 
 The existing short-line viewport benchmarks were rerun too: at 120 × 40,
 movement + drawing measured 0.169 ms for 1 MiB source, 0.178 ms for 100 MiB

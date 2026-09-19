@@ -106,16 +106,29 @@ impl Editor {
 
     // Every text command goes through here, including each event in a batch.
     // Otherwise several edits before drawing would skip cache revisions.
-    fn apply(&mut self, transaction: vex_core::Transaction) -> Result<(), Error> {
-        self.document.apply(transaction, &mut self.selections)?;
+    fn apply(&mut self, transaction: vex_core::Transaction, grouped: bool) -> Result<(), Error> {
+        if grouped {
+            self.document
+                .apply_grouped(transaction, &mut self.selections)?;
+        } else {
+            self.document.apply(transaction, &mut self.selections)?;
+        }
         self.synchronize_layout();
         Ok(())
+    }
+
+    /// Separate subsequent typing from the current undo step. Integrations must
+    /// call this at savepoints so undo can return to the saved text. Movements,
+    /// mode/selection changes, explicit edits, paste, and undo/redo do so already.
+    pub fn finish_undo_group(&mut self) {
+        self.document.finish_undo_group();
     }
 
     /// Install selections after checking bounds and snapping endpoints outward
     /// to whole graphemes. Insert mode collapses them to carets at their heads.
     pub fn set_selections(&mut self, selections: SelectionSet) -> Result<(), Error> {
         let selections = self.normalized(selections, self.mode)?;
+        self.finish_undo_group();
         self.selections = selections;
         self.preferred_columns = None;
         Ok(())
@@ -159,11 +172,20 @@ impl Editor {
         (command.run)(&mut context)
     }
 
-    /// Insert a text event or paste as one transaction at every insert caret.
+    /// Insert a text event at every insert caret, continuing the current typing
+    /// group. Use [`Self::insert_paste`] for a separate undo step.
     pub fn insert_text(&mut self, text: &str) -> Result<(), Error> {
         let mut context = CommandContext::new(self);
         context.text = Some(text);
         commands::insert_text(&mut context)
+    }
+
+    /// Insert pasted text at every insert caret as its own undo step, separating
+    /// it from typing on either side. Requires insert mode and preserves the text.
+    pub fn insert_paste(&mut self, text: &str) -> Result<(), Error> {
+        let mut context = CommandContext::new(self);
+        context.text = Some(text);
+        commands::insert_paste(&mut context)
     }
 }
 
@@ -223,6 +245,31 @@ mod tests {
     }
 
     #[test]
+    fn external_selection_changes_separate_typing() {
+        let mut editor = Editor::new(Document::default());
+        editor.execute("insert_mode", 1).unwrap();
+        editor.insert_text("a").unwrap();
+        editor.insert_text("b").unwrap();
+        let before = editor.document().snapshot();
+        editor.set_selections(SelectionSet::default()).unwrap();
+        editor.insert_text("c").unwrap();
+        assert!(
+            editor
+                .set_selections(SelectionSet::single(Selection::cursor(CharOffset(999))))
+                .is_err()
+        );
+        editor.insert_text("d").unwrap();
+        assert_eq!(editor.document().text(), "cdab");
+        assert_eq!(editor.document().undo_depth(), 2);
+        editor.execute("undo", 1).unwrap();
+        assert!(editor.document().text().is_instance(before.text()));
+        assert_eq!(
+            editor.selections().primary(),
+            Selection::cursor(CharOffset(0))
+        );
+    }
+
+    #[test]
     fn cached_motion_tracks_batched_typing_history_tab_width_and_multiple_cursors() {
         let mut editor = Editor::new(Document::from("a\t界e\u{301}\r\n123456789\r\nx\tend"));
         editor.execute("insert_mode", 1).unwrap();
@@ -257,9 +304,10 @@ mod tests {
             editor.insert_text(text).unwrap();
         }
         verify(&editor);
-        editor.execute("undo", 4).unwrap();
+        assert_eq!(editor.document().undo_depth(), 1);
+        editor.execute("undo", 1).unwrap();
         verify(&editor);
-        editor.execute("redo", 3).unwrap();
+        editor.execute("redo", 1).unwrap();
         verify(&editor);
         editor.set_tab_width(NonZeroUsize::new(8).unwrap());
         verify(&editor);

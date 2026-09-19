@@ -73,7 +73,7 @@ impl App {
                     prompt.insert(&text);
                 } else if self.editor.mode() == Mode::Insert {
                     self.keys.cancel();
-                    if let Err(error) = self.editor.insert_text(&text) {
+                    if let Err(error) = self.editor.insert_paste(&text) {
                         self.fail(error);
                     }
                 } else {
@@ -248,6 +248,7 @@ macro_rules! commands {
 commands! {
     /// Write the buffer atomically. Accepts an optional path; ! permits overwriting external changes or an existing destination.
     fn write_file(app, argument, force) ["write", "w"] {
+        app.editor.finish_undo_group();
         let bytes = app.files.save(app.editor.document(), if argument.is_empty() { None } else { Some(Path::new(argument)) }, force)?;
         app.message = format!("wrote {bytes} bytes");
         Ok(())
@@ -368,5 +369,74 @@ mod tests {
         frame.reset(1, 1).unwrap();
         app.paint(&mut frame).unwrap();
         assert_eq!(app.size(), (1, 1));
+    }
+
+    #[test]
+    fn saving_during_insert_keeps_the_savepoint_reachable_by_undo_and_redo() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file");
+        std::fs::write(&path, "").unwrap();
+        let mut app = App::open(Some(&path), (80, 24)).unwrap();
+        press(&mut app, "ihello");
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(!app.is_dirty());
+        assert_eq!(app.editor.mode(), Mode::Insert);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
+        press(&mut app, " world");
+        assert_eq!(app.editor.document().undo_depth(), 2);
+        app.editor.execute("undo", 1).unwrap();
+        assert_eq!(app.editor.document().text(), "hello");
+        assert!(!app.is_dirty());
+        app.editor.execute("undo", 1).unwrap();
+        assert_eq!(app.editor.document().text(), "");
+        assert!(app.is_dirty());
+        app.editor.execute("redo", 1).unwrap();
+        assert!(!app.is_dirty());
+        app.editor.execute("redo", 1).unwrap();
+        assert!(app.is_dirty());
+        app.editor.execute("undo", 1).unwrap();
+        press(&mut app, "!");
+        assert_eq!(app.editor.document().redo_depth(), 0);
+        app.editor.execute("undo", 1).unwrap();
+        assert!(!app.is_dirty());
+        app.execute("q").unwrap();
+        assert!(app.should_quit());
+    }
+
+    #[test]
+    fn failed_save_closes_typing_without_marking_the_buffer_saved() {
+        let mut app = App::open(None, (80, 24)).unwrap();
+        press(&mut app, "iab");
+        assert!(app.execute("wq").is_err());
+        assert!(!app.should_quit());
+        assert!(app.is_dirty());
+        press(&mut app, "cd");
+        assert_eq!(app.editor.document().undo_depth(), 2);
+        app.editor.execute("undo", 1).unwrap();
+        assert_eq!(app.editor.document().text(), "ab");
+        assert!(app.is_dirty());
+        app.editor.execute("undo", 1).unwrap();
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn bracketed_paste_has_its_own_undo_step_between_typed_text() {
+        let mut app = App::open(None, (80, 24)).unwrap();
+        press(&mut app, "iab");
+        app.handle(Event::Paste("e\u{301}🦀\r\n".into()));
+        press(&mut app, "cd");
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.editor.document().undo_depth(), 3);
+        press(&mut app, "u");
+        assert_eq!(app.editor.document().text(), "abe\u{301}🦀\r\n");
+        press(&mut app, "u");
+        assert_eq!(app.editor.document().text(), "ab");
+        press(&mut app, "u");
+        assert!(!app.is_dirty());
+        press(&mut app, "3U");
+        assert_eq!(app.editor.document().text(), "abe\u{301}🦀\r\ncd");
     }
 }

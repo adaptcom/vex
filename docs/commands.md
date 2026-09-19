@@ -20,10 +20,11 @@ Generated from command Rustdoc and the default keymap.
 | `normal_mode` | Normal: `<Escape>`, Select: `<Escape>`, Insert: `<Escape>` | Enter normal mode. Leaving insert mode places the cursor on the preceding grapheme in the same line. |
 | `insert_mode` | Normal: `i`, Select: `i` | Enter insert mode with a caret before every selection. |
 | `append_mode` | Normal: `a`, Select: `a` | Enter insert mode with a caret after every selection. |
-| `insert_text` | Insert: unbound printable characters, Enter, Tab; direct text/paste events | Insert the context's text at all carets as one undo step; requires insert mode. |
+| `insert_text` | Insert: unbound printable characters, Enter, Tab; direct text events | Insert the context's text at all carets, continuing the typing undo group; requires insert mode. |
+| `insert_paste` | Insert: bracketed paste; direct paste events | Insert the context's pasted text at all carets as a separate undo step; requires insert mode. |
 | `delete_selection` | Normal: `d`, Select: `d` | Delete selected text atomically, leaving normal-mode cursors at the edit locations. |
-| `change_selection` | Normal: `c`, Select: `c` | Delete selected text and enter insert mode at all edit locations. |
-| `delete_backward` | Insert: `<Backspace>` | Delete preceding graphemes at all insert carets; accepts a count. |
-| `delete_forward` | Insert: `<Delete>` | Delete following graphemes at all insert carets; accepts a count. |
-| `undo` | Normal: `u`, Select: `u` | Undo transactions and restore their selections; accepts a count. |
-| `redo` | Normal: `U`, Normal: `<C-r>`, Select: `U`, Select: `<C-r>` | Redo transactions and restore their selections; accepts a count. |
+| `change_selection` | Normal: `c`, Select: `c` | Delete selected text and enter insert mode; the deletion and subsequent typing share one undo step. |
+| `delete_backward` | Insert: `<Backspace>` | Delete preceding graphemes at all insert carets as a separate undo step; accepts a count. |
+| `delete_forward` | Insert: `<Delete>` | Delete following graphemes at all insert carets as a separate undo step; accepts a count. |
+| `undo` | Normal: `u`, Select: `u` | Undo edit groups and restore their selections; accepts a count of groups. |
+| `redo` | Normal: `U`, Normal: `<C-r>`, Select: `U`, Select: `<C-r>` | Redo edit groups and restore their selections; accepts a count of groups. |
