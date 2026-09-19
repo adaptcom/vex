@@ -1,21 +1,19 @@
 [package]
-name = "vex_core"
+name = "vex_editor"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-ropey.workspace = true
-unicode-segmentation.workspace = true
-unicode-width.workspace = true
+vex_core.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
 
 [[bench]]
-name = "editing"
+name = "commands"
 harness = false
 
 [lints]

@@ -123,7 +123,8 @@ impl SelectionSet {
         self.primary
     }
 
-    pub(crate) fn validate(&self, len: usize) -> Result<(), Error> {
+    /// Check all endpoints against a document's scalar length, allowing EOF.
+    pub fn validate(&self, len: usize) -> Result<(), Error> {
         // Sorted disjoint ranges guarantee that the final endpoint is maximal.
         let position = self.ranges.last().expect("nonempty selection set").end();
         if position.0 > len {

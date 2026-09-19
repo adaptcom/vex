@@ -49,3 +49,31 @@ retention during sustained editing, large pastes, cold startup, and scrolling
 through long lines. The first application target remains under 5 ms at p95 for
 ordinary editing in a 10 MiB file on a documented machine; the core measurements
 above do not establish that end-to-end result.
+
+## Command and movement baseline
+
+Recorded on the same development machine on 2026-09-19 with the same Criterion
+settings and optimized profile:
+
+```sh
+cargo bench -p vex_editor --bench commands --locked -- --noplot
+```
+
+| Document | Right then left, one cursor | Right then left, 1,000 cursors |
+|---|---:|---:|
+| 10 MiB source text | 0.561 µs | 0.946 ms |
+| 100 MiB source text | 0.703 µs | 1.023 ms |
+| 10 MiB mixed Unicode | 0.707 µs | 1.196 ms |
+| 10 MiB single line | 0.598 µs | 0.941 ms |
+
+Each iteration dispatches two logical keys through the default keymap and command
+functions, finds grapheme boundaries, and updates all selections. Documents and
+initial selections are created outside the timed loop. Positions are spread
+through the document, then reused after warmup. These are cache-warm central
+estimates for a pair of movements, not p95 latency or rendered frames.
+
+One down/up pair on a repeated tab/CJK fixture takes about 2.01 µs using direct
+named command invocation. It measures logical-line lookup, retained display
+columns, and scanning short target-line prefixes. It does not measure vertical
+movement at deep columns in exceptionally long lines; that needs a layout cache
+and a separate benchmark when the viewport is added.
