@@ -1,7 +1,6 @@
 //! Pure movement calculations. All positions are scalar offsets on grapheme boundaries.
 
 use std::num::NonZeroUsize;
-use unicode_width::UnicodeWidthStr;
 
 use crate::{CharOffset, Error, Rope, Selection, grapheme};
 
@@ -196,8 +195,8 @@ fn width(
     let slice = text.slice(start.0..end.0);
     // Most graphemes borrow a single rope chunk. Only split clusters allocate.
     match slice.as_str() {
-        Some(text) => text.width(),
-        None => slice.to_string().width(),
+        Some(text) => crate::display::width(text, column, tab_width),
+        None => crate::display::width(&slice.to_string(), column, tab_width),
     }
 }
 

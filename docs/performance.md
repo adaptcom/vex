@@ -1,4 +1,4 @@
-# Core performance baseline
+# Performance baselines
 
 Recorded on 2026-09-19 on the development machine: arm64, macOS 26.6.2,
 Rust 1.98.1. CPU model was not available to the sandbox. These measurements are
@@ -76,4 +76,46 @@ One down/up pair on a repeated tab/CJK fixture takes about 2.01 µs using direct
 named command invocation. It measures logical-line lookup, retained display
 columns, and scanning short target-line prefixes. It does not measure vertical
 movement at deep columns in exceptionally long lines; that needs a layout cache
-and a separate benchmark when the viewport is added.
+and a separate benchmark.
+
+## Terminal viewport baseline
+
+Recorded on the same development machine on 2026-09-19, with 30 samples, a
+500 ms warmup, and one second of measurement per case. The environment had
+`NO_COLOR=1`; runs with colors enabled may have different escape-encoding costs:
+
+```sh
+cargo bench -p vex_term --bench rendering --locked -- --noplot
+```
+
+| Document | Viewport | Full redraw | One move + incremental redraw |
+|---|---|---:|---:|
+| 1 MiB source text | 120 × 40 | 0.192 ms | 0.168 ms |
+| 100 MiB source text | 120 × 40 | 0.207 ms | 0.188 ms |
+| 10 MiB mixed Unicode | 120 × 40 | 0.107 ms | 0.089 ms |
+| 10 MiB single line, at its start | 120 × 40 | 0.048 ms | 0.030 ms |
+| 1 MiB source text | 240 × 80 | 0.456 ms | 0.400 ms |
+| 100 MiB source text | 240 × 80 | 0.506 ms | 0.439 ms |
+| 10 MiB mixed Unicode | 240 × 80 | 0.288 ms | 0.217 ms |
+| 10 MiB single line, at its start | 240 × 80 | 0.155 ms | 0.091 ms |
+
+Both cases include resetting the reused grid, viewport layout, status painting,
+cell comparison, and encoding terminal commands. Full redraw invalidates the
+previous frame each iteration. Movement alternates `l` and `h` through an
+application key event, including command dispatch and cursor updates. The
+renderer still paints and compares the viewport, then emits only changed cells.
+An identical frame emits zero bytes, verified separately in source tests.
+
+Output is written to `std::io::sink()`: these are CPU measurements, excluding
+terminal transport, emulator rendering, event polling, and user-perceived
+latency. The reported values are rounded Criterion central estimates, not p95.
+Document construction and initial grid allocation are outside the timed loop;
+these are cache-warm, single-cursor measurements near the document's start.
+Unicode source rows are shorter than ASCII rows, so their lower time does not
+mean Unicode processing is faster per character. The single-line fixture paints
+only its visible beginning and otherwise empty rows.
+
+File size has little effect on these cases. Deep horizontal scrolling remains
+unbounded by viewport width because layout scans the hidden line prefix. A
+long-line layout cache, multi-cursor rendering measurements, and event-to-flush
+tail latency are still needed before claiming the interactive latency target.

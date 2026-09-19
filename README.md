@@ -6,7 +6,24 @@ A terminal text editor in Rust, inspired by Helix's selection-first editing mode
 atomic transactions, revision-checked snapshots, undo/redo, and grapheme-aware
 movement. `vex_editor` adds normal/select/insert modes, documented command
 functions, configurable keybindings, and repeat counts. Both work without a
-terminal. There is no terminal application yet.
+terminal. `vex_term` provides the interactive application, using Crossterm for
+terminal I/O and our own viewport, cell grid, and incremental drawing.
+
+## Run
+
+```sh
+cargo run --release -p vex_term --locked -- path/to/file
+```
+
+Omit the path for a scratch buffer. Press `i` to insert, `Esc` for normal mode,
+`:w` to save (`:w PATH` for a scratch buffer), and `:q` to quit. Unsaved changes
+require `:q!` to discard. `:wq` saves and quits. Use `:help` or
+`:help move_word_forward` for command documentation.
+
+The interface includes line numbers, selection highlighting, cursor-following
+scrolling, a status line, and an editable command prompt. Unicode graphemes,
+wide characters, tabs, bracketed paste, and terminal resizing are supported.
+See [terminal usage and architecture](docs/terminal.md).
 
 ## Development
 
@@ -16,7 +33,10 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 cargo bench -p vex_core --bench editing --locked -- --noplot
 cargo bench -p vex_editor --bench commands --locked -- --noplot
+cargo bench -p vex_term --bench rendering --locked -- --noplot
 cargo run -p vex_editor --example command_reference --locked
+cargo build --release -p vex_term --locked
+python3 tools/terminal_smoke.py
 ```
 
 Unit and property tests live in their source modules under `#[cfg(test)]`.
@@ -24,7 +44,9 @@ Criterion benchmarks live in each crate's `benches/` directory. The property tes
 random Unicode edits against flat text and snapshot history models, as well as
 selection normalization and position mapping invariants. Additional checks compare
 rope grapheme boundaries with flat Unicode segmentation and exercise arbitrary
-key sequences through the editor.
+key sequences through the editor and command prompt. The Unix pseudo-terminal
+smoke script checks real input, saves, resize handling, and terminal restoration
+on exit, signal, and panic.
 
 ## Editing API
 
@@ -49,7 +71,7 @@ fn main() -> Result<(), vex_core::Error> {
 ```
 
 Documents expose immutable rope access. `Document::from_reader` and `write_to`
-stream UTF-8; the application will own file paths, flushing, and safe saves.
+stream UTF-8; the terminal application owns file paths, flushing, and atomic saves.
 Snapshots share rope storage and can be sent to background workers. A transaction
 built from an older snapshot is rejected, including after undo restores the same
 text. Document identities prevent accidental application to another buffer.
@@ -143,8 +165,8 @@ layout scans the needed line prefix and has no layout cache or soft wrapping yet
 
 ## Next milestone
 
-Add a `vex_term` application for terminal input and viewport rendering. The first interactive
-loop should open a file, select and edit text, undo, and save. Search, pickers,
-Tree-sitter, and LSP follow that loop.
+The first interactive loop can open, select, edit, undo, and save. Search, pickers,
+Tree-sitter, and LSP follow. Long-line layout caching and insert-session undo
+grouping remain important improvements to the editing loop.
 
 See [the benchmark notes](docs/performance.md) for the initial performance baseline.

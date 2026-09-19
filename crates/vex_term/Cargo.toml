@@ -1,0 +1,32 @@
+[package]
+name = "vex_term"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+vex_core.workspace = true
+vex_editor.workspace = true
+crossterm.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
+tempfile.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+signal-hook.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+
+[[bin]]
+name = "vex"
+path = "src/main.rs"
+
+[[bench]]
+name = "rendering"
+harness = false
+
+[lints]
+workspace = true

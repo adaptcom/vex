@@ -20,6 +20,7 @@
 //! # Ok::<(), vex_core::Error>(())
 //! ```
 
+pub mod display;
 mod document;
 mod error;
 pub mod grapheme;
