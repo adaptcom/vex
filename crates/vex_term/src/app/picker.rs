@@ -146,6 +146,7 @@ impl App {
     /// in the event queue. Escape and resize retain the search queue's behavior.
     pub(crate) fn input_waiting(&self) -> bool {
         self.editor.search_waiting()
+            || self.completion_waiting()
             || self
                 .picker
                 .active

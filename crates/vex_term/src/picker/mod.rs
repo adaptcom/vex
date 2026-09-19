@@ -336,7 +336,14 @@ impl<T: Eq> Picker<T> {
     }
 }
 
-fn paint_box(frame: &mut Frame, left: u16, top: u16, right: u16, bottom: u16, title: &str) {
+pub(crate) fn paint_box(
+    frame: &mut Frame,
+    left: u16,
+    top: u16,
+    right: u16,
+    bottom: u16,
+    title: &str,
+) {
     for row in top..bottom {
         for col in left..right {
             frame.put(col, row, " ", Style::Text);

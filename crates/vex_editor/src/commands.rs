@@ -242,6 +242,16 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
 }
 
 commands! {
+    /// Request language-server completion at the insertion cursor.
+    fn completion(ctx) {
+        require_insert(ctx.editor)?;
+        if ctx.editor.selections().ranges().len() != 1 {
+            return Err(Error::InvalidCompletion);
+        }
+        ctx.editor.language_action = Some(crate::LanguageAction::Completion);
+        Ok(())
+    }
+
     /// Open a fuzzy file picker at the current project root.
     fn file_picker(ctx) {
         ctx.editor.finish_undo_group();

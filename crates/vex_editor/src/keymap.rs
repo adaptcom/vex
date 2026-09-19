@@ -220,6 +220,9 @@ impl Default for Keymap {
             .bind(Mode::Insert, vec![Delete], "delete_forward")
             .unwrap();
         keymap
+            .bind(Mode::Insert, vec![Ctrl('x')], "completion")
+            .unwrap();
+        keymap
     }
 }
 

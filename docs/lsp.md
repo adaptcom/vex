@@ -37,6 +37,59 @@ retains up to 32 paths and cursor positions, and returning reloads that file fro
 disk. File switching creates a fresh editor/history; it does not preserve hidden
 buffers. Multiple definition results currently choose the first result.
 
+## Completion
+
+In insert mode, `Ctrl-x` invokes the documented `completion` command. The first
+version supports a single caret in a named Rust file. Suggestions appear in a
+bordered menu next to the cursor, above it when there is more room there. A
+separate documentation box appears beside the menu when space permits. Selected
+rows use the shared grey palette; drawing keeps the insertion cursor visible.
+
+| Key while the menu is open | Behavior |
+|---|---|
+| Tab / Ctrl-n / Down | Select the next suggestion |
+| Shift-Tab / Ctrl-p / Up | Select the previous suggestion |
+| Enter | Accept the selected suggestion |
+| Ctrl-c | Reject completion, staying in insert mode |
+| Escape | Accept an explicitly selected suggestion, then enter normal mode |
+| Other input after selecting | Accept the selection, then process that input |
+
+No item is initially selected. Enter then inserts a newline, and Escape returns
+to normal mode without inserting a suggestion. Typing identifier characters or
+backspacing before selecting requests a fresh list for the new text. This also
+handles incomplete server lists. `Ctrl-x` explicitly refreshes an open menu.
+The bindings are [Helix-inspired](https://docs.helix-editor.com/keymap.html#completion-menu);
+temporary insertion previews and automatic triggering are not implemented.
+
+The LSP service filters candidates using the current word as a case-insensitive
+subsequence of `filterText` (or the label), retaining the server's `sortText`
+ordering. The initial word rule uses Unicode letters/numbers and underscore,
+with a 256-character prefix limit. Repeated edit coordinates share validated
+UTF-16 conversions, and menu label widths are cached when a list arrives.
+It reads at most 16,384 candidates and retains at most 512 and 4 MiB of serialized
+item payloads. Each item is limited to 64 KiB and 64 additional edits. Labels,
+details, and documentation are bounded independently for drawing. A limited
+list is marked in its title; narrow the prefix and request again.
+
+Selection resolves documentation, details, and additional edits on the existing
+LSP service thread. Documentation is displayed as plain text with wrapping.
+Acceptance waits for resolution so replacement text and import edits apply in
+one validated transaction and undo step. UTF-16 ranges must round-trip exactly;
+invalid positions, reversed ranges, and overlapping edits cannot partly modify
+the buffer. Plain `textEdit`, insert/replace edits (using the insert range), and
+`insertText`/label fallbacks are supported. Snippet support is not advertised, and
+unexpected snippet items are skipped. Completion commands from the server are
+not executed. Snippet placeholders and multiple completion carets remain future work.
+
+Early Tab/Enter can wait for the current list and its resolved item. Subsequent
+editing keys remain in the event queue, while resize and service events continue.
+Ctrl-c or Escape can cancel an acceptance when next in key order. An ordinary
+key that implicitly accepted is retained and dispatched even if resolution fails
+or is cancelled. Late replies must match the request, document revision, file
+session, mode, and caret. Moving, editing, closing, restarting, or switching files
+invalidates old results. A resolve failure leaves the original completion text
+unchanged and reports the error.
+
 ## Protocol and runtime
 
 `vex_lsp` handles JSON-RPC framing, initialization, capabilities, document
@@ -72,15 +125,16 @@ Positions use negotiated UTF-16 coordinates. A per-snapshot index distinguishes
 LSP's LF/CRLF/bare-CR lines from Ropey's additional Unicode separators. Surrogate
 pairs, combining marks, escaped file URIs, and non-ASCII file names are covered by
 source tests. Results are checked against the active file session and document
-revision; hover and definition also check request identity, selections, and mode.
-Subsequent input cancels an outstanding interactive request.
+revision; interactive replies also check request identity, selections, and mode.
+Edits, movement, and dismissal cancel obsolete requests. Completion navigation
+keeps the list and requests documentation for the new selection.
 
 The terminal inbox has a separate bounded FIFO for LSP events. Search and syntax
 retain their separate latest-result slots. Input and ready services alternate so
 diagnostic traffic cannot starve editing. Server failures are displayed in the
 editor instead of terminating the terminal session.
 
-Initialization has a 30-second deadline; hover and definition requests have
+Initialization has a 30-second deadline; hover, definition, completion, and resolve requests have
 10-second deadlines. Dropped requests send `$/cancelRequest`. Closing attempts
 `didClose`, `shutdown` (300 ms), and `exit`, with a 200 ms exit grace period, then
 terminates and reaps the server and joins its I/O threads. On Unix the server has
@@ -104,7 +158,7 @@ sync, full line-index rebuilds, and JSON encoding still cost work proportional t
 document size on the service thread. File loading, including definition jumps,
 remains synchronous.
 
-Completion menus, signature help, references, rename, formatting, code actions,
+Signature help, references, rename, formatting, code actions,
 semantic tokens, multi-buffer server reuse, and configurable server settings are
 future work.
 
@@ -119,5 +173,7 @@ python3 tools/lsp_smoke.py
 Unit tests live with the source, including a controlled stdio server for protocol
 ordering, Unicode positions, stale diagnostics, missing executables, and shutdown.
 The explicit rust-analyzer test checks actual hover, definition, and diagnostics;
-the PTY script checks those features through the editor, cross-file navigation,
-return jumps, missing-server behavior, and terminal restoration.
+the PTY script also checks completion, documentation resolution, early acceptance,
+undo, cross-file navigation, return jumps, missing-server behavior, and terminal
+restoration. Source tests cover completion import edits, stale replies, invalid
+coordinates, cancellation, popup clipping, and protocol ordering.

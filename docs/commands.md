@@ -4,6 +4,7 @@ Generated from command Rustdoc and the default keymap.
 
 | Command | Bindings by mode | Description |
 |---|---|---|
+| `completion` | Insert: `<C-x>` | Request language-server completion at the insertion cursor. |
 | `file_picker` | Normal: `<Space>f`, Select: `<Space>f` | Open a fuzzy file picker at the current project root. |
 | `jump_back` | Normal: `<C-o>`, Select: `<C-o>` | Return to the location before the last successful file or definition jump. |
 | `hover` | Normal: `<Space>k`, Normal: `K`, Select: `<Space>k`, Select: `K` | Show language-server documentation for the symbol at the primary cursor. |

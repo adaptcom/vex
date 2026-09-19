@@ -46,6 +46,7 @@ pub enum Mode {
 pub enum LanguageAction {
     Hover,
     Definition,
+    Completion,
     JumpBack,
     NextDiagnostic(usize),
     PreviousDiagnostic(usize),
@@ -219,6 +220,40 @@ impl Editor {
         self.document.finish_undo_group();
     }
 
+    /// Accept a completion and its additional edits as one undo step. All edits
+    /// use the current revision's coordinates; overlaps fail before any change.
+    /// Initial completion supports a single insertion caret.
+    pub fn apply_completion(
+        &mut self,
+        edit: vex_core::Edit,
+        additional: Vec<vex_core::Edit>,
+    ) -> Result<(), Error> {
+        if self.mode != Mode::Insert {
+            return Err(Error::WrongMode {
+                expected: Mode::Insert,
+                actual: self.mode,
+            });
+        }
+        let cursor = self.selections.primary().head;
+        if self.selections.ranges().len() != 1
+            || edit.range().start > cursor
+            || edit.range().end < cursor
+        {
+            return Err(Error::InvalidCompletion);
+        }
+        let start = edit.range().start;
+        let transaction = self
+            .document
+            .transaction(std::iter::once(edit).chain(additional))?;
+        let caret = transaction.map_position(start, vex_core::Affinity::After)?;
+        let transaction =
+            transaction.with_selections(SelectionSet::single(Selection::cursor(caret)))?;
+        self.apply(transaction, false)?;
+        self.selections = self.normalized(self.selections.clone(), self.mode)?;
+        self.preferred_columns = None;
+        Ok(())
+    }
+
     /// Install selections after checking bounds and snapping endpoints outward
     /// to whole graphemes. Insert mode collapses them to carets at their heads.
     pub fn set_selections(&mut self, selections: SelectionSet) -> Result<(), Error> {
@@ -286,6 +321,46 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn completion_imports_and_replacement_are_atomic_and_separate_from_typing() {
+        use super::*;
+        use vex_core::Edit;
+        let mut editor = Editor::new(Document::from("// 界\r\nans"));
+        editor.execute("insert_mode", 1).unwrap();
+        editor
+            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(9))))
+            .unwrap();
+        let before = editor.selections().clone();
+        let edit = Edit::new(CharOffset(6)..CharOffset(9), "answer()");
+        let import = Edit::insert(CharOffset(0), "use demo::answer;\r\n");
+        editor.apply_completion(edit.clone(), vec![import]).unwrap();
+        assert_eq!(
+            editor.document().text(),
+            "use demo::answer;\r\n// 界\r\nanswer()"
+        );
+        assert_eq!(
+            editor.selections().primary().head.0,
+            editor.document().text().len_chars()
+        );
+        editor.insert_text(";").unwrap();
+        editor.execute("undo", 1).unwrap();
+        assert!(editor.document().text().to_string().ends_with("answer()"));
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "// 界\r\nans");
+        assert_eq!(editor.selections(), &before);
+        editor.execute("redo", 1).unwrap();
+        assert!(editor.document().text().to_string().starts_with("use demo"));
+        editor.execute("undo", 1).unwrap();
+        let revision = editor.document().revision();
+        assert!(
+            editor
+                .apply_completion(edit, vec![Edit::delete(CharOffset(7)..CharOffset(9))])
+                .is_err()
+        );
+        assert_eq!(editor.document().revision(), revision);
+        assert_eq!(editor.document().text(), "// 界\r\nans");
+    }
+
     use super::*;
     use vex_core::ByteOffset;
 

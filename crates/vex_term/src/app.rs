@@ -15,6 +15,7 @@ use vex_editor::{
     SearchStatus,
 };
 
+mod completion;
 mod language;
 mod picker;
 
@@ -60,6 +61,7 @@ pub struct App {
     automatic_language: bool,
     language: language::State,
     picker: picker::State,
+    completion: completion::State,
 }
 
 impl App {
@@ -89,6 +91,7 @@ impl App {
             automatic_language: true,
             language: language::State::default(),
             picker: picker::State::default(),
+            completion: completion::State::default(),
         }
     }
 
@@ -144,6 +147,21 @@ impl App {
         if let Some(redraw) = self.handle_picker_input(&event) {
             return redraw;
         }
+        if let Some(redraw) = self.handle_completion_input(&event) {
+            return redraw;
+        }
+        let refresh = self.refresh_completion_on_input(&event);
+        let redraw = self.handle_document_input(event);
+        if refresh
+            && self.editor.mode() == Mode::Insert
+            && let Err(error) = self.editor.execute("completion", 1)
+        {
+            self.fail(error);
+        }
+        redraw
+    }
+
+    fn handle_document_input(&mut self, event: Event) -> bool {
         if matches!(&event, Event::Paste(_))
             || matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
         {
@@ -322,6 +340,7 @@ impl App {
         .map_err(io::Error::other)?;
         self.paint_language(frame);
         self.paint_key_hints(frame);
+        self.paint_completion(frame);
         self.paint_active_picker(frame);
         Ok(())
     }

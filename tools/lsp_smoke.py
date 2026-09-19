@@ -49,6 +49,44 @@ def main():
             terminal.finish()
         print("PASS: real rust-analyzer diagnostics, hover, cross-file definition, jump back, shutdown")
 
+        # Keep the declaration outside the final viewport, so seeing its name
+        # verifies the completion list rather than the underlying document.
+        source = "/// Returns the completion probe.\nfn vex_completion_target() -> u32 { 42 }\n" + "\n" * 30 + "fn main() { vex_com"
+        main_file.write_text(source)
+        with Terminal([binary, str(main_file)]) as terminal:
+            terminal.start()
+            terminal.resize(140, 24)
+            terminal.expect_screen(b"RA:ready")
+            terminal.send(b"gei")
+            terminal.expect_screen(f"{len(source.splitlines())}:{len(source.splitlines()[-1]) + 1}".encode())
+            # RA:ready means initialized; indexing may still be in progress.
+            for attempt in range(3):
+                terminal.send(b"\x18")  # Ctrl-x: explicit completion.
+                try:
+                    terminal.expect_screen(b"vex_completion_target")
+                    break
+                except AssertionError:
+                    if attempt == 2:
+                        raise
+            terminal.send(b"\t")
+            terminal.expect_screen(b"Documentation")
+            terminal.expect_screen(b"Returns the completion probe")
+            terminal.send(b"\x03")  # Reject completion and stay in insert mode.
+            terminal.expect_screen(b"INS")
+            terminal.send(b"\x18\t\r\x13")  # Early selection/accept/save await both replies.
+            terminal.expect_screen(b"wrote")
+            completed = main_file.read_text()
+            assert completed.startswith(source.rsplit("vex_com", 1)[0])
+            assert "vex_completion_target" in completed.split("fn main()", 1)[1]
+            assert "$0" not in completed and "${" not in completed
+            terminal.send(b"\x03u\x13")
+            terminal.expect_screen(b"fn main() { vex_com ")
+            terminal.expect_screen(b"wrote")
+            assert main_file.read_text() == source, main_file.read_text()
+            terminal.send(b":q\r")
+            terminal.finish()
+        print("PASS: real rust-analyzer completion, documentation resolution, rejection, early accept/save, undo, shutdown")
+
         original = os.environ.get("VEX_RUST_ANALYZER")
         os.environ["VEX_RUST_ANALYZER"] = str(project / "missing-server")
         try:

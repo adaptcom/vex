@@ -70,6 +70,11 @@ impl App {
     pub(super) fn dismiss_language_help(&mut self) {
         self.language.cancel();
         self.language.popup = None;
+        self.completion = Default::default();
+    }
+
+    pub(super) fn cancel_language_request(&mut self) {
+        self.language.cancel();
     }
 
     pub(super) fn restart_language_server(&mut self) {
@@ -84,6 +89,7 @@ impl App {
     /// Called after dispatch and drawing. Only shared snapshots and small
     /// metadata cross this boundary; JSON and UTF-16 work run on the service.
     pub fn take_lsp_update(&mut self) -> Option<vex_lsp::Update> {
+        self.invalidate_completion();
         let action = self.editor.take_language_action();
         if !self.language.enabled {
             if action.is_some() {
@@ -112,6 +118,7 @@ impl App {
         };
         if identity_changed {
             self.language.cancel();
+            self.completion = Default::default();
             self.language.epoch += 1;
             self.language.diagnostics.clear();
             self.language.popup = None;
@@ -136,39 +143,48 @@ impl App {
                 .cloned(),
         });
         let mut request = None;
-        match action {
-            Some(LanguageAction::Hover | LanguageAction::Definition) => {
-                if document.is_none() {
-                    self.fail("language services require a named Rust file; save with :w PATH.rs");
-                } else if self.language.status == "unavailable" {
-                    self.fail("rust-analyzer is unavailable; use :lsp-restart to retry");
-                } else if self.editor.document().text().len_bytes() > vex_lsp::MAX_DOCUMENT_BYTES {
-                    self.fail("document exceeds the initial 8 MiB LSP limit");
-                } else {
-                    self.language.cancel();
-                    self.language.next_request += 1;
-                    let cancellation = Cancellation::default();
-                    self.language.pending = Some(Pending {
-                        id: self.language.next_request,
-                        revision: self.editor.document().revision(),
-                        document: self.editor.document().id(),
-                        selections: self.editor.selections().clone(),
-                        mode: self.editor.mode(),
-                        cancellation: cancellation.clone(),
-                    });
-                    request = Some(vex_lsp::Request {
-                        id: self.language.next_request,
-                        kind: if action == Some(LanguageAction::Hover) {
-                            RequestKind::Hover
-                        } else {
-                            RequestKind::Definition
-                        },
-                        position: self.language_cursor(),
-                        cancellation,
-                    });
-                    self.message = "waiting for rust-analyzer...".into();
+        let kind = match action {
+            Some(LanguageAction::Hover) => Some(RequestKind::Hover),
+            Some(LanguageAction::Definition) => Some(RequestKind::Definition),
+            Some(LanguageAction::Completion) => Some(RequestKind::Completion),
+            _ => self.take_completion_request(),
+        };
+        if let Some(kind) = kind {
+            if document.is_none() {
+                self.fail_completion(
+                    "language services require a named Rust file; save with :w PATH.rs".into(),
+                );
+            } else if self.language.status == "unavailable" {
+                self.fail_completion(
+                    "rust-analyzer is unavailable; use :lsp-restart to retry".into(),
+                );
+            } else if self.editor.document().text().len_bytes() > vex_lsp::MAX_DOCUMENT_BYTES {
+                self.fail_completion("document exceeds the initial 8 MiB LSP limit".into());
+            } else {
+                self.language.cancel();
+                if matches!(kind, RequestKind::Completion) {
+                    self.begin_completion();
                 }
+                self.language.next_request += 1;
+                let cancellation = Cancellation::default();
+                self.language.pending = Some(Pending {
+                    id: self.language.next_request,
+                    revision: self.editor.document().revision(),
+                    document: self.editor.document().id(),
+                    selections: self.editor.selections().clone(),
+                    mode: self.editor.mode(),
+                    cancellation: cancellation.clone(),
+                });
+                request = Some(vex_lsp::Request {
+                    id: self.language.next_request,
+                    kind,
+                    position: self.language_cursor(),
+                    cancellation,
+                });
+                self.message = "waiting for rust-analyzer...".into();
             }
+        }
+        match action {
             Some(LanguageAction::NextDiagnostic(count)) => self.navigate_diagnostic(false, count),
             Some(LanguageAction::PreviousDiagnostic(count)) => {
                 self.navigate_diagnostic(true, count)
@@ -180,7 +196,7 @@ impl App {
                 self.language.force = true;
                 return self.take_lsp_update();
             }
-            None => {}
+            _ => {}
         }
         self.language.force = false;
         self.language.document = document.clone();
@@ -206,7 +222,7 @@ impl App {
                 };
                 if failed {
                     self.language.cancel();
-                    self.fail(message);
+                    self.fail_completion(message);
                 }
             }
             Event::Diagnostics {
@@ -253,7 +269,9 @@ impl App {
                             self.fail(error);
                         }
                     }
-                    Err(error) => self.fail(error),
+                    Ok(Answer::Completion(items)) => self.receive_completions(items),
+                    Ok(Answer::CompletionResolved(item)) => self.receive_resolved_completion(item),
+                    Err(error) => self.fail_completion(error),
                 }
             }
         }

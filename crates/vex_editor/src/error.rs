@@ -17,6 +17,7 @@ pub enum Error {
     SearchActive,
     SearchChanged,
     NoMatch,
+    InvalidCompletion,
 }
 
 impl From<vex_core::Error> for Error {
@@ -52,6 +53,10 @@ impl fmt::Display for Error {
                 "document or mode changed during search; search cancelled"
             ),
             Self::NoMatch => write!(f, "no matches"),
+            Self::InvalidCompletion => write!(
+                f,
+                "completion requires one insertion caret inside the replacement range"
+            ),
         }
     }
 }

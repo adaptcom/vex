@@ -1,10 +1,12 @@
 //! Rust-analyzer over stdio, with a small futures executor and immutable editor
 //! snapshots. The UI submits coalesced state and receives typed, ordered events.
 
+mod completion;
 mod executor;
 mod protocol;
 mod transport;
 
+pub use completion::{CompletionItem, Completions};
 use executor::Executor;
 pub use protocol::{Location, Position, file_path, file_uri, offset, position};
 use serde_json::{Value, json};
@@ -35,10 +37,12 @@ pub struct Document {
     pub saved_snapshot: Option<Snapshot>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum RequestKind {
     Hover,
     Definition,
+    Completion,
+    ResolveCompletion(Box<CompletionItem>),
 }
 
 #[derive(Debug)]
@@ -68,6 +72,8 @@ pub struct Diagnostic {
 pub enum Answer {
     Hover(String),
     Definition(Option<Location>),
+    Completion(Completions),
+    CompletionResolved(CompletionItem),
 }
 
 #[derive(Debug)]
@@ -318,7 +324,12 @@ async fn session(
                 "synchronization":{"didSave":true},
                 "publishDiagnostics":{"versionSupport":true},
                 "hover":{"contentFormat":["plaintext"]},
-                "definition":{"linkSupport":true}
+                "definition":{"linkSupport":true},
+                "completion":{"completionItem":{
+                    "snippetSupport":false,"insertReplaceSupport":true,
+                    "documentationFormat":["plaintext"],
+                    "resolveSupport":{"properties":["documentation","detail","additionalTextEdits"]}
+                }}
             },
             "workspace":{"configuration":true}, "window":{"workDoneProgress":false}
         }
@@ -429,6 +440,8 @@ async fn session(
                         let result = result.and_then(|value| match request.kind {
                             RequestKind::Hover => Ok(Answer::Hover(protocol::hover_text(&value))),
                             RequestKind::Definition => protocol::definition(&value).map(Answer::Definition).map_err(|e| e.to_string()),
+                            RequestKind::Completion => completion::parse(value, document.snapshot.text(), request.position, capabilities["completionProvider"]["resolveProvider"] == true).map(Answer::Completion),
+                            RequestKind::ResolveCompletion(item) => completion::resolve(&item, value, document.snapshot.text(), request.position).map(Answer::CompletionResolved),
                         });
                         emit(Event::Answer { epoch, revision: document.snapshot.revision(), id: request.id, result });
                     }
@@ -507,19 +520,23 @@ fn start_request(
     if request.cancellation.is_cancelled() {
         return;
     }
-    let (method, capability) = match request.kind {
+    let (method, capability) = match &request.kind {
         RequestKind::Hover => ("textDocument/hover", "hoverProvider"),
         RequestKind::Definition => ("textDocument/definition", "definitionProvider"),
+        RequestKind::Completion => ("textDocument/completion", "completionProvider"),
+        RequestKind::ResolveCompletion(_) => ("completionItem/resolve", "completionProvider"),
     };
     let result = if capabilities[capability] != true && !capabilities[capability].is_object() {
         Err("language server does not support this request".into())
     } else if let Some(position) = position(document.snapshot.text(), request.position) {
-        transport.request(
-            executor,
-            method,
-            json!({"textDocument":{"uri":uri},"position":position}),
-            Duration::from_secs(10),
-        )
+        let params = match &request.kind {
+            RequestKind::ResolveCompletion(item) => item.raw.clone(),
+            RequestKind::Completion => {
+                json!({"textDocument":{"uri":uri},"position":position,"context":{"triggerKind":1}})
+            }
+            _ => json!({"textDocument":{"uri":uri},"position":position}),
+        };
+        transport.request(executor, method, params, Duration::from_secs(10))
     } else {
         Err("invalid request position".into())
     };
@@ -604,7 +621,7 @@ while True:
     params = value.get('params')
     if method == 'initialize':
         if HANG_INITIALIZE: continue
-        send({'id':value['id'],'result':{'capabilities':{'positionEncoding':'utf-16','textDocumentSync':{'openClose':True,'change':2,'save':True},'hoverProvider':True,'definitionProvider':True}}})
+        send({'id':value['id'],'result':{'capabilities':{'positionEncoding':'utf-16','textDocumentSync':{'openClose':True,'change':2,'save':True},'hoverProvider':True,'definitionProvider':True,'completionProvider':{'resolveProvider':True}}}})
         send({'id':'configuration','method':'workspace/configuration','params':{'items':[{'section':'rust-analyzer'}]}})
     elif method == 'textDocument/didOpen':
         uri = params['textDocument']['uri']; version = params['textDocument']['version']
@@ -618,6 +635,13 @@ while True:
         send({'id':value['id'],'result':{'contents':{'kind':'plaintext','value':'fn example() -> u32'}}})
     elif method == 'textDocument/definition':
         send({'id':value['id'],'result':[{'targetUri':uri,'targetRange':{'start':{'line':0,'character':0},'end':{'line':0,'character':4}},'targetSelectionRange':{'start':{'line':0,'character':3},'end':{'line':0,'character':4}}}]})
+    elif method == 'textDocument/completion':
+        send({'id':value['id'],'result':{'isIncomplete':False,'items':[{'label':'xray','data':{'ticket':7},'insertText':'xray'}]}})
+    elif method == 'completionItem/resolve':
+        assert params['data']['ticket'] == 7
+        params['documentation'] = {'kind':'plaintext','value':'Resolved docs'}
+        params['additionalTextEdits'] = [{'range':{'start':{'line':0,'character':0},'end':{'line':0,'character':0}},'newText':'use demo::xray;\n'}]
+        send({'id':value['id'],'result':params})
     elif method == 'shutdown': send({'id':value['id'],'result':None})
     elif method == 'exit': break
 "##.replace("HANG_INITIALIZE", if hang_initialize { "True" } else { "False" });
@@ -662,6 +686,42 @@ while True:
         assert!(
             matches!(until(&receiver, |event| matches!(event, Event::Answer { id: 2, .. })), Event::Answer { result: Ok(Answer::Definition(Some(location))), .. } if location.path == doc.path)
         );
+        service.update(Update {
+            document: Some(doc.clone()),
+            request: Some(request(4, RequestKind::Completion, 3)),
+        });
+        let Event::Answer {
+            result: Ok(Answer::Completion(mut list)),
+            ..
+        } = until(&receiver, |event| {
+            matches!(event, Event::Answer { id: 4, .. })
+        })
+        else {
+            panic!("missing completion list")
+        };
+        let item = list.items.pop().unwrap();
+        assert_eq!(item.edit.range(), CharOffset(2)..CharOffset(3));
+        assert!(!item.resolved);
+        service.update(Update {
+            document: Some(doc.clone()),
+            request: Some(request(
+                5,
+                RequestKind::ResolveCompletion(Box::new(item)),
+                3,
+            )),
+        });
+        let Event::Answer {
+            result: Ok(Answer::CompletionResolved(item)),
+            ..
+        } = until(&receiver, |event| {
+            matches!(event, Event::Answer { id: 5, .. })
+        })
+        else {
+            panic!("missing resolved completion")
+        };
+        assert_eq!(item.documentation, "Resolved docs");
+        assert_eq!(item.additional_edits.len(), 1);
+        assert!(item.resolved);
         let stalled = request(3, RequestKind::Hover, 0);
         let cancellation = stalled.cancellation.clone();
         service.update(Update {
@@ -712,6 +772,16 @@ while True:
             .filter_map(|message| message["method"].as_str())
             .collect();
         assert_eq!(methods[0], "initialize");
+        assert_eq!(
+            messages[0]["params"]["capabilities"]["textDocument"]["completion"]["completionItem"]["snippetSupport"],
+            false
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message["method"] == "textDocument/completion"
+                    && message["params"]["position"]["character"] == 4)
+        );
         let saved = messages
             .iter()
             .position(|message| message["method"] == "textDocument/didSave")
