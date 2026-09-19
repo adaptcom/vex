@@ -1,5 +1,6 @@
 //! Extended grapheme boundaries over rope chunks, without flattening the text.
 
+use std::borrow::Cow;
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 
 use crate::{CharOffset, Error, Rope};
@@ -67,6 +68,40 @@ impl<'a> Cursor<'a> {
     pub fn previous(&mut self) -> Option<CharOffset> {
         self.query(GraphemeCursor::prev_boundary)
             .map(|byte| CharOffset(self.text.byte_to_char(byte)))
+    }
+
+    /// Borrow the next cluster from the current rope chunk when possible. The
+    /// caller already knows its scalar start, so it can count this short slice
+    /// instead of performing another root-to-leaf coordinate lookup per glyph.
+    pub fn next_grapheme(&mut self) -> Option<Cow<'a, str>> {
+        let byte = self.cursor.cur_cursor();
+        let chunk = self.chunk;
+        let start = self.start;
+        let end = self.query(GraphemeCursor::next_boundary)?;
+        Some(if end <= start + chunk.len() {
+            Cow::Borrowed(&chunk[byte - start..end - start])
+        } else {
+            Cow::Owned(self.text.byte_slice(byte..end).to_string())
+        })
+    }
+
+    /// Printable ASCII bytes available in the currently borrowed chunk.
+    pub fn ascii_prefix(&self) -> usize {
+        self.chunk.as_bytes()[self.cursor.cur_cursor() - self.start..]
+            .iter()
+            .take_while(|&&b| (b' '..=b'~').contains(&b))
+            .count()
+    }
+
+    /// Skip complete ASCII graphemes, retaining the run's final character in case
+    /// it joins Unicode in the next cluster/chunk. Only used by layout scanning.
+    pub fn advance_ascii(&mut self, count: usize) {
+        debug_assert!(count > 0 && count < self.ascii_prefix());
+        self.cursor = GraphemeCursor::new(
+            self.cursor.cur_cursor() + count,
+            self.text.len_bytes(),
+            true,
+        );
     }
 }
 

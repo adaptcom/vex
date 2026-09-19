@@ -75,7 +75,9 @@ encoding. It has no UI framework or Ratatui dependency:
 - `app` combines editor state, key dispatch, file state, prompt, and viewport.
 - `render` paints visible logical lines, selections, line numbers, status, and
   the prompt into a cell grid. It borrows rope slices where possible. Horizontal
-  and vertical scrolling follow the primary cursor; there is no soft wrapping.
+  and vertical scrolling follow the primary cursor. The editor's shared layout
+  cache locates the visible start of horizontally scrolled lines. There is no
+  soft wrapping.
 - `screen` reuses two grids, compares cells, and buffers changed runs into one
   write and flush. Identical frames emit no bytes. Wide glyphs reserve explicit
   continuation cells so replacing or clipping them does not leave stale text.
@@ -116,10 +118,45 @@ attributes, and ACLs are not preserved. The content check is not a lock against
 concurrent writers, and the parent directory is not synced for crash durability.
 
 This version has one buffer and view. File I/O is synchronous. Rendering stops
-at the right edge, but finding columns and horizontally scrolled text still
-scans the hidden line prefix. A deep position in a huge single line can therefore
-be slow; there is no long-line layout cache yet. Clipboard integration, mouse
-input, search, syntax highlighting, and LSP are not implemented.
+at the right edge. Cached display columns avoid repeatedly scanning hidden line
+prefixes; cold queries and reindexing after an early edit can still be expensive.
+Clipboard integration, mouse input, search, syntax highlighting, and LSP are not
+implemented.
+
+## Layout cache
+
+Each editor owns a `vex_core::layout::LayoutCache`. Vertical motion and rendering
+query it through `Editor::display_column` and `Editor::position_at_column`.
+The existing pure motion functions remain available for callers without a cache.
+Queries update derived layout data without editing text or selections.
+
+The cache indexes logical lines on demand. Sparse checkpoints store a grapheme's
+scalar offset and display column; eight recent positions per line accelerate
+nearby movement. Queries seek to the closest known checkpoint and scan the gap.
+ASCII runs advance in batches; Unicode clusters usually borrow directly from
+rope chunks. Chunk boundaries do not become artificial grapheme boundaries.
+
+At most 128 lines are retained, evicting the least recently used line. Each line
+has at most 4,096 checkpoints, initially spaced by 256 scalars. Spacing grows as
+needed for very long lines, keeping checkpoint storage around 8 MiB at the limit
+on a 64-bit build, plus a small amount of bookkeeping. No old document snapshots
+are kept by the cache.
+
+Transactions and history retain the extent of changed text in old and new scalar
+coordinates. Every editing command synchronizes the cache, including individual
+text events within a terminal input batch. It keeps boundaries strictly before
+the first edit and discards the affected suffix of that line. Entire unchanged
+lines after the last edit move to their new positions without rescanning, using
+line-relative offsets. Undo and redo reverse/reapply those extents. Changing tab
+width or document identity clears the indexes; a cache that missed revisions also
+clears conservatively. Line joins, CRLF changes, and newly combined graphemes are
+covered by the same invalidation rules.
+
+Initial indexing is still proportional to the needed prefix. Editing near the
+start of a huge line invalidates its later checkpoints, and the next deep query
+must rebuild them. Extremely large clusters and Unicode rules requiring long
+lookbehind can also be expensive. The cache does not make every operation depend
+only on viewport size; benchmarks report cold and warmed behavior separately.
 
 ## Validation
 
@@ -133,10 +170,12 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo build --release -p vex_term --locked
 python3 tools/terminal_smoke.py
 cargo bench -p vex_term --bench rendering --locked -- --noplot
+cargo run --release -p vex_term --example long_lines --locked -- 10 100
 ```
 
 The Unix smoke script launches the real executable with a controlling
 pseudo-terminal. It exercises paste, CRLF, undo/redo, dirty quit, save, resize,
-focus, and terminal cleanup. It also runs the panic-cleanup source test under a
+focus, seeking/editing at the end of a 1 MiB line, and terminal cleanup. It also
+runs the panic-cleanup source test under a
 PTY; this test returns early in the normal noninteractive Cargo test run.
 See [performance measurements](performance.md) for benchmark scope and results.

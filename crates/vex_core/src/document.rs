@@ -69,6 +69,25 @@ impl Snapshot {
     }
 }
 
+/// Conservative extent of a revision's changes. Text before `start` and after
+/// the corresponding end is unchanged. The first edit's old/new start is equal.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ChangeExtent {
+    pub start: CharOffset,
+    pub old_end: CharOffset,
+    pub new_end: CharOffset,
+}
+
+impl ChangeExtent {
+    pub fn reversed(self) -> Self {
+        Self {
+            start: self.start,
+            old_end: self.new_end,
+            new_end: self.old_end,
+        }
+    }
+}
+
 /// Text, revision, and bounded undo history, with no terminal or filesystem paths.
 ///
 /// Selections belong to the caller (eventually a view). Applying a transaction
@@ -80,6 +99,7 @@ pub struct Document {
     revision: Revision,
     text: Rope,
     history: History,
+    pub(crate) change: ChangeExtent,
 }
 
 impl Document {
@@ -209,7 +229,25 @@ impl Document {
             text: text.clone(),
             selections: after_selections.clone(),
         };
-        self.history.record(before, after);
+        let change_start = transaction
+            .edits()
+            .next()
+            .expect("nonempty transaction")
+            .range()
+            .start;
+        let old_end = transaction
+            .edits()
+            .last()
+            .expect("nonempty transaction")
+            .range()
+            .end;
+        let change = ChangeExtent {
+            start: change_start,
+            old_end,
+            new_end: CharOffset(text.len_chars() - (self.text.len_chars() - old_end.0)),
+        };
+        self.history.record(before, after, change);
+        self.change = change;
         self.text = text;
         self.revision = revision;
         *selections = after_selections;
@@ -221,7 +259,8 @@ impl Document {
             return Ok(false);
         }
         let revision = self.revision.next()?;
-        let state = self.history.undo().expect("checked undo history");
+        let (state, change) = self.history.undo().expect("checked undo history");
+        self.change = change;
         self.text = state.text;
         *selections = state.selections;
         self.revision = revision;
@@ -233,7 +272,8 @@ impl Document {
             return Ok(false);
         }
         let revision = self.revision.next()?;
-        let state = self.history.redo().expect("checked redo history");
+        let (state, change) = self.history.redo().expect("checked redo history");
+        self.change = change;
         self.text = state.text;
         *selections = state.selections;
         self.revision = revision;
@@ -263,6 +303,7 @@ impl From<Rope> for Document {
             revision: Revision::default(),
             text,
             history: History::default(),
+            change: ChangeExtent::default(),
         }
     }
 }

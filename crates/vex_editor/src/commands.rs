@@ -57,7 +57,7 @@ fn replace_ranges(editor: &mut Editor, ranges: &SelectionSet, text: &str) -> Res
     let transaction = editor.document.replace_selections(ranges, text)?;
     let after = transaction.map_selections(&editor.selections, Affinity::After)?;
     let transaction = transaction.with_selections(after)?;
-    editor.document.apply(transaction, &mut editor.selections)?;
+    editor.apply(transaction)?;
     editor.preferred_columns = None;
     Ok(())
 }
@@ -124,16 +124,22 @@ fn vertical(ctx: &mut CommandContext<'_>, down: bool) -> Result<(), Error> {
         let position = position(editor, selection)?;
         let column = match &editor.preferred_columns {
             Some(columns) => columns[index],
-            None => motion::column(text, position, editor.tab_width)?,
+            None => editor.display_column(position)?,
         };
-        let destination = motion::vertical(
-            text,
-            position,
-            ctx.count.get(),
-            down,
-            column,
-            editor.tab_width,
-        )?;
+        let line = text.char_to_line(position.0);
+        let target = if down {
+            line.saturating_add(ctx.count.get())
+                .min(text.len_lines() - 1)
+        } else {
+            line.saturating_sub(ctx.count.get())
+        };
+        let destination = if line == target {
+            position
+        } else {
+            editor
+                .position_at_column(CharOffset(text.line_to_char(target)), column)?
+                .0
+        };
         columns.push(column);
         ranges.push(at_destination(editor, selection, destination)?);
     }
@@ -321,7 +327,7 @@ commands! {
         require_insert(editor)?;
         let text = ctx.text.ok_or(Error::MissingText)?;
         let transaction = editor.document.replace_selections(&editor.selections, text)?;
-        editor.document.apply(transaction, &mut editor.selections)?;
+        editor.apply(transaction)?;
         normalize(editor)
     }
 
@@ -329,7 +335,7 @@ commands! {
     fn delete_selection(ctx) {
         let editor = &mut *ctx.editor;
         let transaction = editor.document.replace_selections(&editor.selections, "")?;
-        editor.document.apply(transaction, &mut editor.selections)?;
+        editor.apply(transaction)?;
         editor.mode = Mode::Normal;
         normalize(editor)
     }
@@ -338,7 +344,7 @@ commands! {
     fn change_selection(ctx) {
         let editor = &mut *ctx.editor;
         let transaction = editor.document.replace_selections(&editor.selections, "")?;
-        editor.document.apply(transaction, &mut editor.selections)?;
+        editor.apply(transaction)?;
         editor.mode = Mode::Insert;
         normalize(editor)
     }
@@ -353,6 +359,7 @@ commands! {
     fn undo(ctx) {
         for _ in 0..ctx.count.get() {
             if !ctx.editor.document.undo(&mut ctx.editor.selections)? { break; }
+            ctx.editor.synchronize_layout();
         }
         normalize(ctx.editor)
     }
@@ -361,6 +368,7 @@ commands! {
     fn redo(ctx) {
         for _ in 0..ctx.count.get() {
             if !ctx.editor.document.redo(&mut ctx.editor.selections)? { break; }
+            ctx.editor.synchronize_layout();
         }
         normalize(ctx.editor)
     }

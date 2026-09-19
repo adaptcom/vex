@@ -34,6 +34,7 @@ cargo fmt --all -- --check
 cargo bench -p vex_core --bench editing --locked -- --noplot
 cargo bench -p vex_editor --bench commands --locked -- --noplot
 cargo bench -p vex_term --bench rendering --locked -- --noplot
+cargo run --release -p vex_term --example long_lines --locked -- 10 100
 cargo run -p vex_editor --example command_reference --locked
 cargo build --release -p vex_term --locked
 python3 tools/terminal_smoke.py
@@ -161,12 +162,16 @@ This is an initial set of bindings inspired by Helix, without a compatibility
 guarantee. Word categories currently group Unicode letters/numbers and underscore,
 punctuation, and whitespace; language-specific segmentation is not implemented.
 Each text event is an undo step; insert-session grouping is still pending. Vertical
-layout scans the needed line prefix and has no layout cache or soft wrapping yet.
+movement and rendering share a bounded, lazy display-column cache. Edits retain
+the unaffected prefix and shift indexes for unchanged later lines; undo/redo
+updates the same cache. The first visit to an unindexed prefix still scans it.
+Soft wrapping is not implemented yet.
 
 ## Next milestone
 
 The first interactive loop can open, select, edit, undo, and save. Search, pickers,
-Tree-sitter, and LSP follow. Long-line layout caching and insert-session undo
-grouping remain important improvements to the editing loop.
+Tree-sitter, and LSP follow. Insert-session undo grouping is the next improvement
+to the editing loop. Further layout work can address cold indexing and updates
+near the beginning of a huge line.
 
 See [the benchmark notes](docs/performance.md) for the initial performance baseline.

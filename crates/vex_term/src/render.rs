@@ -1,5 +1,5 @@
 //! Paint only visible logical lines into our grid. No document-sized String is
-//! created; long lines stop at the right edge after scanning their hidden prefix.
+//! created; the editor's layout cache skips the horizontally hidden line prefix.
 
 use crate::screen::{Cursor, CursorShape, Frame, Style};
 use std::num::NonZeroUsize;
@@ -41,7 +41,7 @@ pub fn paint(
         motion::cursor(text, editor.selections().primary())?
     };
     let row = text.char_to_line(primary.0);
-    let column = motion::column(text, primary, editor.tab_width())?;
+    let column = editor.display_column(primary)?;
     let body_height = height.saturating_sub(2);
     let gutter = if width >= 8 {
         (text.len_lines().ilog10() as usize + 2).min(width / 3)
@@ -127,9 +127,13 @@ pub fn paint(
                 },
             );
         }
-        let mut position = CharOffset(text.line_to_char(line));
+        let start = CharOffset(text.line_to_char(line));
+        let (mut position, mut column) = if viewport.left_column == 0 {
+            (start, 0)
+        } else {
+            editor.position_at_column(start, viewport.left_column)?
+        };
         let end = motion::line_end(text, position)?;
-        let mut column = 0usize;
         while position < end && column < viewport.left_column.saturating_add(body_width) {
             let next = grapheme::next(text, position, 1)?;
             let slice = text.slice(position.0..next.0);

@@ -18,8 +18,10 @@ pub fn visible(grapheme: &str) -> &str {
 pub fn width(grapheme: &str, column: usize, tab_width: NonZeroUsize) -> usize {
     if grapheme == "\t" {
         tab_width.get() - column % tab_width.get()
+    } else if grapheme.chars().any(char::is_control) {
+        1
     } else {
-        visible(grapheme).width()
+        grapheme.width().max(1)
     }
 }
 

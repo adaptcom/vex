@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::{Rope, SelectionSet};
+use crate::{Rope, SelectionSet, document::ChangeExtent};
 
 #[derive(Clone, Debug)]
 pub(crate) struct State {
@@ -12,6 +12,7 @@ pub(crate) struct State {
 struct Entry {
     before: State,
     after: State,
+    change: ChangeExtent,
 }
 
 /// Rope clones share unchanged storage, including across undo branches.
@@ -33,26 +34,30 @@ impl Default for History {
 }
 
 impl History {
-    pub fn record(&mut self, before: State, after: State) {
+    pub fn record(&mut self, before: State, after: State, change: ChangeExtent) {
         self.undone.clear();
         if self.limit != 0 {
-            self.done.push_back(Entry { before, after });
+            self.done.push_back(Entry {
+                before,
+                after,
+                change,
+            });
             while self.done.len() > self.limit {
                 self.done.pop_front();
             }
         }
     }
 
-    pub fn undo(&mut self) -> Option<State> {
+    pub fn undo(&mut self) -> Option<(State, ChangeExtent)> {
         let entry = self.done.pop_back()?;
-        let state = entry.before.clone();
+        let state = (entry.before.clone(), entry.change.reversed());
         self.undone.push(entry);
         Some(state)
     }
 
-    pub fn redo(&mut self) -> Option<State> {
+    pub fn redo(&mut self) -> Option<(State, ChangeExtent)> {
         let entry = self.undone.pop()?;
-        let state = entry.after.clone();
+        let state = (entry.after.clone(), entry.change);
         self.done.push_back(entry);
         Some(state)
     }

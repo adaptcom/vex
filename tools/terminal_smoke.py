@@ -208,6 +208,24 @@ def main():
             terminal.finish(expected=1, entered=False)
         print("PASS: invalid UTF-8 fails without altering terminal")
 
+        long_path = Path(directory) / "long-line.txt"
+        long_text = b"x" * (1 << 20) + b"END"
+        long_path.write_bytes(long_text)
+        with Terminal([binary, str(long_path)]) as terminal:
+            terminal.start()
+            mark = terminal.send(b"ge")
+            terminal.expect(b"END", mark)
+            mark = terminal.send(b"i")
+            terminal.expect(b"INS", mark)
+            terminal.send(b"!")
+            mark = terminal.send(b"\x1b")
+            terminal.expect(b"NOR", mark)
+            terminal.send(b":wq\r")
+            terminal.finish()
+            assert long_path.read_bytes() == long_text + b"!"
+            assert len(terminal.output) < 100_000, "hidden text was written to the terminal"
+        print("PASS: seek, edit, and save at the end of a 1 MiB line")
+
     with Terminal([
         panic_test_binary(), "--exact", "terminal::tests::panic_restores_terminal", "--nocapture",
     ]) as terminal:

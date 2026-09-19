@@ -14,7 +14,8 @@
 //! # Ok::<(), vex_editor::Error>(())
 //! ```
 
-use std::num::NonZeroUsize;
+use std::{cell::RefCell, num::NonZeroUsize};
+use vex_core::layout::LayoutCache;
 use vex_core::{CharOffset, Document, Selection, SelectionSet, grapheme, motion};
 
 pub mod commands;
@@ -43,6 +44,7 @@ pub struct Editor {
     mode: Mode,
     preferred_columns: Option<Vec<usize>>,
     tab_width: NonZeroUsize,
+    layout: RefCell<LayoutCache>,
 }
 
 impl Editor {
@@ -56,6 +58,7 @@ impl Editor {
             mode: Mode::Normal,
             preferred_columns: None,
             tab_width: NonZeroUsize::new(4).unwrap(),
+            layout: RefCell::default(),
         }
     }
 
@@ -75,6 +78,38 @@ impl Editor {
     pub fn set_tab_width(&mut self, width: NonZeroUsize) {
         self.tab_width = width;
         self.preferred_columns = None;
+    }
+
+    /// Cached display column, using the same width conventions as vertical motion.
+    /// Filling derived layout data does not mutate the document or selections.
+    pub fn display_column(&self, position: CharOffset) -> Result<usize, vex_core::Error> {
+        self.layout
+            .borrow_mut()
+            .column(&self.document, position, self.tab_width)
+    }
+
+    /// Locate a display column in the logical line containing `position`.
+    /// Returns its grapheme boundary and actual column, clamping at line end.
+    pub fn position_at_column(
+        &self,
+        position: CharOffset,
+        column: usize,
+    ) -> Result<(CharOffset, usize), vex_core::Error> {
+        self.layout
+            .borrow_mut()
+            .at_column(&self.document, position, column, self.tab_width)
+    }
+
+    fn synchronize_layout(&mut self) {
+        self.layout.get_mut().synchronize(&self.document);
+    }
+
+    // Every text command goes through here, including each event in a batch.
+    // Otherwise several edits before drawing would skip cache revisions.
+    fn apply(&mut self, transaction: vex_core::Transaction) -> Result<(), Error> {
+        self.document.apply(transaction, &mut self.selections)?;
+        self.synchronize_layout();
+        Ok(())
     }
 
     /// Install selections after checking bounds and snapping endpoints outward
@@ -185,5 +220,67 @@ mod tests {
             editor.selections().primary(),
             Selection::cursor(CharOffset(3))
         );
+    }
+
+    #[test]
+    fn cached_motion_tracks_batched_typing_history_tab_width_and_multiple_cursors() {
+        let mut editor = Editor::new(Document::from("a\t界e\u{301}\r\n123456789\r\nx\tend"));
+        editor.execute("insert_mode", 1).unwrap();
+        editor
+            .set_selections(
+                SelectionSet::new(
+                    vec![
+                        Selection::cursor(CharOffset(3)),
+                        Selection::cursor(CharOffset(13)),
+                    ],
+                    1,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let verify = |editor: &Editor| {
+            for position in 0..=editor.document().text().len_chars() {
+                assert_eq!(
+                    editor.display_column(CharOffset(position)).unwrap(),
+                    motion::column(
+                        editor.document().text(),
+                        CharOffset(position),
+                        editor.tab_width()
+                    )
+                    .unwrap()
+                );
+            }
+        };
+        verify(&editor);
+        // Several changes can arrive in a terminal event batch before drawing.
+        for text in ["x", "\u{301}", "\n", "\t"] {
+            editor.insert_text(text).unwrap();
+        }
+        verify(&editor);
+        editor.execute("undo", 4).unwrap();
+        verify(&editor);
+        editor.execute("redo", 3).unwrap();
+        verify(&editor);
+        editor.set_tab_width(NonZeroUsize::new(8).unwrap());
+        verify(&editor);
+        let before = editor.selections().clone();
+        let text = editor.document().text();
+        let expected = SelectionSet::new(
+            before
+                .ranges()
+                .iter()
+                .map(|s| {
+                    let column = motion::column(text, s.head, editor.tab_width()).unwrap();
+                    Selection::cursor(
+                        motion::vertical(text, s.head, 1, true, column, editor.tab_width())
+                            .unwrap(),
+                    )
+                })
+                .collect(),
+            before.primary_index(),
+        )
+        .unwrap();
+        editor.execute("move_down", 1).unwrap();
+        assert_eq!(editor.selections(), &expected);
     }
 }

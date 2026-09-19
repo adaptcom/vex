@@ -75,8 +75,8 @@ estimates for a pair of movements, not p95 latency or rendered frames.
 One down/up pair on a repeated tab/CJK fixture takes about 2.01 µs using direct
 named command invocation. It measures logical-line lookup, retained display
 columns, and scanning short target-line prefixes. It does not measure vertical
-movement at deep columns in exceptionally long lines; that needs a layout cache
-and a separate benchmark.
+movement at deep columns in exceptionally long lines. These original measurements
+predate the layout cache; see the long-line measurements below.
 
 ## Terminal viewport baseline
 
@@ -115,7 +115,74 @@ Unicode source rows are shorter than ASCII rows, so their lower time does not
 mean Unicode processing is faster per character. The single-line fixture paints
 only its visible beginning and otherwise empty rows.
 
-File size has little effect on these cases. Deep horizontal scrolling remains
-unbounded by viewport width because layout scans the hidden line prefix. A
-long-line layout cache, multi-cursor rendering measurements, and event-to-flush
-tail latency are still needed before claiming the interactive latency target.
+File size has little effect on these cases. This original baseline predates the
+layout cache and did not measure deep horizontal scrolling. Multi-cursor rendering
+measurements and event-to-flush tail latency are still needed before claiming the
+interactive latency target.
+
+## Long-line layout cache
+
+Measured on the same machine on 2026-09-19, in release mode with `NO_COLOR=1`.
+The fixture has **two lines**, each approximately the stated byte size, and a
+120 × 40 viewport positioned near their ends. The Unicode pattern includes tabs,
+CJK, a combining mark, and a joined emoji. All output goes to `std::io::sink()`;
+these measurements exclude input polling, terminal transport, and emulator work.
+
+The quick probe separates the first draw from subsequent operations:
+
+```sh
+cargo run --release -p vex_term --example long_lines --locked -- 1 100
+cargo run --release -p vex_term --example long_lines --locked -- 10 100
+```
+
+Before the cache, the same probe with three samples per operation showed the
+cost of repeatedly scanning the hidden prefix. After measurements use 100
+samples. The following values are medians, except the single first draw:
+
+| 1 MiB per line | ASCII before | ASCII after | Unicode/tabs before | Unicode/tabs after |
+|---|---:|---:|---:|---:|
+| First draw | 477.3 ms | 6.47 ms | 189.1 ms | 18.90 ms |
+| Horizontal move + draw | 442.1 ms | 0.166 ms | 188.6 ms | 0.052 ms |
+| Vertical move + draw | 597.1 ms | 0.125 ms | 251.6 ms | 0.051 ms |
+| Insert, draw, undo, draw | 911.7 ms | 0.192 ms | 385.5 ms | 0.100 ms |
+
+At **10 MiB per line**, the first draw took 16.70 ms for ASCII and 157.97 ms for
+Unicode/tabs. Subsequent horizontal-move medians were 0.084 ms and 0.053 ms;
+insert/draw/undo/draw medians were 0.128 ms and 0.104 ms. First-draw values are
+single observations, not latency percentiles. This probe has no timed warmup,
+unlike the longer-running Criterion measurements below.
+
+The `deep_line` Criterion group measures steady behavior with the initial index
+built before timing. It uses the same 30 samples, 500 ms warmup, and one second
+of measurement as the viewport benchmarks:
+
+```sh
+cargo bench -p vex_term --bench rendering --locked -- deep_line --noplot
+```
+
+| Each line | Horizontal move + draw | Vertical move + draw | Type 1 / draw / undo / draw | Type 8 / draw / undo 8 / draw |
+|---|---:|---:|---:|---:|
+| 1 MiB ASCII | 0.062 ms | 0.063 ms | 0.129 ms | 0.131 ms |
+| 1 MiB Unicode/tabs | 0.051 ms | 0.051 ms | 0.106 ms | 0.111 ms |
+| 10 MiB ASCII | 0.058 ms | 0.059 ms | 0.123 ms | 0.125 ms |
+| 10 MiB Unicode/tabs | 0.051 ms | 0.052 ms | 0.106 ms | 0.111 ms |
+
+These are Criterion central estimates. Movement alternates neighboring positions
+or lines. Typing always edits the first line, forcing the second line's cached
+start to shift. The eight-character case processes eight distinct text events
+before drawing, then undoes all eight before another draw. It checks that event
+batching and repeated undo preserve useful indexes. Source tests separately check
+cache reuse using scanned-character counters and compare results with flat Unicode
+segmentation through edits, line joins, tab-width changes, and history operations.
+
+The existing short-line viewport benchmarks were rerun too: at 120 × 40,
+movement + drawing measured 0.169 ms for 1 MiB source, 0.178 ms for 100 MiB
+source, and 0.088 ms for mixed Unicode, compared with 0.168, 0.188, and 0.089 ms
+in the original baseline. Unscrolled rows bypass column lookup entirely.
+
+The cache is bounded and lazy: at most 128 lines and 4,096 sparse checkpoints per
+line, with small recent-position lists. It retains no historical text. Initial
+queries still scan the necessary prefix, and an early edit in a huge line can
+invalidate its later checkpoints. Large clusters and long Unicode lookbehind
+remain possible costs. These measurements establish the improvement for indexed
+positions, not a blanket bound on cold queries or end-to-end p95 latency.
