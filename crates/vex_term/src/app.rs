@@ -10,7 +10,7 @@ use crate::{
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use std::{io, path::Path};
 use vex_core::Document;
-use vex_editor::{Editor, Key, KeyHandler, Mode};
+use vex_editor::{Editor, Key, KeyHandler, Language, Mode};
 
 pub struct App {
     pub editor: Editor,
@@ -22,6 +22,7 @@ pub struct App {
     error: bool,
     quit: bool,
     size: (u16, u16),
+    automatic_language: bool,
 }
 
 impl App {
@@ -36,8 +37,10 @@ impl App {
     }
 
     fn new(document: Document, files: FileState, size: (u16, u16)) -> Self {
+        let mut editor = Editor::new(document);
+        editor.set_language(files.path().and_then(Language::from_path));
         Self {
-            editor: Editor::new(document),
+            editor,
             files,
             keys: KeyHandler::default(),
             viewport: Viewport::default(),
@@ -46,6 +49,7 @@ impl App {
             error: false,
             quit: false,
             size,
+            automatic_language: true,
         }
     }
 
@@ -250,6 +254,10 @@ commands! {
     fn write_file(app, argument, force) ["write", "w"] {
         app.editor.finish_undo_group();
         let bytes = app.files.save(app.editor.document(), if argument.is_empty() { None } else { Some(Path::new(argument)) }, force)?;
+        if app.automatic_language {
+            let language = app.files.path().and_then(Language::from_path);
+            if language != app.editor.language() { app.editor.set_language(language); }
+        }
         app.message = format!("wrote {bytes} bytes");
         Ok(())
     }
@@ -266,6 +274,23 @@ commands! {
     fn write_quit(app, argument, force) ["write-quit", "wq", "x"] {
         write_file(app, argument, force)?;
         quit(app, "", false)
+    }
+
+    /// Show or set syntax language: rust, text, or auto (detect from the file extension).
+    fn set_language(app, argument, force) ["language", "lang"] {
+        if force { return Err(io::Error::other("language does not accept !")); }
+        if !argument.is_empty() {
+            let language = match argument {
+                "rust" => Some(Language::Rust),
+                "text" => None,
+                "auto" => app.files.path().and_then(Language::from_path),
+                _ => return Err(io::Error::other("supported languages: rust, text, auto")),
+            };
+            app.automatic_language = argument == "auto";
+            app.editor.set_language(language);
+        }
+        app.message = format!("language: {}{}", app.editor.language().map_or("text", Language::name), if app.automatic_language { " (auto)" } else { "" });
+        Ok(())
     }
 
     /// Show basic keys, or the documentation for a named editing or file command.
@@ -438,5 +463,64 @@ mod tests {
         assert!(!app.is_dirty());
         press(&mut app, "3U");
         assert_eq!(app.editor.document().text(), "abe\u{301}🦀\r\ncd");
+    }
+
+    #[test]
+    fn language_detection_follows_save_as_and_respects_manual_overrides() {
+        let directory = tempfile::tempdir().unwrap();
+        let rust = directory.path().join("file.rs");
+        let text = directory.path().join("file.txt");
+        std::fs::write(&rust, "fn main() {}").unwrap();
+        let mut app = App::open(Some(&rust), (80, 24)).unwrap();
+        assert_eq!(app.editor.language(), Some(Language::Rust));
+        app.execute(&format!("w {}", text.display())).unwrap();
+        assert_eq!(app.editor.language(), None);
+        app.execute("language rust").unwrap();
+        assert!(!app.automatic_language);
+        app.execute("w").unwrap();
+        assert_eq!(app.editor.language(), Some(Language::Rust));
+        app.execute("lang auto").unwrap();
+        assert!(app.automatic_language);
+        assert_eq!(app.editor.language(), None);
+        let revision = app.editor.document().revision();
+        assert!(app.execute("lang unknown").is_err());
+        assert!(app.execute("lang! rust").is_err());
+        assert!(app.automatic_language);
+        assert_eq!(app.editor.document().revision(), revision);
+        assert!(!app.is_dirty());
+        let mut scratch = App::open(None, (80, 24)).unwrap();
+        assert_eq!(scratch.editor.language(), None);
+        scratch.execute("language rust").unwrap();
+        assert_eq!(scratch.editor.language(), Some(Language::Rust));
+        scratch.execute("language text").unwrap();
+        assert_eq!(scratch.editor.language(), None);
+        scratch.execute("help language").unwrap();
+        assert!(scratch.message.contains("rust, text, or auto"));
+    }
+
+    #[test]
+    fn real_edit_events_recolor_rust_and_history_restores_highlights() {
+        use crate::screen::Style;
+        use vex_editor::Highlight;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let mut app = App::open(Some(&path), (40, 6)).unwrap();
+        let mut frame = Frame::default();
+        let mut paint_style = |app: &mut App| {
+            frame.reset(40, 6).unwrap();
+            app.paint(&mut frame).unwrap();
+            frame.style_at(5, 0).unwrap()
+        };
+        assert_eq!(paint_style(&mut app), Style::Syntax(Highlight::Function));
+        press(&mut app, "i//");
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(paint_style(&mut app), Style::Syntax(Highlight::Comment));
+        press(&mut app, "u");
+        assert_eq!(paint_style(&mut app), Style::Syntax(Highlight::Function));
+        press(&mut app, "U");
+        assert_eq!(paint_style(&mut app), Style::Syntax(Highlight::Comment));
+        app.execute("lang text").unwrap();
+        assert_eq!(paint_style(&mut app), Style::Text);
     }
 }

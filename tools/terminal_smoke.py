@@ -41,6 +41,9 @@ class Terminal:
                 if self.slave > 2:
                     os.close(self.slave)
                 os.environ["TERM"] = "xterm-256color"
+                # Exercise colors even when the surrounding test runner disables
+                # them. This only changes the controlled PTY child's environment.
+                os.environ.pop("NO_COLOR", None)
                 child = os.fork()
                 if child == 0:
                     os.execv(arguments[0], arguments)
@@ -199,6 +202,21 @@ def main():
             terminal.finish()
             assert saved_group.read_text() == "hello"
         print("PASS: grouped typing and undo to an insert-mode savepoint")
+
+        rust_path = Path(directory) / "highlight.rs"
+        rust_path.write_text('fn main() { let message = "界"; }\n')
+        with Terminal([binary, str(rust_path)]) as terminal:
+            terminal.start()
+            # The keyword's foreground color must reach the actual terminal.
+            terminal.expect(b"\x1b[38;5;13m")
+            mark = terminal.send(b"i")
+            terminal.expect(b"INS", mark)
+            mark = terminal.send(b"//\x1b")
+            terminal.expect(b"NOR", mark)
+            terminal.send(b"u\x11")
+            terminal.finish()
+            assert rust_path.read_text() == 'fn main() { let message = "界"; }\n'
+        print("PASS: Rust syntax colors, editing, undo, and clean quit")
 
         with Terminal([binary]) as terminal:
             terminal.start()

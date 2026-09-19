@@ -4,7 +4,7 @@
 use crate::screen::{Cursor, CursorShape, Frame, Style};
 use std::num::NonZeroUsize;
 use unicode_segmentation::UnicodeSegmentation;
-use vex_core::{CharOffset, display, grapheme, motion};
+use vex_core::{ByteOffset, CharOffset, display, grapheme, motion};
 use vex_editor::{Editor, Mode};
 
 #[derive(Debug, Default)]
@@ -93,7 +93,7 @@ pub fn paint(
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let style = |position: CharOffset| {
+    let style = |position: CharOffset, syntax: Style| {
         if position == primary {
             return Style::PrimaryCursor;
         }
@@ -105,9 +105,10 @@ pub fn paint(
         if index > 0 && position < ranges[index - 1].end() {
             Style::Selection
         } else {
-            Style::Text
+            syntax
         }
     };
+    let has_syntax = editor.language().is_some();
     for screen_row in 0..body_height {
         let line = viewport.top_line.saturating_add(screen_row);
         if line >= text.len_lines() {
@@ -134,6 +135,27 @@ pub fn paint(
             editor.position_at_column(start, viewport.left_column)?
         };
         let end = motion::line_end(text, position)?;
+        let mut byte = if has_syntax {
+            text.char_to_byte(position.0)
+        } else {
+            0
+        };
+        let highlights = if has_syntax && position < end {
+            let right_column = viewport.left_column.saturating_add(body_width);
+            let (right, actual_column) = editor.position_at_column(start, right_column)?;
+            // Include a partially clipped grapheme so its placeholder cells keep
+            // the same style, without querying the rest of a long logical line.
+            let right = if actual_column < right_column && right < end {
+                grapheme::next(text, right, 1)?.min(end)
+            } else {
+                right.min(end)
+            };
+            Some(editor.syntax_highlights(ByteOffset(byte)..ByteOffset(text.char_to_byte(right.0))))
+        } else {
+            None
+        };
+        let highlights = highlights.as_deref().unwrap_or_default();
+        let mut highlight_index = 0;
         while position < end && column < viewport.left_column.saturating_add(body_width) {
             let next = grapheme::next(text, position, 1)?;
             let slice = text.slice(position.0..next.0);
@@ -146,6 +168,15 @@ pub fn paint(
                 }
             };
             let span = display::width(cluster, column, editor.tab_width());
+            while highlight_index < highlights.len()
+                && highlights[highlight_index].range.end.0 <= byte
+            {
+                highlight_index += 1;
+            }
+            let syntax = highlights
+                .get(highlight_index)
+                .filter(|highlight| highlight.range.start.0 <= byte)
+                .map_or(Style::Text, |highlight| Style::Syntax(highlight.highlight));
             glyph(
                 frame,
                 gutter,
@@ -155,8 +186,9 @@ pub fn paint(
                 span,
                 viewport.left_column,
                 body_width,
-                style(position),
+                style(position, syntax),
             );
+            byte += cluster.len();
             column = column.saturating_add(span);
             position = next;
         }
@@ -170,7 +202,7 @@ pub fn paint(
                 1,
                 viewport.left_column,
                 body_width,
-                style(end),
+                style(end, Style::Text),
             );
         }
     }
@@ -370,5 +402,85 @@ mod tests {
         assert_eq!(viewport.left_column, 1);
         assert_eq!(frame.row_text(0), "bcdef界");
         assert_eq!(frame.cursor.unwrap().x, 5);
+    }
+
+    #[test]
+    fn syntax_colors_respect_unicode_cells_and_selection_overlays() {
+        use vex_editor::{Highlight, Language};
+        let mut editor = Editor::new(Document::from(
+            "fn main() {\n\tlet s = \"界e\u{301}\"; // note\n}\n",
+        ));
+        editor.set_language(Some(Language::Rust));
+        editor.execute("goto_file_end", 1).unwrap();
+        let frame = render(&editor, 50, 8, &mut Viewport::default());
+        assert_eq!(
+            frame.style_at(2, 0),
+            Some(Style::Syntax(Highlight::Keyword))
+        );
+        assert_eq!(
+            frame.style_at(5, 0),
+            Some(Style::Syntax(Highlight::Function))
+        );
+        assert_eq!(
+            frame.style_at(6, 1),
+            Some(Style::Syntax(Highlight::Keyword))
+        );
+        let quote = 14;
+        for x in quote..quote + 5 {
+            assert_eq!(frame.style_at(x, 1), Some(Style::Syntax(Highlight::String)));
+        }
+        assert_eq!(
+            frame.style_at(22, 1),
+            Some(Style::Syntax(Highlight::Comment))
+        );
+        editor
+            .set_selections(SelectionSet::single(Selection::new(
+                CharOffset(0),
+                CharOffset(2),
+            )))
+            .unwrap();
+        let frame = render(&editor, 50, 8, &mut Viewport::default());
+        assert_eq!(frame.style_at(2, 0), Some(Style::Selection));
+        assert_eq!(frame.style_at(3, 0), Some(Style::PrimaryCursor));
+    }
+
+    #[test]
+    fn horizontally_clipped_multiline_comments_keep_their_syntax_style() {
+        use vex_editor::{Highlight, Language};
+        let source = format!(
+            "/*{}\n{}*/\nfn main() {{}}",
+            "x".repeat(100),
+            "y".repeat(100)
+        );
+        let mut editor = Editor::new(Document::from(source.as_str()));
+        editor.set_language(Some(Language::Rust));
+        editor
+            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(95))))
+            .unwrap();
+        let mut viewport = Viewport::default();
+        let frame = render(&editor, 20, 5, &mut viewport);
+        assert!(viewport.left_column > 0);
+        for y in 0..2 {
+            for x in 2..19 {
+                assert_eq!(
+                    frame.style_at(x, y),
+                    Some(Style::Syntax(Highlight::Comment))
+                );
+            }
+        }
+        assert_eq!(frame.style_at(19, 0), Some(Style::PrimaryCursor));
+    }
+
+    #[test]
+    fn a_wide_syntax_grapheme_clipped_at_the_right_edge_colors_its_placeholder() {
+        use vex_editor::{Highlight, Language};
+        let mut editor = Editor::new(Document::from("//abc界"));
+        editor.set_language(Some(Language::Rust));
+        let frame = render(&editor, 6, 4, &mut Viewport::default());
+        assert_eq!(frame.row_text(0), "//abc ");
+        assert_eq!(
+            frame.style_at(5, 0),
+            Some(Style::Syntax(Highlight::Comment))
+        );
     }
 }

@@ -374,7 +374,7 @@ commands! {
     fn undo(ctx) {
         for _ in 0..ctx.count.get() {
             if !ctx.editor.document.undo(&mut ctx.editor.selections)? { break; }
-            ctx.editor.synchronize_layout();
+            ctx.editor.synchronize_caches();
         }
         normalize(ctx.editor)
     }
@@ -383,7 +383,7 @@ commands! {
     fn redo(ctx) {
         for _ in 0..ctx.count.get() {
             if !ctx.editor.document.redo(&mut ctx.editor.selections)? { break; }
-            ctx.editor.synchronize_layout();
+            ctx.editor.synchronize_caches();
         }
         normalize(ctx.editor)
     }

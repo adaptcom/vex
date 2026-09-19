@@ -5,7 +5,8 @@ A terminal text editor in Rust, inspired by Helix's selection-first editing mode
 `vex_core` provides rope-backed documents, directional multiple selections,
 atomic transactions, revision-checked snapshots, undo/redo, and grapheme-aware
 movement. `vex_editor` adds normal/select/insert modes, documented command
-functions, configurable keybindings, and repeat counts. Both work without a
+functions, configurable keybindings, and repeat counts. `vex_syntax` adds
+Tree-sitter parsing and Rust syntax highlighting. All three work without a
 terminal. `vex_term` provides the interactive application, using Crossterm for
 terminal I/O and our own viewport, cell grid, and incremental drawing.
 
@@ -23,6 +24,9 @@ require `:q!` to discard. `:wq` saves and quits. Use `:help` or
 The interface includes line numbers, selection highlighting, cursor-following
 scrolling, a status line, and an editable command prompt. Unicode graphemes,
 wide characters, tabs, bracketed paste, and terminal resizing are supported.
+Rust files (`.rs`) use syntax colors automatically. Use `:language rust` for a
+scratch buffer, `:language text` to disable colors, or `:language auto` to restore
+file-extension detection. See [syntax support and limits](docs/syntax.md).
 See [terminal usage and architecture](docs/terminal.md).
 
 ## Development
@@ -178,7 +182,7 @@ Soft wrapping is not implemented yet.
 ## Next milestone
 
 The first interactive loop can open, select, edit, undo groups, and save. Incremental
-search is next, followed by registers, pickers, Tree-sitter, and LSP. Further layout
+search is next, followed by registers, pickers, more syntax languages, and LSP. Further layout
 work can address cold indexing and updates near the beginning of a huge line.
 
 See [the benchmark notes](docs/performance.md) for the initial performance baseline.

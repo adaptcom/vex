@@ -69,10 +69,11 @@ impl Snapshot {
     }
 }
 
-/// Conservative extent of a revision's changes. Text before `start` and after
-/// the corresponding end is unchanged. The first edit's old/new start is equal.
+/// Conservative scalar extent of one revision's changes, including grouped
+/// undo/redo. Text before `start` and after the corresponding end is unchanged.
+/// The first edit's old/new start is equal.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ChangeExtent {
+pub struct ChangeExtent {
     pub start: CharOffset,
     pub old_end: CharOffset,
     pub new_end: CharOffset,
@@ -121,6 +122,14 @@ impl Document {
             revision: self.revision,
             text: self.text.clone(),
         }
+    }
+
+    /// Describe changes from the immediately preceding snapshot of this document.
+    /// Returns None for another document, the current revision, or skipped
+    /// revisions. Consumers must rebuild derived state when revisions are skipped.
+    pub fn change_since(&self, snapshot: &Snapshot) -> Option<ChangeExtent> {
+        (snapshot.id == self.id && snapshot.revision.0.checked_add(1) == Some(self.revision.0))
+            .then_some(self.change)
     }
 
     /// Read UTF-8 without first collecting the entire file into a String.

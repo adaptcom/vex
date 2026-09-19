@@ -2,7 +2,11 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::{hint::black_box, io, time::Duration};
 use vex_core::{CharOffset, Document, Selection, SelectionSet};
-use vex_term::{app::App, screen::Renderer};
+use vex_editor::Language;
+use vex_term::{
+    app::App,
+    screen::{Renderer, Style},
+};
 
 fn paint(app: &mut App, renderer: &mut Renderer, size: (u16, u16)) -> usize {
     app.paint(renderer.frame(size.0, size.1).unwrap()).unwrap();
@@ -124,11 +128,77 @@ fn long_lines(c: &mut Criterion) {
     group.finish();
 }
 
+fn rust_syntax(c: &mut Criterion) {
+    // Measure ANSI color output even under test runners that set NO_COLOR.
+    crossterm::style::force_color_output(true);
+    fn paint_highlighted(app: &mut App, renderer: &mut Renderer) -> usize {
+        let frame = renderer.frame(120, 40).unwrap();
+        app.paint(frame).unwrap();
+        // A budget fallback must not silently turn this into a plain-text benchmark.
+        assert!((0..120).any(|x| matches!(frame.style_at(x, 0), Some(Style::Syntax(_)))));
+        renderer.present(&mut io::sink()).unwrap()
+    }
+    let mut group = c.benchmark_group("rust_syntax");
+    for kib in [64usize, 256] {
+        let pattern = "fn demo(value: u32) -> u32 { /* note */ value + 42 }\n";
+        let document = Document::from(
+            pattern
+                .repeat((kib << 10usize).div_ceil(pattern.len()))
+                .as_str(),
+        );
+        let mut app = App::from_document(Document::from(document.text().clone()), (120, 40));
+        app.editor.set_language(Some(Language::Rust));
+        let mut renderer = Renderer::default();
+        paint_highlighted(&mut app, &mut renderer);
+        let label = format!("{kib}KiB");
+        group.bench_function(BenchmarkId::new("first_draw", &label), |b| {
+            b.iter(|| {
+                let mut app =
+                    App::from_document(Document::from(document.text().clone()), (120, 40));
+                app.editor.set_language(Some(Language::Rust));
+                let mut renderer = Renderer::default();
+                black_box(paint_highlighted(&mut app, &mut renderer));
+            });
+        });
+        let mut right = false;
+        group.bench_function(BenchmarkId::new("move", &label), |b| {
+            b.iter(|| {
+                right = !right;
+                app.editor
+                    .execute(if right { "move_right" } else { "move_left" }, 1)
+                    .unwrap();
+                black_box(paint_highlighted(&mut app, &mut renderer));
+            });
+        });
+        let middle = document
+            .text()
+            .line_to_char(document.text().len_lines() / 2);
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.editor
+            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(
+                middle + 3,
+            ))))
+            .unwrap();
+        paint_highlighted(&mut app, &mut renderer);
+        group.bench_function(BenchmarkId::new("type_8_undo", &label), |b| {
+            b.iter(|| {
+                for _ in 0..8 {
+                    app.editor.insert_text("z").unwrap();
+                }
+                black_box(paint_highlighted(&mut app, &mut renderer));
+                app.editor.execute("undo", 1).unwrap();
+                black_box(paint_highlighted(&mut app, &mut renderer));
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = rendering, long_lines
+    targets = rendering, long_lines, rust_syntax
 }
 criterion_main!(benches);

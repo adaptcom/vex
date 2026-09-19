@@ -11,11 +11,13 @@ use std::io::{self, Write};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use vex_core::display;
+use vex_editor::Highlight;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Style {
     #[default]
     Text,
+    Syntax(Highlight),
     Gutter,
     Status,
     Message,
@@ -30,6 +32,20 @@ impl Style {
         use Color::*;
         match self {
             Self::Text => (Reset, Reset),
+            Self::Syntax(highlight) => (
+                match highlight {
+                    Highlight::Keyword => Magenta,
+                    Highlight::Type | Highlight::Property => Cyan,
+                    Highlight::Function => Blue,
+                    Highlight::Constant | Highlight::Attribute | Highlight::Escape => Yellow,
+                    Highlight::String => Green,
+                    Highlight::Comment => DarkGrey,
+                    Highlight::Operator => Red,
+                    Highlight::Punctuation | Highlight::Variable => Reset,
+                    Highlight::Label => DarkCyan,
+                },
+                Reset,
+            ),
             Self::Gutter => (DarkGrey, Reset),
             Self::Status => (White, DarkBlue),
             Self::Message => (DarkCyan, Reset),
@@ -326,5 +342,25 @@ mod tests {
         assert!(String::from_utf8(bytes).unwrap().contains("\x1b[2J"));
         renderer.frame(0, 0).unwrap();
         renderer.present(&mut Vec::new()).unwrap();
+    }
+
+    #[test]
+    fn style_only_changes_redraw_and_unchanged_syntax_emits_nothing() {
+        let mut renderer = Renderer::default();
+        renderer.frame(2, 1).unwrap().put(0, 0, "界", Style::Text);
+        renderer.present(&mut Vec::new()).unwrap();
+        let keyword = Style::Syntax(Highlight::Keyword);
+        renderer.frame(2, 1).unwrap().put(0, 0, "界", keyword);
+        let mut output = Vec::new();
+        assert!(renderer.present(&mut output).unwrap() > 0);
+        assert!(
+            output
+                .windows("界".len())
+                .any(|window| window == "界".as_bytes())
+        );
+        let frame = renderer.frame(2, 1).unwrap();
+        frame.put(0, 0, "界", keyword);
+        assert_eq!(frame.style_at(1, 0), Some(keyword));
+        assert_eq!(renderer.present(&mut Vec::new()).unwrap(), 0);
     }
 }

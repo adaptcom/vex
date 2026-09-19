@@ -66,6 +66,7 @@ also separates typing but does not change the savepoint.
 | `:quit!`, `:q!` | Discard unsaved changes and quit |
 | `:write-quit [PATH]`, `:wq [PATH]`, `:x [PATH]` | Save, then quit only if saving succeeds |
 | `:help [COMMAND]`, `:h [COMMAND]` | Show help or a command's documentation |
+| `:language [rust/text/auto]`, `:lang [...]` | Show or set the syntax language |
 | `:move_word_forward`, etc. | Invoke an editing command by its registered name |
 
 The remaining text after a file command is a literal path, including internal
@@ -76,6 +77,12 @@ the prompt at grapheme boundaries. Escape cancels it.
 File commands are also ordinary documented functions. A declaration macro uses
 each function's Rustdoc for the runtime registry, so `:help write` shares its
 documentation with `app::write_file`.
+
+Rust files (`.rs`) enable Tree-sitter syntax highlighting automatically; other
+files start as plain text. Detection follows successful Save As operations.
+`:language rust` enables highlighting in scratch buffers; an explicit language
+choice persists across saves until `:language auto`. Selections and cursor styles
+take precedence over syntax colors. See [syntax architecture and limits](syntax.md).
 
 ## Rendering and input
 
@@ -131,8 +138,8 @@ concurrent writers, and the parent directory is not synced for crash durability.
 This version has one buffer and view. File I/O is synchronous. Rendering stops
 at the right edge. Cached display columns avoid repeatedly scanning hidden line
 prefixes; cold queries and reindexing after an early edit can still be expensive.
-Clipboard integration, mouse input, search, syntax highlighting, and LSP are not
-implemented.
+Syntax currently supports Rust, with size and work budgets for synchronous parsing.
+Clipboard integration, mouse input, search, and LSP are not implemented.
 
 ## Layout cache
 
@@ -185,8 +192,8 @@ cargo run --release -p vex_term --example long_lines --locked -- 10 100
 ```
 
 The Unix smoke script launches the real executable with a controlling
-pseudo-terminal. It exercises paste, CRLF, grouped undo/redo, insert-mode savepoints,
-dirty quit, save, resize,
+pseudo-terminal. It exercises Rust syntax colors, paste, CRLF, grouped undo/redo,
+insert-mode savepoints, dirty quit, save, resize,
 focus, seeking/editing at the end of a 1 MiB line, and terminal cleanup. It also
 runs the panic-cleanup source test under a
 PTY; this test returns early in the normal noninteractive Cargo test run.

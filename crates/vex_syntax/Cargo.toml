@@ -1,5 +1,5 @@
 [package]
-name = "vex_editor"
+name = "vex_syntax"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -7,15 +7,11 @@ repository.workspace = true
 
 [dependencies]
 vex_core.workspace = true
-vex_syntax.workspace = true
+tree-sitter.workspace = true
+tree-sitter-rust.workspace = true
 
 [dev-dependencies]
-criterion.workspace = true
 proptest.workspace = true
-
-[[bench]]
-name = "commands"
-harness = false
 
 [lints]
 workspace = true

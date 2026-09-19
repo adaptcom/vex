@@ -31,7 +31,7 @@ mod position;
 mod selection;
 mod transaction;
 
-pub use document::{Document, DocumentId, Revision, Snapshot};
+pub use document::{ChangeExtent, Document, DocumentId, Revision, Snapshot};
 pub use error::Error;
 pub use position::{ByteOffset, CharOffset};
 pub use ropey::{Rope, RopeSlice};

@@ -14,9 +14,10 @@
 //! # Ok::<(), vex_editor::Error>(())
 //! ```
 
-use std::{cell::RefCell, num::NonZeroUsize};
+use std::{cell::RefCell, num::NonZeroUsize, ops::Range, sync::Arc};
 use vex_core::layout::LayoutCache;
-use vex_core::{CharOffset, Document, Selection, SelectionSet, grapheme, motion};
+use vex_core::{ByteOffset, CharOffset, Document, Selection, SelectionSet, grapheme, motion};
+use vex_syntax::Syntax;
 
 pub mod commands;
 mod error;
@@ -25,6 +26,7 @@ mod keymap;
 pub use commands::{Command, CommandContext};
 pub use error::Error;
 pub use keymap::{Binding, Dispatch, Key, KeyHandler, Keymap};
+pub use vex_syntax::{Highlight, HighlightSpan, Language};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Mode {
@@ -45,6 +47,7 @@ pub struct Editor {
     preferred_columns: Option<Vec<usize>>,
     tab_width: NonZeroUsize,
     layout: RefCell<LayoutCache>,
+    syntax: RefCell<Option<Syntax>>,
 }
 
 impl Editor {
@@ -59,6 +62,7 @@ impl Editor {
             preferred_columns: None,
             tab_width: NonZeroUsize::new(4).unwrap(),
             layout: RefCell::default(),
+            syntax: RefCell::default(),
         }
     }
 
@@ -78,6 +82,25 @@ impl Editor {
     pub fn set_tab_width(&mut self, width: NonZeroUsize) {
         self.tab_width = width;
         self.preferred_columns = None;
+    }
+
+    /// Select a bundled syntax language, or None for plain text. This resets
+    /// derived syntax state without changing the document or undo history.
+    pub fn set_language(&mut self, language: Option<Language>) {
+        *self.syntax.get_mut() = language.map(|language| Syntax::new(language, &self.document));
+    }
+
+    pub fn language(&self) -> Option<Language> {
+        self.syntax.borrow().as_ref().map(Syntax::language)
+    }
+
+    /// Syntax highlights for visible bytes. Parsing is deferred until needed;
+    /// unchanged ranges reuse cached spans. Empty results mean plain text.
+    pub fn syntax_highlights(&self, range: Range<ByteOffset>) -> Arc<[HighlightSpan]> {
+        match self.syntax.borrow_mut().as_mut() {
+            Some(syntax) => syntax.highlights(&self.document, range),
+            None => Arc::from([]),
+        }
     }
 
     /// Cached display column, using the same width conventions as vertical motion.
@@ -100,8 +123,11 @@ impl Editor {
             .at_column(&self.document, position, column, self.tab_width)
     }
 
-    fn synchronize_layout(&mut self) {
+    fn synchronize_caches(&mut self) {
         self.layout.get_mut().synchronize(&self.document);
+        if let Some(syntax) = self.syntax.get_mut() {
+            syntax.synchronize(&self.document);
+        }
     }
 
     // Every text command goes through here, including each event in a batch.
@@ -113,7 +139,7 @@ impl Editor {
         } else {
             self.document.apply(transaction, &mut self.selections)?;
         }
-        self.synchronize_layout();
+        self.synchronize_caches();
         Ok(())
     }
 
@@ -267,6 +293,35 @@ mod tests {
             editor.selections().primary(),
             Selection::cursor(CharOffset(0))
         );
+    }
+
+    #[test]
+    fn syntax_tracks_batched_typing_counted_history_and_language_changes() {
+        let mut editor = Editor::new(Document::from("fn original() {}"));
+        editor.set_language(Some(Language::Rust));
+        let highlights = |editor: &Editor| {
+            editor
+                .syntax_highlights(ByteOffset(0)..ByteOffset(editor.document().text().len_bytes()))
+        };
+        let before = highlights(&editor);
+        assert!(!before.is_empty());
+        editor.execute("insert_mode", 1).unwrap();
+        for text in ["/", "*", "界", "*/"] {
+            editor.insert_text(text).unwrap();
+        }
+        editor.insert_paste("\n").unwrap();
+        let after = highlights(&editor);
+        assert_eq!(after[0].highlight, Highlight::Comment);
+        editor.execute("undo", 2).unwrap();
+        assert_eq!(highlights(&editor), before);
+        editor.execute("redo", 2).unwrap();
+        assert_eq!(highlights(&editor), after);
+        let revision = editor.document().revision();
+        editor.set_language(None);
+        assert!(highlights(&editor).is_empty());
+        editor.set_language(Some(Language::Rust));
+        assert_eq!(highlights(&editor), after);
+        assert_eq!(editor.document().revision(), revision);
     }
 
     #[test]

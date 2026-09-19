@@ -191,3 +191,43 @@ queries still scan the necessary prefix, and an early edit in a huge line can
 invalidate its later checkpoints. Large clusters and long Unicode lookbehind
 remain possible costs. These measurements establish the improvement for indexed
 positions, not a blanket bound on cold queries or end-to-end p95 latency.
+
+## Initial Rust syntax highlighting
+
+Tree-sitter 0.27.0 with the bundled Rust 0.24.2 grammar, measured at 120 × 40
+on the same development machine. The fixtures repeat syntactically valid Rust
+functions with parameters, a type, a comment, and a numeric literal:
+
+```sh
+cargo bench -p vex_term --bench rendering --locked -- rust_syntax --noplot
+```
+
+| Rust source | First parse + draw | Cached movement + draw | Type 8 / draw / grouped undo / draw |
+|---|---:|---:|---:|
+| 64 KiB | 4.163 ms | 0.272 ms | 1.538 ms |
+| 256 KiB | 14.965 ms | 0.314 ms | 3.210 ms |
+
+These are Criterion central estimates from 30 samples, a 500 ms warmup, and a
+one-second measurement target (extended by Criterion when needed). Color output
+is enabled explicitly even if the benchmark runner sets `NO_COLOR`. Painting
+includes cell-grid layout, syntax styling, selection/cursor overrides, and ANSI
+output to an I/O sink; actual terminal display latency and disk reads are excluded.
+The benchmark asserts that highlighted cells are present, so a budget fallback
+cannot silently turn this into a plain-text measurement.
+
+First draw constructs a new editor and syntax state over a shared input rope and
+includes the initial parse, queries, grid, and output. The process-wide grammar
+query has already initialized. Movement uses cached highlight ranges and does
+not reparse. Typing changes a function name halfway through the file, processes
+eight distinct input events before drawing, then undoes the group and draws again.
+It includes two incremental parses and two sets of visible-range queries.
+
+This is synchronous, budgeted highlighting: files above 2 MiB and parse/query
+budget failures fall back to plain text. Syntax work still depends on the tree
+and changed region; these figures do not establish constant time or p95 bounds.
+Background parsing, more languages, and finer invalidation remain future work.
+See [syntax behavior and limits](syntax.md).
+
+The existing plain-text movement + draw cases at 120 × 40 measured 0.170 ms
+for 1 MiB source and 0.177 ms for 100 MiB source after integration. Criterion
+detected no significant change from their prior 0.169 ms and 0.178 ms estimates.
