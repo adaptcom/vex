@@ -26,6 +26,7 @@ scrolling, a status line, and an editable command prompt. Unicode graphemes,
 wide characters, tabs, bracketed paste, and terminal resizing are supported.
 Use `/` or `?` for incremental literal search, Enter to accept, Escape to restore
 your selections and scroll position, and `n` / `N` to repeat. See [search behavior](docs/search.md).
+Interactive search runs on a worker, with cancellation and revision checks.
 Rust files (`.rs`) use syntax colors automatically. Use `:language rust` for a
 scratch buffer, `:language text` to disable colors, or `:language auto` to restore
 file-extension detection. See [syntax support and limits](docs/syntax.md).
@@ -45,6 +46,7 @@ cargo run --release -p vex_term --example long_lines --locked -- 10 100
 cargo run -p vex_editor --example command_reference --locked
 cargo build --release -p vex_term --locked
 python3 tools/terminal_smoke.py
+python3 tools/background_search_benchmark.py
 ```
 
 Unit and property tests live in their source modules under `#[cfg(test)]`.
@@ -185,8 +187,8 @@ Soft wrapping is not implemented yet.
 ## Next milestone
 
 The interactive loop can open, search, select, edit, undo groups, and save.
-Registers are next, followed by pickers, more syntax languages, and LSP. Background
-parsing and search can keep large buffers responsive. Further layout
+Background syntax parsing can build on the event queue used by search. Registers,
+pickers, more syntax languages, and LSP remain upcoming milestones. Further layout
 work can address cold indexing and updates near the beginning of a huge line.
 
 See [the benchmark notes](docs/performance.md) for the initial performance baseline.

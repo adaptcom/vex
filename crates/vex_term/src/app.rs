@@ -10,7 +10,10 @@ use crate::{
 use crossterm::event::{Event, KeyCode, KeyEventKind};
 use std::{io, path::Path};
 use vex_core::Document;
-use vex_editor::{Editor, Key, KeyHandler, Language, Mode, SearchDirection, SearchStatus};
+use vex_editor::{
+    Editor, Key, KeyHandler, Language, Mode, SearchCompletion, SearchDirection, SearchResult,
+    SearchStatus,
+};
 
 enum PromptKind {
     Command,
@@ -90,6 +93,43 @@ impl App {
     }
     pub fn is_dirty(&self) -> bool {
         self.files.is_dirty(self.editor.document())
+    }
+
+    /// Deliver a worker completion on the same thread that handles input.
+    /// Stale results neither move selections nor replace newer messages.
+    pub fn handle_search_result(&mut self, result: SearchResult) -> bool {
+        match self.editor.apply_search_result(result) {
+            Ok(SearchCompletion::Ignored) => {
+                if self.editor.search_direction().is_none()
+                    && self
+                        .prompt
+                        .as_ref()
+                        .is_some_and(|p| matches!(p.kind, PromptKind::Search { .. }))
+                {
+                    self.prompt = None;
+                    return true;
+                }
+                return false;
+            }
+            Ok(SearchCompletion::Accepted) => {
+                self.prompt = None;
+                self.clear_message();
+            }
+            Ok(SearchCompletion::Preview) => {
+                self.clear_message();
+                if self.editor.search_status() == Some(SearchStatus::NoMatch) {
+                    self.fail("no matches");
+                }
+            }
+            Ok(SearchCompletion::Navigation) => self.clear_message(),
+            Err(error) => {
+                if self.editor.search_direction().is_none() {
+                    self.prompt = None;
+                }
+                self.fail(error);
+            }
+        }
+        true
     }
 
     /// Handle one event. Return whether the screen may have changed.
@@ -224,7 +264,7 @@ impl App {
             .path()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "[scratch]".into());
-        let pending = format!(
+        let mut pending = format!(
             "{}{}",
             self.keys.count().map(|n| n.to_string()).unwrap_or_default(),
             self.keys
@@ -233,6 +273,9 @@ impl App {
                 .map(ToString::to_string)
                 .collect::<String>()
         );
+        if self.editor.search_pending() {
+            pending.push_str(" searching...");
+        }
         render::paint(
             frame,
             &self.editor,
@@ -253,6 +296,14 @@ impl App {
     }
 
     fn open_search_prompt(&mut self) {
+        if self.editor.search_direction().is_none()
+            && self
+                .prompt
+                .as_ref()
+                .is_some_and(|p| matches!(p.kind, PromptKind::Search { .. }))
+        {
+            self.prompt = None;
+        }
         if self.prompt.is_none()
             && let Some(direction) = self.editor.search_direction()
         {
@@ -304,6 +355,9 @@ impl App {
                         Ok(()) => {
                             if empty {
                                 self.viewport = viewport;
+                            }
+                            if self.editor.search_pending() {
+                                self.prompt = Some(prompt);
                             }
                         }
                         Err(error) => {
@@ -437,6 +491,33 @@ mod tests {
         frame.reset(app.size.0, app.size.1).unwrap();
         app.paint(&mut frame).unwrap();
         frame
+    }
+
+    #[test]
+    fn background_preview_cancel_and_external_edits_do_not_leave_stale_prompts() {
+        let source = format!("origin\n{}{}target", "short\n".repeat(20), "x".repeat(120));
+        let mut app = App::from_document(Document::from(source.as_str()), (30, 8));
+        app.editor.set_background_search(true);
+        draw(&mut app);
+        let viewport = app.viewport;
+        let selections = app.editor.selections().clone();
+        press(&mut app, "/target");
+        assert!(draw(&mut app).row_text(6).contains("searching..."));
+        let result = app.editor.take_search_job().unwrap().run().unwrap();
+        app.handle_search_result(result);
+        draw(&mut app);
+        assert!(app.viewport.top_line > viewport.top_line);
+        assert!(app.viewport.left_column > viewport.left_column);
+        key(&mut app, KeyCode::Esc);
+        draw(&mut app);
+        assert_eq!(app.viewport, viewport);
+        assert_eq!(app.editor.selections(), &selections);
+        press(&mut app, "/target");
+        let job = app.editor.take_search_job().unwrap();
+        app.editor.execute("delete_selection", 1).unwrap();
+        assert!(job.run().is_none());
+        draw(&mut app);
+        assert!(app.prompt.is_none());
     }
 
     #[test]

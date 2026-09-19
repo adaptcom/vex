@@ -27,7 +27,7 @@ mod search;
 pub use commands::{Command, CommandContext};
 pub use error::Error;
 pub use keymap::{Binding, Dispatch, Key, KeyHandler, Keymap};
-pub use search::SearchStatus;
+pub use search::{SearchCancellation, SearchCompletion, SearchJob, SearchResult, SearchStatus};
 pub use vex_core::search::Direction as SearchDirection;
 pub use vex_syntax::{Highlight, HighlightSpan, Language};
 
@@ -93,6 +93,36 @@ impl Editor {
         self.search.preview.as_ref().map(|preview| preview.status)
     }
 
+    /// Use deferred search commands. The frontend must take each job, run it
+    /// off the UI thread, and deliver its result via apply_search_result.
+    /// The default remains synchronous for standalone editor integrations.
+    pub fn set_background_search(&mut self, enabled: bool) {
+        self.search.invalidate();
+        self.search.background = enabled;
+    }
+
+    /// Take the latest deferred request after command dispatch. Superseded jobs
+    /// already handed to a worker observe cancellation through their token.
+    pub fn take_search_job(&mut self) -> Option<SearchJob> {
+        self.search.outgoing.take()
+    }
+
+    /// Apply a completion on the editor's owning thread, ignoring stale work.
+    pub fn apply_search_result(&mut self, result: SearchResult) -> Result<SearchCompletion, Error> {
+        search::apply_result(self, result)
+    }
+
+    /// Whether the latest request is queued or running.
+    pub fn search_pending(&self) -> bool {
+        self.search.pending()
+    }
+
+    /// An accepted preview or repeat is waiting for its destination. Frontends
+    /// should defer subsequent editing keys, but keep cancellation responsive.
+    pub fn search_waiting(&self) -> bool {
+        self.search.waiting()
+    }
+
     /// Preview literal matches from the selections saved by search_forward or
     /// search_backward. The empty query restores those selections.
     pub fn update_search(&mut self, text: &str) -> Result<(), Error> {
@@ -149,6 +179,7 @@ impl Editor {
     }
 
     fn synchronize_caches(&mut self) {
+        self.search.invalidate();
         self.layout.get_mut().synchronize(&self.document);
         if let Some(syntax) = self.syntax.get_mut() {
             syntax.synchronize(&self.document);
@@ -172,6 +203,7 @@ impl Editor {
     /// call this at savepoints so undo can return to the saved text. Movements,
     /// mode/selection changes, explicit edits, paste, and undo/redo do so already.
     pub fn finish_undo_group(&mut self) {
+        self.search.invalidate();
         self.document.finish_undo_group();
     }
 

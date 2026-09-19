@@ -95,6 +95,8 @@ take precedence over syntax colors. See [syntax architecture and limits](syntax.
 encoding. It has no UI framework or Ratatui dependency:
 
 - `input` converts terminal keys to editor keys and owns prompt editing.
+- `events` combines terminal input and search completions in a wakeable inbox,
+  with one input thread and one persistent search worker.
 - `app` combines editor state, key dispatch, file state, prompt, and viewport.
 - `render` paints visible logical lines, selections, line numbers, status, and
   the prompt into a cell grid. It borrows rope slices where possible. Horizontal
@@ -106,7 +108,8 @@ encoding. It has no UI framework or Ratatui dependency:
   continuation cells so replacing or clipping them does not leave stale text.
 - `terminal` owns raw mode, alternate-screen lifetime, and bounded event batches.
   An event burst is limited to 128 events or 4 ms before another draw. The loop
-  sleeps while idle. Focus gain invalidates the grid; resizing rebuilds it.
+  sleeps on the inbox while idle; terminal events and worker completions wake it.
+  Focus gain invalidates the grid; resizing rebuilds it.
 
 The primary cursor changes shape between block and bar. Other cursors and
 selected ranges use cell styles. The status line shows mode, unsaved changes
@@ -123,6 +126,33 @@ Cleanup restores raw mode, cursor visibility/shape, line wrapping, paste/focus
 reporting, and the main screen on ordinary exit, I/O failure, and panic. The panic
 hook performs cleanup before printing the diagnostic. Unix SIGINT, SIGTERM, and
 SIGHUP handlers notify the event loop to unwind through the same cleanup.
+
+## Event queue and background work
+
+The main thread owns `App`, editing commands, and drawing. One producer thread
+exclusively owns Crossterm's `poll` / `read` calls. A second thread compiles and
+executes search jobs over immutable rope snapshots. Both notify the same inbox,
+so a search result is handled even when no new key arrives. No async runtime or
+shared mutable editor lock is required.
+
+The inbox holds up to 256 terminal events and applies backpressure to the input
+producer. Search has a separate completion slot, so full input cannot block a
+result needed by queued editing keys. There is at most one running and one
+pending search job; each new query replaces pending work and cancels older work.
+Only obsolete search completions may be replaced. Input keys stay in FIFO order.
+
+An early Enter or `n` / `N` may depend on an unfinished search. The inbox then
+holds later keys until the destination is ready, preserving sequences such as
+`/cat<Enter>nd`. Resize/focus events can pass the held keys. Escape and Ctrl-c
+cancel when next in key order, and ready completions take priority over further
+ordinary input. This avoids applying edits to an unresolved search position.
+
+Closing the runtime wakes blocked producers, cancels queued/running search, and
+joins both threads before restoring terminal state. Input errors and worker
+failures wake the main loop and unwind through cleanup. Input polling has a
+50 ms shutdown check; the main inbox wait checks signal flags at most every
+100 ms while idle. Search cancellation is cooperative; details and remaining
+synchronous work are documented in [search](search.md).
 
 ## Files and current limits
 

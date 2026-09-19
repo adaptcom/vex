@@ -1,11 +1,14 @@
 //! Terminal lifetime, panic cleanup, signal notification, and the event loop.
 
-use crate::{app::App, screen::Renderer};
+use crate::{
+    app::App,
+    events::{AppEvent, Runtime},
+    screen::Renderer,
+};
 use crossterm::{
     cursor::{Hide, SetCursorStyle, Show},
     event::{
-        self, DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
-        Event,
+        DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, Event,
     },
     execute,
     style::ResetColor,
@@ -120,6 +123,8 @@ impl Drop for Signals {
 pub fn run(app: &mut App) -> io::Result<()> {
     let signals = Signals::new()?;
     let _session = Session::enter()?;
+    let runtime = Runtime::start()?;
+    app.editor.set_background_search(true);
     let mut renderer = Renderer::default();
     let mut output = io::stdout();
     let mut redraw = true;
@@ -136,23 +141,38 @@ pub fn run(app: &mut App) -> io::Result<()> {
             renderer.present(&mut output)?;
             redraw = false;
         }
-        if !event::poll(Duration::from_millis(100))? {
+        let Some(mut event) = runtime
+            .events
+            .next(Duration::from_millis(100), app.editor.search_waiting())
+        else {
             continue;
-        }
+        };
         let started = Instant::now();
         // Coalesce bursts, but put a time and count bound on work before drawing.
-        for _ in 0..128 {
-            let event = event::read()?;
-            if matches!(event, Event::FocusGained) {
-                renderer.invalidate();
+        for index in 0..128 {
+            match event {
+                AppEvent::Terminal(event) => {
+                    if matches!(event, Event::FocusGained) {
+                        renderer.invalidate();
+                    }
+                    redraw |= app.handle(event);
+                }
+                AppEvent::Search(result) => redraw |= app.handle_search_result(result),
+                AppEvent::Failed(error) => return Err(error),
             }
-            redraw |= app.handle(event);
-            if app.should_quit()
-                || started.elapsed() >= Duration::from_millis(4)
-                || !event::poll(Duration::ZERO)?
-            {
+            if let Some(job) = app.editor.take_search_job() {
+                runtime.submit(job);
+            }
+            if app.should_quit() || index == 127 || started.elapsed() >= Duration::from_millis(4) {
                 break;
             }
+            let Some(next) = runtime
+                .events
+                .next(Duration::ZERO, app.editor.search_waiting())
+            else {
+                break;
+            };
+            event = next;
         }
     }
     output.flush()

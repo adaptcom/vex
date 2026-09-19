@@ -88,11 +88,37 @@ fn search(c: &mut Criterion) {
     group.finish();
 }
 
+fn background_search(c: &mut Criterion) {
+    let mut group = c.benchmark_group("background_search_schedule_cancel");
+    for bytes in [1 << 20, 100 << 20] {
+        let line = "fn main() { let value = 123; }\n";
+        let rope = Rope::from_str(&line.repeat(bytes / line.len()));
+        let mut editor = editor(&rope, 1);
+        editor.set_background_search(true);
+        group.bench_with_input(BenchmarkId::from_parameter(bytes), &bytes, |b, _| {
+            b.iter(|| {
+                editor.execute("search_forward", 1).unwrap();
+                editor.update_search(black_box("missing_query")).unwrap();
+                let replaced = editor.take_search_job().unwrap();
+                editor.update_search(black_box("new_query")).unwrap();
+                let cancelled = editor.take_search_job().unwrap();
+                editor.execute("search_cancel", 1).unwrap();
+                black_box(&replaced);
+                black_box(&cancelled);
+                assert!(replaced.cancellation().is_cancelled());
+                assert!(cancelled.cancellation().is_cancelled());
+                black_box(editor.selections());
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = commands, search
+    targets = commands, search, background_search
 }
 criterion_main!(benches);

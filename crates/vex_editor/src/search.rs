@@ -1,25 +1,167 @@
-//! Search state belongs to the editor; a frontend only owns prompt editing and
-//! viewport restoration. Search never changes document text or adds undo steps.
-
-use std::sync::Arc;
-use vex_core::{
-    ByteOffset, CharOffset, Revision, Selection, SelectionSet, grapheme, search::Literal,
-};
+//! Search requests carry immutable snapshots. Frontends may execute them on a
+//! worker; only the editor applies results after validating request and view state.
 
 use crate::{CommandContext, Editor, Error, Mode, SearchDirection};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use vex_core::{
+    ByteOffset, CharOffset, DocumentId, Revision, Rope, Selection, SelectionSet, Snapshot,
+    grapheme, search::Literal,
+};
 
-/// Result of the current preview; accepting a missing query keeps it open.
+/// An empty, pending, successful, or missing preview. Pending acceptance is
+/// completed when the matching result arrives; missing queries remain editable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchStatus {
     Empty,
+    Pending,
     Match,
     NoMatch,
+}
+
+/// Cooperative cancellation shared by the editor and its worker.
+#[derive(Clone, Debug, Default)]
+pub struct SearchCancellation(Arc<AtomicBool>);
+impl SearchCancellation {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+    fn same_request(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+#[derive(Debug)]
+enum Pattern {
+    Text(Arc<str>),
+    Compiled(Arc<Literal>),
+}
+
+/// Owned, Send search work. No mutable editor state crosses the worker boundary.
+#[derive(Debug)]
+pub struct SearchJob {
+    snapshot: Snapshot,
+    origins: SelectionSet,
+    pattern: Pattern,
+    direction: SearchDirection,
+    count: usize,
+    inclusive: bool,
+    cancellation: SearchCancellation,
+}
+
+/// An opaque completion, applicable only to the request that produced it.
+#[derive(Debug)]
+pub struct SearchResult {
+    cancellation: SearchCancellation,
+    outcome: Result<(Arc<Literal>, Option<SelectionSet>), Error>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchCompletion {
+    Ignored,
+    Preview,
+    Accepted,
+    Navigation,
+}
+
+impl SearchJob {
+    pub fn cancellation(&self) -> SearchCancellation {
+        self.cancellation.clone()
+    }
+
+    /// Compile and scan the snapshot. Cancelled jobs return no completion.
+    /// Cancellation is checked during compilation/scanning and between matches;
+    /// grapheme-boundary calculations are not individually preemptible.
+    pub fn run(self) -> Option<SearchResult> {
+        let cancelled = || self.cancellation.is_cancelled();
+        if cancelled() {
+            return None;
+        }
+        let pattern = match self.pattern {
+            Pattern::Text(ref text) => Arc::new(Literal::new_cancellable(text, cancelled)?),
+            Pattern::Compiled(ref pattern) => Arc::clone(pattern),
+        };
+        let outcome = locate(
+            self.snapshot.text(),
+            &self.origins,
+            &pattern,
+            self.direction,
+            self.count,
+            self.inclusive,
+            &cancelled,
+        )
+        .map(|selections| (pattern, selections));
+        if cancelled() {
+            return None;
+        }
+        Some(SearchResult {
+            cancellation: self.cancellation,
+            outcome,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Kind {
+    Preview { accept: bool },
+    Repeat,
+}
+
+#[derive(Debug)]
+struct Pending {
+    cancellation: SearchCancellation,
+    document: DocumentId,
+    revision: Revision,
+    selections: SelectionSet,
+    mode: Mode,
+    kind: Kind,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct Search {
     accepted: Option<(Arc<Literal>, SearchDirection)>,
     pub preview: Option<Preview>,
+    pub background: bool,
+    pub outgoing: Option<SearchJob>,
+    pending: Option<Pending>,
+}
+
+impl Search {
+    pub fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
+    pub fn waiting(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|p| matches!(p.kind, Kind::Repeat | Kind::Preview { accept: true }))
+    }
+    fn cancel_jobs(&mut self) {
+        if let Some(pending) = self.pending.take() {
+            pending.cancellation.cancel();
+        }
+        self.outgoing = None;
+    }
+    pub fn invalidate(&mut self) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| matches!(p.kind, Kind::Preview { .. }))
+        {
+            self.preview = None;
+        }
+        self.cancel_jobs();
+    }
+}
+
+impl Drop for Search {
+    fn drop(&mut self) {
+        self.cancel_jobs();
+    }
 }
 
 #[derive(Debug)]
@@ -39,12 +181,7 @@ pub(crate) fn begin(ctx: &mut CommandContext<'_>, direction: SearchDirection) ->
     if editor.search.preview.is_some() {
         return Err(Error::SearchActive);
     }
-    if editor.mode == Mode::Insert {
-        return Err(Error::WrongMode {
-            expected: Mode::Normal,
-            actual: editor.mode,
-        });
-    }
+    require_normal_or_select(editor)?;
     editor.finish_undo_group();
     editor.search.preview = Some(Preview {
         origin: editor.selections.clone(),
@@ -59,8 +196,16 @@ pub(crate) fn begin(ctx: &mut CommandContext<'_>, direction: SearchDirection) ->
     Ok(())
 }
 
-// Direct API callers can edit or change mode while a prompt is open. Never
-// install old coordinates in a different revision or mode.
+fn require_normal_or_select(editor: &Editor) -> Result<(), Error> {
+    if editor.mode == Mode::Insert {
+        return Err(Error::WrongMode {
+            expected: Mode::Normal,
+            actual: editor.mode,
+        });
+    }
+    Ok(())
+}
+
 fn check_preview(editor: &mut Editor) -> Result<(), Error> {
     let preview = editor
         .search
@@ -68,6 +213,7 @@ fn check_preview(editor: &mut Editor) -> Result<(), Error> {
         .as_ref()
         .ok_or(Error::NoSearchPreview)?;
     if preview.revision != editor.document.revision() || preview.mode != editor.mode {
+        editor.search.cancel_jobs();
         editor.search.preview = None;
         return Err(Error::SearchChanged);
     }
@@ -76,35 +222,129 @@ fn check_preview(editor: &mut Editor) -> Result<(), Error> {
 
 pub(crate) fn update(editor: &mut Editor, query: &str) -> Result<(), Error> {
     check_preview(editor)?;
-    let preview = editor.search.preview.as_ref().unwrap();
-    let pattern = (!query.is_empty()).then(|| Arc::new(Literal::new(query)));
-    let found = pattern
-        .as_ref()
-        .map(|pattern| {
-            locate(
-                editor,
-                &preview.origin,
-                pattern,
-                preview.direction,
-                preview.count,
-                true,
-            )
-        })
-        .transpose()?;
+    editor.search.cancel_jobs();
     let preview = editor.search.preview.as_mut().unwrap();
-    preview.status = match &found {
-        None => SearchStatus::Empty,
-        Some(None) => SearchStatus::NoMatch,
-        Some(Some(_)) => SearchStatus::Match,
-    };
-    editor.selections = found.flatten().unwrap_or_else(|| preview.origin.clone());
-    editor.preferred_columns = if preview.status == SearchStatus::Match {
-        None
+    editor.selections = preview.origin.clone();
+    editor.preferred_columns = preview.columns.clone();
+    preview.pattern = None;
+    preview.status = if query.is_empty() {
+        SearchStatus::Empty
     } else {
-        preview.columns.clone()
+        SearchStatus::Pending
     };
-    preview.pattern = pattern;
-    Ok(())
+    if query.is_empty() {
+        return Ok(());
+    }
+    let (direction, count) = (preview.direction, preview.count);
+    schedule(
+        editor,
+        Pattern::Text(Arc::from(query)),
+        direction,
+        count,
+        Kind::Preview { accept: false },
+    )
+}
+
+fn schedule(
+    editor: &mut Editor,
+    pattern: Pattern,
+    direction: SearchDirection,
+    count: usize,
+    kind: Kind,
+) -> Result<(), Error> {
+    let cancellation = SearchCancellation::default();
+    let snapshot = editor.document.snapshot();
+    editor.search.pending = Some(Pending {
+        cancellation: cancellation.clone(),
+        document: snapshot.id(),
+        revision: snapshot.revision(),
+        selections: editor.selections.clone(),
+        mode: editor.mode,
+        kind,
+    });
+    let job = SearchJob {
+        snapshot,
+        origins: editor.selections.clone(),
+        pattern,
+        direction,
+        count,
+        inclusive: matches!(kind, Kind::Preview { .. }),
+        cancellation,
+    };
+    if editor.search.background {
+        editor.search.outgoing = Some(job);
+        Ok(())
+    } else {
+        apply_result(
+            editor,
+            job.run().expect("synchronous request cannot be cancelled"),
+        )?;
+        Ok(())
+    }
+}
+
+pub(crate) fn apply_result(
+    editor: &mut Editor,
+    result: SearchResult,
+) -> Result<SearchCompletion, Error> {
+    let Some(pending) = editor.search.pending.as_ref() else {
+        return Ok(SearchCompletion::Ignored);
+    };
+    if !pending.cancellation.same_request(&result.cancellation)
+        || result.cancellation.is_cancelled()
+    {
+        return Ok(SearchCompletion::Ignored);
+    }
+    let pending = editor.search.pending.take().unwrap();
+    editor.search.outgoing = None;
+    if pending.document != editor.document.id()
+        || pending.revision != editor.document.revision()
+        || pending.selections != editor.selections
+        || pending.mode != editor.mode
+    {
+        if matches!(pending.kind, Kind::Preview { .. }) {
+            editor.search.preview = None;
+        }
+        return Ok(SearchCompletion::Ignored);
+    }
+    let (pattern, selections) = match result.outcome {
+        Ok(result) => result,
+        Err(error) => {
+            editor.search.preview = None;
+            return Err(error);
+        }
+    };
+    match pending.kind {
+        Kind::Preview {
+            accept: accept_requested,
+        } => {
+            let preview = editor
+                .search
+                .preview
+                .as_mut()
+                .expect("active preview request");
+            preview.status = if selections.is_some() {
+                SearchStatus::Match
+            } else {
+                SearchStatus::NoMatch
+            };
+            preview.pattern = Some(pattern);
+            if let Some(selections) = selections {
+                editor.selections = selections;
+                editor.preferred_columns = None;
+                if accept_requested {
+                    accept(editor)?;
+                    return Ok(SearchCompletion::Accepted);
+                }
+            }
+            Ok(SearchCompletion::Preview)
+        }
+        Kind::Repeat => {
+            editor.selections = selections.ok_or(Error::NoMatch)?;
+            editor.preferred_columns = None;
+            Ok(SearchCompletion::Navigation)
+        }
+    }
 }
 
 pub(crate) fn accept(editor: &mut Editor) -> Result<(), Error> {
@@ -112,6 +352,15 @@ pub(crate) fn accept(editor: &mut Editor) -> Result<(), Error> {
     let preview = editor.search.preview.as_ref().unwrap();
     match preview.status {
         SearchStatus::Empty => cancel(editor),
+        SearchStatus::Pending => {
+            editor
+                .search
+                .pending
+                .as_mut()
+                .expect("pending preview")
+                .kind = Kind::Preview { accept: true };
+            Ok(())
+        }
         SearchStatus::NoMatch => Err(Error::NoMatch),
         SearchStatus::Match => {
             let preview = editor.search.preview.take().unwrap();
@@ -123,6 +372,7 @@ pub(crate) fn accept(editor: &mut Editor) -> Result<(), Error> {
 
 pub(crate) fn cancel(editor: &mut Editor) -> Result<(), Error> {
     check_preview(editor)?;
+    editor.search.cancel_jobs();
     let preview = editor.search.preview.take().unwrap();
     editor.selections = preview.origin;
     editor.preferred_columns = preview.columns;
@@ -134,43 +384,38 @@ pub(crate) fn repeat(ctx: &mut CommandContext<'_>, reverse: bool) -> Result<(), 
     if editor.search.preview.is_some() {
         return Err(Error::SearchActive);
     }
-    if editor.mode == Mode::Insert {
-        return Err(Error::WrongMode {
-            expected: Mode::Normal,
-            actual: editor.mode,
-        });
-    }
+    require_normal_or_select(editor)?;
     let (pattern, direction) = editor.search.accepted.as_ref().ok_or(Error::NoSearch)?;
     let direction = if reverse {
         direction.reversed()
     } else {
         *direction
     };
-    let selections = locate(
+    let pattern = Arc::clone(pattern);
+    editor.finish_undo_group();
+    schedule(
         editor,
-        &editor.selections,
-        pattern,
+        Pattern::Compiled(pattern),
         direction,
         ctx.count.get(),
-        false,
-    )?;
-    editor.finish_undo_group();
-    editor.selections = selections.ok_or(Error::NoMatch)?;
-    editor.preferred_columns = None;
-    Ok(())
+        Kind::Repeat,
+    )
 }
 
 fn locate(
-    editor: &Editor,
+    text: &Rope,
     origins: &SelectionSet,
     pattern: &Literal,
     direction: SearchDirection,
     count: usize,
     inclusive: bool,
+    cancelled: &impl Fn() -> bool,
 ) -> Result<Option<SelectionSet>, Error> {
-    let text = editor.document.text();
     let mut selections = Vec::with_capacity(origins.ranges().len());
     for origin in origins.ranges() {
+        if cancelled() {
+            return Ok(None);
+        }
         let position = origin.start();
         // Moving past the entire first grapheme prevents a match inside a
         // combining sequence from repeatedly selecting that same grapheme.
@@ -189,8 +434,8 @@ fn locate(
         };
         let scan = || {
             pattern
-                .matches(text, first.clone(), direction)
-                .chain(pattern.matches(text, second.clone(), direction))
+                .matches_cancellable(text, first.clone(), direction, cancelled)
+                .chain(pattern.matches_cancellable(text, second.clone(), direction, cancelled))
         };
         // At most two document traversals even for usize::MAX counts. The
         // common case stops at the requested nearby match without a full scan.
@@ -200,6 +445,9 @@ fn locate(
         let mut selected = None;
         for pass in 0..2 {
             for found in scan() {
+                if cancelled() {
+                    return Ok(None);
+                }
                 let start = grapheme::floor(text, CharOffset(text.byte_to_char(found.start.0)))?;
                 if last_start == Some(start) {
                     continue;
@@ -245,6 +493,130 @@ mod tests {
 
     fn range(start: usize, end: usize) -> Selection {
         Selection::new(CharOffset(start), CharOffset(end))
+    }
+
+    fn deferred(source: &str) -> Editor {
+        let mut editor = Editor::new(Document::from(source));
+        editor.set_background_search(true);
+        editor.execute("search_forward", 1).unwrap();
+        editor
+    }
+
+    #[test]
+    fn deferred_preview_rejects_out_of_order_results_and_accepts_when_ready() {
+        fn is_send<T: Send>() {}
+        is_send::<SearchJob>();
+        is_send::<SearchResult>();
+        let mut editor = deferred("x cat dog");
+        let origin = editor.selections.clone();
+        editor.update_search("cat").unwrap();
+        let old = editor.take_search_job().unwrap().run().unwrap();
+        editor.update_search("dog").unwrap();
+        let newest = editor.take_search_job().unwrap();
+        editor.execute("search_accept", 1).unwrap();
+        assert!(editor.search_waiting());
+        assert_eq!(editor.search_status(), Some(SearchStatus::Pending));
+        assert_eq!(editor.selections, origin);
+        assert_eq!(
+            editor.apply_search_result(old).unwrap(),
+            SearchCompletion::Ignored
+        );
+        assert!(editor.search_waiting());
+        assert_eq!(
+            editor.apply_search_result(newest.run().unwrap()).unwrap(),
+            SearchCompletion::Accepted
+        );
+        assert_eq!(editor.selections.primary(), range(6, 9));
+        assert!(!editor.search_pending());
+        assert_eq!(editor.search_direction(), None);
+    }
+
+    #[test]
+    fn empty_queries_and_cancellation_invalidate_jobs_and_late_completions() {
+        let mut editor = deferred("x cat");
+        let origin = editor.selections.clone();
+        editor.update_search("cat").unwrap();
+        let job = editor.take_search_job().unwrap();
+        editor.update_search("").unwrap();
+        assert!(job.cancellation().is_cancelled());
+        assert!(job.run().is_none());
+        assert_eq!(editor.search_status(), Some(SearchStatus::Empty));
+        editor.update_search("cat").unwrap();
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        editor.execute("search_accept", 1).unwrap();
+        editor.execute("search_cancel", 1).unwrap();
+        assert_eq!(
+            editor.apply_search_result(result).unwrap(),
+            SearchCompletion::Ignored
+        );
+        assert_eq!(editor.selections, origin);
+        assert!(!editor.search_waiting());
+    }
+
+    #[test]
+    fn deferred_missing_queries_keep_the_prompt_open_after_early_enter() {
+        let mut editor = deferred("cat");
+        editor.update_search("missing").unwrap();
+        editor.execute("search_accept", 1).unwrap();
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        assert_eq!(
+            editor.apply_search_result(result).unwrap(),
+            SearchCompletion::Preview
+        );
+        assert_eq!(editor.search_status(), Some(SearchStatus::NoMatch));
+        assert!(!editor.search_waiting());
+        assert_eq!(editor.execute("search_accept", 1), Err(Error::NoMatch));
+    }
+
+    #[test]
+    fn movement_edit_mode_and_history_commands_cancel_pending_navigation() {
+        for action in [
+            "move_right",
+            "insert_mode",
+            "delete_selection",
+            "undo",
+            "redo",
+        ] {
+            let mut editor = Editor::new(Document::from("cat cat"));
+            accept(&mut editor, "cat", false);
+            editor.set_background_search(true);
+            commands::search_next(&mut CommandContext::new(&mut editor)).unwrap();
+            let job = editor.take_search_job().unwrap();
+            let token = job.cancellation();
+            let result = job.run().unwrap();
+            editor.execute(action, 1).unwrap();
+            let after = editor.selections.clone();
+            assert!(token.is_cancelled(), "{action}");
+            assert_eq!(
+                editor.apply_search_result(result).unwrap(),
+                SearchCompletion::Ignored
+            );
+            assert_eq!(editor.selections, after);
+            assert!(!editor.search_pending());
+        }
+    }
+
+    #[test]
+    fn stale_preview_cannot_apply_after_edit_undo_or_cursor_round_trip() {
+        for edit in [true, false] {
+            let mut editor = deferred("cat cat");
+            editor.update_search("cat").unwrap();
+            let result = editor.take_search_job().unwrap().run().unwrap();
+            if edit {
+                editor.execute("delete_selection", 1).unwrap();
+                editor.execute("undo", 1).unwrap();
+            } else {
+                editor.execute("move_right", 1).unwrap();
+                editor.execute("move_left", 1).unwrap();
+            }
+            let after = editor.selections.clone();
+            assert_eq!(
+                editor.apply_search_result(result).unwrap(),
+                SearchCompletion::Ignored
+            );
+            assert_eq!(editor.selections, after);
+            assert!(!editor.search_pending());
+        }
     }
 
     fn accept(editor: &mut Editor, query: &str, backward: bool) {

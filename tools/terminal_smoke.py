@@ -118,6 +118,20 @@ class Terminal:
         os.write(self.master, data)
         return mark
 
+    def expect_screen(self, needle):
+        # A worker may complete after the first focus redraw. Ask for complete
+        # frames until the expected screen is visible; normal diffs may emit
+        # only one changed status digit. No fixed worker-speed assumption.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            mark = self.send(b"\x1b[I")
+            self.drain(0.05)
+            if needle in self.output[mark:]:
+                return
+            if self.poll() is not None:
+                break
+        raise AssertionError(f"missing screen {needle!r}; terminal tail: {bytes(self.output[-2000:])!r}")
+
     def start(self):
         self.expect(b"\x1b[?2026l")
         assert b"\x1b[?1049h" in self.output, "alternate screen was not entered"
@@ -225,23 +239,52 @@ def main():
             # Force a full redraw when inspecting status text: a normal diff
             # can emit only the changed column digit, omitting the row and colon.
             mark = terminal.send(b"/cat\x1b[I")
-            terminal.expect(b"1:9", mark)
+            terminal.expect_screen(b"1:9")
             mark = terminal.send(b"\rn\x1b[I")
-            terminal.expect(b"2:7", mark)
+            terminal.expect_screen(b"2:7")
             mark = terminal.send(b"/missing\x1b[I")
-            terminal.expect(b"no matches", mark)
+            terminal.expect_screen(b"no matches")
             mark = terminal.send(b"\x1b")
             terminal.expect(b"\x1b[?2026l", mark)
             mark = terminal.send(b"n\x1b[I")
-            terminal.expect(b"3:7", mark)
+            terminal.expect_screen(b"3:7")
             mark = terminal.send(b"?cat\rn\x1b[I")
-            terminal.expect(b"2:5", mark)
+            terminal.expect_screen(b"2:5")
             mark = terminal.send(b"d\x13")
             terminal.expect(b"wrote", mark)
             assert search_path.read_text() == "start cat one\nmid  two\nend cat three\n"
             terminal.send(b"\x11")
             terminal.finish()
         print("PASS: search preview, accept, cancel, forward/backward repeats, and edit match")
+
+        ordered_path = Path(directory) / "ordered search.txt"
+        ordered_path.write_text("x cat cat")
+        with Terminal([binary, str(ordered_path)]) as terminal:
+            terminal.start()
+            # Enter and edit keys arrive before either search result. Both the
+            # preview and the n repeat must resolve before d and save execute.
+            mark = terminal.send(b"/cat\rnd\x13")
+            terminal.expect(b"wrote", mark)
+            assert ordered_path.read_text() == "x cat "
+            terminal.send(b"\x11")
+            terminal.finish()
+        print("PASS: early search acceptance and queued repeat/edit/save preserve key order")
+
+        burst_path = Path(directory) / "input burst.txt"
+        burst_path.write_text("")
+        with Terminal([binary, str(burst_path)]) as terminal:
+            terminal.start()
+            # Stay below 1 KiB to avoid overflowing the PTY's own input queue.
+            mark = terminal.send(b"i" + b"abcdef" * 150)
+            terminal.expect(b"INS", mark)
+            # This spans many bounded input batches; no key may be consumed
+            # past the batch limit and then lost before the next iteration.
+            mark = terminal.send(b"\x13")
+            terminal.expect(b"wrote", mark)
+            assert burst_path.read_text() == "abcdef" * 150
+            terminal.send(b"\x11")
+            terminal.finish()
+        print("PASS: bounded event batches preserve all 900 queued text keys")
 
         with Terminal([binary]) as terminal:
             terminal.start()

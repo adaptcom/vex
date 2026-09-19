@@ -1,6 +1,7 @@
 //! A custom terminal viewport and cell-diff renderer, with Crossterm for I/O.
 
 pub mod app;
+mod events;
 pub mod files;
 pub mod input;
 pub mod render;

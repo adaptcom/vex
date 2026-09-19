@@ -251,7 +251,7 @@ commands! {
     /// Preview the context's literal text from the original selections. Empty or unmatched text restores them; selections expand to whole graphemes in normal and select modes.
     fn search_update(ctx) { crate::search::update(ctx.editor, ctx.text.ok_or(Error::MissingText)?) }
 
-    /// Accept a matching preview for n/N navigation. An empty query cancels; an unmatched query keeps the prompt open and preserves the previous accepted search.
+    /// Accept a matching preview for n/N navigation, waiting for pending background work if needed. An empty query cancels; an unmatched query keeps the prompt open and preserves the previous accepted search.
     fn search_accept(ctx) { crate::search::accept(ctx.editor) }
 
     /// Cancel a search preview and restore its original selections and preferred columns. The terminal integration also restores its saved viewport.
@@ -393,6 +393,7 @@ commands! {
 
     /// Undo edit groups and restore their selections; accepts a count of groups.
     fn undo(ctx) {
+        ctx.editor.finish_undo_group();
         for _ in 0..ctx.count.get() {
             if !ctx.editor.document.undo(&mut ctx.editor.selections)? { break; }
             ctx.editor.synchronize_caches();
@@ -402,6 +403,7 @@ commands! {
 
     /// Redo edit groups and restore their selections; accepts a count of groups.
     fn redo(ctx) {
+        ctx.editor.finish_undo_group();
         for _ in 0..ctx.count.get() {
             if !ctx.editor.document.redo(&mut ctx.editor.selections)? { break; }
             ctx.editor.synchronize_caches();

@@ -33,13 +33,27 @@ pub struct Literal {
 
 impl Literal {
     pub fn new(text: &str) -> Self {
-        let backward: Vec<_> = text.bytes().rev().collect();
-        Self {
-            text: text.into(),
-            forward_table: failure_table(text.as_bytes()),
-            backward_table: failure_table(&backward),
-            backward,
+        Self::new_cancellable(text, || false).expect("never cancelled")
+    }
+
+    /// Compile on a worker, abandoning superseded queries cooperatively.
+    pub fn new_cancellable(text: &str, mut cancelled: impl FnMut() -> bool) -> Option<Self> {
+        if cancelled() {
+            return None;
         }
+        let mut backward = Vec::with_capacity(text.len());
+        for (index, byte) in text.bytes().rev().enumerate() {
+            if index % 4096 == 0 && cancelled() {
+                return None;
+            }
+            backward.push(byte);
+        }
+        Some(Self {
+            text: text.into(),
+            forward_table: failure_table(text.as_bytes(), &mut cancelled)?,
+            backward_table: failure_table(&backward, &mut cancelled)?,
+            backward,
+        })
     }
 
     pub fn text(&self) -> &str {
@@ -55,6 +69,19 @@ impl Literal {
         text: &'a Rope,
         starts: Range<ByteOffset>,
         direction: Direction,
+    ) -> impl Iterator<Item = Range<ByteOffset>> + 'a {
+        self.matches_cancellable(text, starts, direction, || false)
+    }
+
+    /// Like [`Self::matches`], but stops permanently when cancellation is
+    /// observed. Checks at least every 4096 scanned bytes and during long KMP
+    /// fallback chains, including when there are no matches to yield.
+    pub fn matches_cancellable<'a>(
+        &'a self,
+        text: &'a Rope,
+        starts: Range<ByteOffset>,
+        direction: Direction,
+        mut cancelled: impl FnMut() -> bool + 'a,
     ) -> impl Iterator<Item = Range<ByteOffset>> + 'a {
         let start = starts.start.0.min(text.len_bytes());
         let end = starts.end.0.min(text.len_bytes()).max(start);
@@ -80,9 +107,23 @@ impl Literal {
         };
         let mut bytes = bytes.take(length).enumerate();
         let mut matched = 0;
+        let mut stopped = false;
         std::iter::from_fn(move || {
+            if stopped {
+                return None;
+            }
             for (index, byte) in bytes.by_ref() {
+                if index % 4096 == 0 && cancelled() {
+                    stopped = true;
+                    return None;
+                }
+                let mut fallback_steps = 0;
                 while matched > 0 && pattern[matched] != byte {
+                    fallback_steps += 1;
+                    if fallback_steps % 4096 == 0 && cancelled() {
+                        stopped = true;
+                        return None;
+                    }
                     matched = table[matched - 1];
                 }
                 if pattern[matched] == byte {
@@ -104,11 +145,19 @@ impl Literal {
     }
 }
 
-fn failure_table(pattern: &[u8]) -> Vec<usize> {
+fn failure_table(pattern: &[u8], cancelled: &mut impl FnMut() -> bool) -> Option<Vec<usize>> {
     let mut table = vec![0; pattern.len()];
     let mut prefix = 0;
     for index in 1..pattern.len() {
+        if index % 4096 == 0 && cancelled() {
+            return None;
+        }
+        let mut fallback_steps = 0;
         while prefix > 0 && pattern[index] != pattern[prefix] {
+            fallback_steps += 1;
+            if fallback_steps % 4096 == 0 && cancelled() {
+                return None;
+            }
             prefix = table[prefix - 1];
         }
         if pattern[index] == pattern[prefix] {
@@ -116,7 +165,7 @@ fn failure_table(pattern: &[u8]) -> Vec<usize> {
         }
         table[index] = prefix;
     }
-    table
+    Some(table)
 }
 
 #[cfg(test)]
@@ -129,6 +178,83 @@ mod tests {
             .matches(text, ByteOffset(0)..ByteOffset(text.len_bytes()), direction)
             .map(|m| m.start.0)
             .collect()
+    }
+
+    #[test]
+    fn cancellation_stops_missing_scans_in_both_directions_and_stays_stopped() {
+        let rope = Rope::from_str(&"a".repeat(1 << 20));
+        let pattern = Literal::new("missing");
+        for direction in [Direction::Forward, Direction::Backward] {
+            let checks = std::cell::Cell::new(0);
+            let mut matches = pattern.matches_cancellable(
+                &rope,
+                ByteOffset(0)..ByteOffset(rope.len_bytes()),
+                direction,
+                || {
+                    checks.set(checks.get() + 1);
+                    checks.get() == 3
+                },
+            );
+            assert!(matches.next().is_none());
+            assert_eq!(checks.get(), 3);
+            assert!(matches.next().is_none());
+            assert_eq!(checks.get(), 3);
+        }
+    }
+
+    #[test]
+    fn compilation_and_long_fallback_chains_can_be_cancelled() {
+        let query = format!("{}b", "a".repeat(32_768));
+        for stop in [1, 5, 12, 20] {
+            let mut checks = 0;
+            assert!(
+                Literal::new_cancellable(&query, || {
+                    checks += 1;
+                    checks == stop
+                })
+                .is_none()
+            );
+            assert_eq!(checks, stop);
+        }
+        let query = Literal::new(&query);
+        let rope = Rope::from_str(&format!("{}c", "a".repeat(32_768)));
+        let mut checks = 0;
+        assert!(
+            query
+                .matches_cancellable(
+                    &rope,
+                    ByteOffset(0)..ByteOffset(rope.len_bytes()),
+                    Direction::Forward,
+                    || {
+                        checks += 1;
+                        checks == 10 // Inside the long fallback chain at the final byte.
+                    }
+                )
+                .next()
+                .is_none()
+        );
+        assert_eq!(checks, 10);
+        // These fallback lengths are always odd, so checking cancellation by
+        // prefix length modulo 4096 would miss the entire chain.
+        let prefix = format!("{}a", "ab".repeat(16_384));
+        let query = Literal::new(&format!("{prefix}c"));
+        let rope = Rope::from_str(&format!("{prefix}d"));
+        let mut checks = 0;
+        assert!(
+            query
+                .matches_cancellable(
+                    &rope,
+                    ByteOffset(0)..ByteOffset(rope.len_bytes()),
+                    Direction::Forward,
+                    || {
+                        checks += 1;
+                        checks == 10
+                    }
+                )
+                .next()
+                .is_none()
+        );
+        assert_eq!(checks, 10);
     }
 
     #[test]

@@ -42,6 +42,14 @@ Search does not modify text, dirty state, revisions, or undo/redo history. Begin
 search separates typing groups. Accepted queries remain available after edits,
 undo, and redo; each navigation reads the current document.
 
+Interactive previews and `n` / `N` run on a persistent worker. The status line
+shows `searching...` while a request is pending. Typing a newer query cancels the
+previous request; clearing or cancelling the prompt takes effect immediately.
+If Enter arrives before the result, acceptance waits for that result. Later keys
+remain in order: `/cat`, Enter, `n`, `d` finds the next match before deleting it.
+Resize and focus events still work while those keys wait. Escape or Ctrl-c cancels
+when it is the next key; it does not jump ahead of earlier queued edits.
+
 ## API and implementation
 
 `vex_core::search::Literal` compiles forward and reverse KMP failure tables. Its
@@ -60,10 +68,27 @@ can be rebound.
 The editor owns the accepted pattern and a preview snapshot of selections,
 preferred columns, mode, and revision. Frontends observe `Editor::search_direction`,
 edit their own prompt, send text via `Editor::update_search`, and call accept or
-cancel. `Editor::search_status` distinguishes empty, matching, and missing queries.
+cancel. `Editor::search_status` distinguishes empty, pending, matching, and missing queries.
 The terminal saves the viewport separately. An intervening document revision or
 mode change invalidates a preview; updating, accepting, or cancelling it returns
 an error instead of installing stale coordinates.
+
+The standalone editor defaults to synchronous execution. A frontend enables
+`Editor::set_background_search(true)`, takes work with `Editor::take_search_job`,
+and runs `SearchJob::run` on its worker. This job owns a cheap immutable document
+snapshot and copies only the query and selections. Query compilation and matching
+both happen on the worker. Accepted queries reuse the compiled pattern.
+
+Jobs and results carry a unique request token with a cancellation flag. Results
+are applied through `Editor::apply_search_result` only if the request, document
+identity, revision, mode, and selections still match. Commands that edit or move
+cancel pending work, including a move away and back or an edit followed by undo.
+Late results cannot overwrite current selections or newer messages.
+
+`Editor::search_waiting` identifies an early acceptance or repeat whose destination
+is still needed. The terminal defers subsequent keys until completion, then
+continues dispatching normal documented command functions. See the
+[event queue and worker lifecycle](terminal.md#event-queue-and-background-work).
 
 Navigation does not allocate a list of every match. Counts larger than the number
 of matches are reduced modulo that number after one traversal, followed by at
@@ -73,9 +98,14 @@ and terminal event handling; property tests compare with flat-text match models.
 
 ## Current limits
 
-Searching is synchronous. Nearby matches need only a small scan; a missing query
-visits the entire buffer for each preview update. Large files, large match counts,
-or many selections can delay input. There is no worker, cancellation budget,
-regex mode, case folding, query history, or highlight of every visible occurrence
-yet. See [measured search costs](performance.md#literal-search) for the current
-baseline. Rendering and cold layout indexing have their own costs.
+Missing queries still scan the entire buffer, but do so off the terminal thread.
+Cancellation is cooperative: compilation and scanning check at least every 4096
+bytes and during long KMP fallback chains, with additional checks between matches
+and selections. Individual allocations and grapheme-boundary calculations are
+not preemptible. Large files and counts can delay a result, and keys depending on
+that result wait for it. There is no hard real-time deadline.
+
+Regex mode, case folding, query history, and highlighting every visible occurrence
+are not implemented. Syntax parsing, file I/O, rendering, and cold layout indexing
+still run synchronously. See [measured search costs](performance.md#background-search)
+for the worker scheduling and terminal response baseline.

@@ -263,7 +263,41 @@ the existing command suite's 30 samples, 500 ms warmup, and one-second target.
 These are central estimates, not terminal input latency or p95 bounds.
 
 Search has no document-sized allocation or match list. It stops when the requested
-match is found, but missing queries still take linear time. Preview scans run
-synchronously after each text-changing prompt event; many selections can each
-require a traversal. Worker-based search and cancellation remain future work.
-See [search behavior](search.md).
+match is found, but missing queries still take linear time. These measurements
+describe the original synchronous search path; many selections can each require
+a traversal. Interactive search now runs on a cancellable worker, as measured
+below. See [search behavior](search.md).
+
+## Background search
+
+Recorded on 2026-09-19 using the same machine and release profile:
+
+```sh
+cargo bench -p vex_editor --bench commands --locked -- background_search_schedule_cancel --noplot
+cargo build --release -p vex_term --locked
+python3 tools/background_search_benchmark.py --mib 100 --runs 5
+```
+
+Creating two successive deferred query requests and then cancelling took
+**0.140 µs at 1 MiB** and **0.141 µs at 100 MiB**. The benchmark includes command
+dispatch, immutable snapshot and selection capture, request cancellation, and
+dropping both job payloads. It uses 30 samples, 500 ms warmup, and a one-second
+measurement target. It excludes worker scheduling, compilation/scanning, and
+drawing; these numbers measure work left on the editor thread for one selection.
+
+The PTY benchmark opens a 100 MiB ASCII file with short logical lines, starts a
+missing-query search, waits until the status shows it pending, then resizes and
+cancels it. Five runs measured a median **0.193 ms for resize/redraw** and
+**0.159 ms for cancellation/redraw**. Individual samples ranged from 0.178–0.262 ms
+and 0.140–0.172 ms respectively. File loading is excluded. These measurements end
+when the PTY receives the corresponding frame/cursor output; they do not include
+the physical terminal's display latency or establish p95 guarantees. The worker's
+exact scheduling phase is not instrumented.
+
+The shared inbox wakes on worker completions while idle. It bounds terminal input
+at 256 events; the worker retains one running and one replaceable pending job.
+Cancellation is checked during query compilation, every 4096 scanned bytes,
+during long KMP fallback chains, and between matches/selections. Allocation and
+grapheme-boundary routines remain indivisible. Queued editing keys that depend on
+a pending search destination wait for that result, with key order preserved.
+Background syntax parsing and file I/O remain future work.
