@@ -41,6 +41,16 @@ pub enum Mode {
     Insert,
 }
 
+/// Frontend services requested by ordinary documented editing commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LanguageAction {
+    Hover,
+    Definition,
+    JumpBack,
+    NextDiagnostic(usize),
+    PreviousDiagnostic(usize),
+}
+
 /// The first editor model: one document and its active view, independent of a TTY.
 /// All selections stay on grapheme boundaries. Insert mode owns zero-width
 /// carets; other modes allow directional ranges and a zero-width EOF cursor.
@@ -54,6 +64,7 @@ pub struct Editor {
     layout: RefCell<LayoutCache>,
     syntax: RefCell<syntax::Highlighting>,
     search: search::Search,
+    language_action: Option<LanguageAction>,
 }
 
 impl Editor {
@@ -70,6 +81,7 @@ impl Editor {
             layout: RefCell::default(),
             syntax: RefCell::default(),
             search: search::Search::default(),
+            language_action: None,
         }
     }
 
@@ -81,6 +93,12 @@ impl Editor {
     }
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// Take a language-service action after command dispatch. The frontend owns
+    /// transport and applies results; commands remain independent of LSP and I/O.
+    pub fn take_language_action(&mut self) -> Option<LanguageAction> {
+        self.language_action.take()
     }
 
     /// Direction of an active search prompt, if a search command requested one.

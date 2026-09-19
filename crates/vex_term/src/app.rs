@@ -15,6 +15,8 @@ use vex_editor::{
     SearchStatus,
 };
 
+mod language;
+
 enum PromptKind {
     Command,
     Search {
@@ -55,6 +57,7 @@ pub struct App {
     quit: bool,
     size: (u16, u16),
     automatic_language: bool,
+    language: language::State,
 }
 
 impl App {
@@ -82,6 +85,7 @@ impl App {
             quit: false,
             size,
             automatic_language: true,
+            language: language::State::default(),
         }
     }
 
@@ -134,6 +138,11 @@ impl App {
 
     /// Handle one event. Return whether the screen may have changed.
     pub fn handle(&mut self, event: Event) -> bool {
+        if matches!(&event, Event::Paste(_))
+            || matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
+        {
+            self.dismiss_language_help();
+        }
         match event {
             Event::Resize(width, height) => {
                 self.size = (width, height);
@@ -258,6 +267,7 @@ impl App {
     }
 
     pub fn paint(&mut self, frame: &mut Frame) -> io::Result<()> {
+        self.refresh_diagnostics();
         self.open_search_prompt();
         let filename = self
             .files
@@ -276,6 +286,8 @@ impl App {
         if self.editor.search_pending() {
             pending.push_str(" searching...");
         }
+        pending.push_str(&self.language_status());
+        let diagnostic = self.diagnostic_message();
         render::paint(
             frame,
             &self.editor,
@@ -284,7 +296,11 @@ impl App {
                 filename: &filename,
                 dirty: self.files.is_dirty(self.editor.document()),
                 pending: &pending,
-                message: &self.message,
+                message: if self.message.is_empty() {
+                    &diagnostic
+                } else {
+                    &self.message
+                },
                 error: self.error,
                 prompt: self
                     .prompt
@@ -292,7 +308,9 @@ impl App {
                     .map(|p| (p.prefix(), p.input.text(), p.input.cursor())),
             },
         )
-        .map_err(io::Error::other)
+        .map_err(io::Error::other)?;
+        self.paint_language(frame);
+        Ok(())
     }
 
     fn open_search_prompt(&mut self) {
@@ -412,6 +430,13 @@ macro_rules! commands {
 }
 
 commands! {
+    /// Restart rust-analyzer for the current Rust file after an error or configuration change.
+    fn restart_lsp(app, argument, force) ["lsp-restart"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("lsp-restart takes no arguments")); }
+        app.restart_language_server();
+        Ok(())
+    }
+
     /// Write the buffer atomically. Accepts an optional path; ! permits overwriting external changes or an existing destination.
     fn write_file(app, argument, force) ["write", "w"] {
         app.editor.finish_undo_group();
@@ -421,6 +446,8 @@ commands! {
             if language != app.editor.language() { app.editor.set_language(language); }
         }
         app.message = format!("wrote {bytes} bytes");
+        app.language.saved += 1;
+        app.language.saved_snapshot = Some(app.editor.document().snapshot());
         Ok(())
     }
 

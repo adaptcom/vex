@@ -335,3 +335,17 @@ Source tests check independent worker progress, completion wakeups, cancellation
 stale-result rejection, incremental reuse across coalesced edits, and bounded
 caches. The PTY smoke test waits for initial, edited, and undo-restored colors
 without sending extra input to wake the loop.
+
+## Language services
+
+Rust-analyzer runs in a child process. The UI submits shared rope snapshots;
+JSON encoding, UTF-16 indexing, and protocol handling run on the LSP service
+thread, with separate threads for blocking pipe I/O. Updates debounce for 20 ms
+with a 100 ms maximum batching delay. The terminal gives input a turn between
+background completions, including LSP events.
+
+The initial implementation sends full document contents and rebuilds its line
+index after changes, so worker CPU and allocation costs scale with document
+size. Documents above 8 MiB skip LSP. Server startup, Cargo checks, and analysis
+costs have not been benchmarked; the existing rendering numbers do not measure
+them. See [language services](lsp.md) for queue limits and correctness checks.

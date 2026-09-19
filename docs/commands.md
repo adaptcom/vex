@@ -4,6 +4,11 @@ Generated from command Rustdoc and the default keymap.
 
 | Command | Bindings by mode | Description |
 |---|---|---|
+| `jump_back` | Normal: `<C-o>`, Select: `<C-o>` | Return to the location before the last successful definition jump. |
+| `hover` | Normal: `K`, Select: `K` | Show language-server documentation for the symbol at the primary cursor. |
+| `goto_definition` | Normal: `gd`, Select: `gd` | Jump to the definition of the symbol at the primary cursor. |
+| `goto_next_diagnostic` | Normal: `]d`, Select: `]d` | Move to the next diagnostic, wrapping and honoring the repeat count. |
+| `goto_previous_diagnostic` | Normal: `[d`, Select: `[d` | Move to the previous diagnostic, wrapping and honoring the repeat count. |
 | `search_forward` | Normal: `/`, Select: `/` | Begin a forward literal search from each selection's start, including the current position; accepts a match count. Integrations should open a prompt and send search_update, search_accept, or search_cancel. |
 | `search_backward` | Normal: `?`, Select: `?` | Begin a backward literal search from each selection's start, including the current position; accepts a match count. Matches wrap at document boundaries. |
 | `search_update` |  | Preview the context's literal text from the original selections. Empty or unmatched text restores them; selections expand to whole graphemes in normal and select modes. |

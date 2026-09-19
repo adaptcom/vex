@@ -6,7 +6,8 @@ A terminal text editor in Rust, inspired by Helix's selection-first editing mode
 atomic transactions, revision-checked snapshots, undo/redo, and grapheme-aware
 movement and streaming literal search. `vex_editor` adds normal/select/insert modes, documented command
 functions, configurable keybindings, and repeat counts. `vex_syntax` adds
-Tree-sitter parsing and Rust syntax highlighting. All three work without a
+Tree-sitter parsing and Rust syntax highlighting. `vex_lsp` adds rust-analyzer
+integration over stdio with a small futures executor. These crates work without a
 terminal. `vex_term` provides the interactive application, using Crossterm for
 terminal I/O and our own viewport, cell grid, and incremental drawing.
 
@@ -28,8 +29,11 @@ Use `/` or `?` for incremental literal search, Enter to accept, Escape to restor
 your selections and scroll position, and `n` / `N` to repeat. See [search behavior](docs/search.md).
 Interactive search runs on a worker, with cancellation and revision checks.
 Rust files (`.rs`) use syntax colors automatically. Use `:language rust` for a
-scratch buffer, `:language text` to disable colors, or `:language auto` to restore
+scratch buffer, `:language text` to disable Rust language support, or `:language auto` to restore
 file-extension detection. See [syntax support and limits](docs/syntax.md).
+With `rust-analyzer` on `PATH`, named Rust files also get diagnostics, `K` for
+hover, `gd` for definitions, `Ctrl-o` to jump back, and `]d` / `[d` to navigate
+diagnostics. See [language services and setup](docs/lsp.md).
 See [terminal usage and architecture](docs/terminal.md).
 
 ## Development
@@ -46,6 +50,7 @@ cargo run --release -p vex_term --example long_lines --locked -- 10 100
 cargo run -p vex_editor --example command_reference --locked
 cargo build --release -p vex_term --locked
 python3 tools/terminal_smoke.py
+python3 tools/lsp_smoke.py # Requires rust-analyzer and a Rust toolchain.
 python3 tools/background_search_benchmark.py
 ```
 
@@ -187,8 +192,9 @@ Soft wrapping is not implemented yet.
 ## Next milestone
 
 The interactive loop can open, search, select, edit, undo groups, and save.
-Search and syntax run on independent workers through a shared event queue. Registers,
-pickers, more syntax languages, and LSP remain upcoming milestones. Further layout
+Search, syntax, and Rust language services run independently through a shared event
+queue. Multiple buffers, completion, registers, pickers, and more syntax languages
+remain upcoming milestones. Further layout
 work can address cold indexing and updates near the beginning of a huge line.
 
 See [the benchmark notes](docs/performance.md) for the initial performance baseline.

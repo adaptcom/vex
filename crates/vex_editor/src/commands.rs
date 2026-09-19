@@ -242,6 +242,41 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
 }
 
 commands! {
+    /// Return to the location before the last successful definition jump.
+    fn jump_back(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.language_action = Some(crate::LanguageAction::JumpBack);
+        Ok(())
+    }
+
+    /// Show language-server documentation for the symbol at the primary cursor.
+    fn hover(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.language_action = Some(crate::LanguageAction::Hover);
+        Ok(())
+    }
+
+    /// Jump to the definition of the symbol at the primary cursor.
+    fn goto_definition(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.language_action = Some(crate::LanguageAction::Definition);
+        Ok(())
+    }
+
+    /// Move to the next diagnostic, wrapping and honoring the repeat count.
+    fn goto_next_diagnostic(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.language_action = Some(crate::LanguageAction::NextDiagnostic(ctx.count.get()));
+        Ok(())
+    }
+
+    /// Move to the previous diagnostic, wrapping and honoring the repeat count.
+    fn goto_previous_diagnostic(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.language_action = Some(crate::LanguageAction::PreviousDiagnostic(ctx.count.get()));
+        Ok(())
+    }
+
     /// Begin a forward literal search from each selection's start, including the current position; accepts a match count. Integrations should open a prompt and send search_update, search_accept, or search_cancel.
     fn search_forward(ctx) { crate::search::begin(ctx, crate::SearchDirection::Forward) }
 

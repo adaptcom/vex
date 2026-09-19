@@ -66,6 +66,10 @@ impl FileState {
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
+    /// Resolved absolute path, also used as the language server's file identity.
+    pub fn target(&self) -> Option<&Path> {
+        self.target.as_deref()
+    }
     pub fn newline(&self) -> &'static str {
         self.newline
     }

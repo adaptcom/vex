@@ -126,6 +126,10 @@ pub fn run(app: &mut App) -> io::Result<()> {
     let runtime = Runtime::start()?;
     app.editor.set_background_search(true);
     app.editor.set_background_syntax(true);
+    app.enable_lsp();
+    if let Some(update) = app.take_lsp_update() {
+        runtime.update_lsp(update);
+    }
     let mut renderer = Renderer::default();
     let mut output = io::stdout();
     let mut redraw = true;
@@ -167,10 +171,14 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Syntax(result)) => {
                     redraw |= app.editor.apply_syntax_result(result);
                 }
+                AppEvent::Lsp(event) => redraw |= app.handle_lsp_event(event),
                 AppEvent::Failed(error) => return Err(error),
             }
             if let Some(job) = app.editor.take_search_job() {
                 runtime.submit(job);
+            }
+            if let Some(update) = app.take_lsp_update() {
+                runtime.update_lsp(update);
             }
             if app.should_quit() || index == 127 || started.elapsed() >= Duration::from_millis(4) {
                 break;

@@ -13,6 +13,8 @@ Tree-sitter installation.
 
 Unknown file types stay plain text. Manual overrides survive saves. Changing
 syntax language never changes text, selections, revisions, or undo history.
+The same language selection controls [rust-analyzer](lsp.md) for named Rust files;
+`:language text` stops language services as well as syntax highlighting.
 The terminal honors a nonempty `NO_COLOR` environment variable, which suppresses
 all colors, including syntax and selection colors.
 

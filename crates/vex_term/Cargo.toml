@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 vex_core.workspace = true
 vex_editor.workspace = true
+vex_lsp.workspace = true
 crossterm.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true

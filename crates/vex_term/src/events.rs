@@ -19,6 +19,7 @@ const INPUT_CAPACITY: usize = 256;
 pub(crate) enum AppEvent {
     Terminal(Event),
     Background(BackgroundEvent),
+    Lsp(vex_lsp::Event),
     Failed(io::Error),
 }
 
@@ -32,8 +33,10 @@ pub(crate) enum BackgroundEvent {
 #[derive(Default)]
 struct Inbox {
     input: VecDeque<Event>,
+    lsp: VecDeque<vex_lsp::Event>,
     background: [Option<BackgroundEvent>; 2],
     next_background: usize,
+    prefer_input: bool,
     failure: Option<io::Error>,
     closed: bool,
 }
@@ -49,6 +52,18 @@ struct SharedInbox {
 pub(crate) struct EventQueue(Arc<SharedInbox>);
 
 impl EventQueue {
+    /// Protocol results use a bounded FIFO. Only service threads call this;
+    /// backpressure never blocks editing, and closing releases blocked senders.
+    fn lsp(&self, event: vex_lsp::Event) {
+        let mut state = self.0.state.lock().unwrap();
+        while state.lsp.len() == 128 && !state.closed {
+            state = self.0.space.wait(state).unwrap();
+        }
+        if !state.closed {
+            state.lsp.push_back(event);
+            self.0.ready.notify_one();
+        }
+    }
     fn terminal(&self, event: Event) -> bool {
         let mut state = self.0.state.lock().unwrap();
         while state.input.len() == INPUT_CAPACITY && !state.closed {
@@ -84,6 +99,7 @@ impl EventQueue {
         let mut state = self.0.state.lock().unwrap();
         state.closed = true;
         state.input.clear();
+        state.lsp.clear();
         state.background = [None, None];
         self.0.ready.notify_all();
         self.0.space.notify_all();
@@ -110,13 +126,31 @@ impl EventQueue {
             }
             if waiting && state.input.front().is_some_and(cancels_search) {
                 let event = state.input.pop_front().unwrap();
-                self.0.space.notify_one();
+                self.0.space.notify_all();
                 return Some(AppEvent::Terminal(event));
             }
-            for offset in 0..state.background.len() {
-                let index = (state.next_background + offset) % state.background.len();
+            if !waiting
+                && state.prefer_input
+                && let Some(event) = state.input.pop_front()
+            {
+                state.prefer_input = false;
+                self.0.space.notify_all();
+                return Some(AppEvent::Terminal(event));
+            }
+            for offset in 0..3 {
+                let index = (state.next_background + offset) % 3;
+                if index == 2 {
+                    if let Some(event) = state.lsp.pop_front() {
+                        state.next_background = 0;
+                        state.prefer_input = true;
+                        self.0.space.notify_all();
+                        return Some(AppEvent::Lsp(event));
+                    }
+                    continue;
+                }
                 if let Some(result) = state.background[index].take() {
-                    state.next_background = (index + 1) % state.background.len();
+                    state.next_background = (index + 1) % 3;
+                    state.prefer_input = true;
                     return Some(AppEvent::Background(result));
                 }
             }
@@ -129,11 +163,11 @@ impl EventQueue {
                 })
             {
                 let event = state.input.remove(index).unwrap();
-                self.0.space.notify_one();
+                self.0.space.notify_all();
                 return Some(AppEvent::Terminal(event));
             }
             if !waiting && let Some(event) = state.input.pop_front() {
-                self.0.space.notify_one();
+                self.0.space.notify_all();
                 return Some(AppEvent::Terminal(event));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -282,6 +316,7 @@ pub(crate) struct Runtime {
     pub events: EventQueue,
     search: Option<SearchWorker>,
     syntax: Option<LatestWorker<SyntaxJob>>,
+    lsp: Option<vex_lsp::Service>,
     input: Option<JoinHandle<()>>,
 }
 
@@ -293,6 +328,8 @@ impl Runtime {
         let syntax = LatestWorker::spawn("vex-syntax", events.clone(), move |job| {
             syntax_state.run(job).map(BackgroundEvent::Syntax)
         })?;
+        let queue = events.clone();
+        let lsp = vex_lsp::Service::start(move |event| queue.lsp(event))?;
         let queue = events.clone();
         let input = thread::Builder::new()
             .name("vex-input".into())
@@ -318,6 +355,7 @@ impl Runtime {
             events,
             search: Some(search),
             syntax: Some(syntax),
+            lsp: Some(lsp),
             input: Some(input),
         })
     }
@@ -329,6 +367,10 @@ impl Runtime {
     pub(crate) fn submit_syntax(&self, job: SyntaxJob) {
         self.syntax.as_ref().unwrap().submit(job);
     }
+
+    pub(crate) fn update_lsp(&self, update: vex_lsp::Update) {
+        self.lsp.as_ref().unwrap().update(update);
+    }
 }
 
 impl Drop for Runtime {
@@ -336,8 +378,10 @@ impl Drop for Runtime {
         self.events.close();
         self.search.as_ref().unwrap().stop();
         self.syntax.as_ref().unwrap().stop();
+        self.lsp.as_ref().unwrap().stop();
         self.search.take();
         self.syntax.take();
+        self.lsp.take();
         if let Some(thread) = self.input.take() {
             let _ = thread.join();
         }
@@ -375,6 +419,9 @@ mod tests {
             AppEvent::Background(BackgroundEvent::Syntax(result)) => {
                 app.editor.apply_syntax_result(result);
             }
+            AppEvent::Lsp(event) => {
+                app.handle_lsp_event(event);
+            }
             AppEvent::Failed(error) => panic!("{error}"),
         }
     }
@@ -391,6 +438,49 @@ mod tests {
             vex_core::ByteOffset(0)..vex_core::ByteOffset(editor.document().text().len_bytes()),
         );
         editor.take_syntax_job().unwrap()
+    }
+
+    #[test]
+    fn lsp_results_stay_ordered_and_cannot_starve_terminal_input() {
+        let events = EventQueue::default();
+        for index in 0..128 {
+            events.lsp(vex_lsp::Event::Status {
+                epoch: index,
+                message: String::new(),
+                failed: false,
+            });
+        }
+        events.terminal(key(KeyCode::Char('x')));
+        assert!(matches!(
+            events.next(Duration::ZERO, false),
+            Some(AppEvent::Lsp(vex_lsp::Event::Status { epoch: 0, .. }))
+        ));
+        assert!(matches!(
+            events.next(Duration::ZERO, false),
+            Some(AppEvent::Terminal(_))
+        ));
+        for index in 1..128 {
+            assert!(
+                matches!(events.next(Duration::ZERO, true), Some(AppEvent::Lsp(vex_lsp::Event::Status { epoch, .. })) if epoch == index)
+            );
+        }
+        for _ in 0..128 {
+            events.lsp(vex_lsp::Event::Status {
+                epoch: 0,
+                message: String::new(),
+                failed: false,
+            });
+        }
+        let producer = events.clone();
+        let thread = thread::spawn(move || {
+            producer.lsp(vex_lsp::Event::Status {
+                epoch: 0,
+                message: String::new(),
+                failed: false,
+            })
+        });
+        events.close();
+        thread.join().unwrap();
     }
 
     #[test]

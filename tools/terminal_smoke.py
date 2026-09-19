@@ -75,11 +75,20 @@ class Terminal:
 
     def __exit__(self, *_):
         if self.status is None:
-            os.killpg(self.pid, signal.SIGKILL)
-            os.waitpid(self.pid, 0)
+            # Let the editor stop its workers and language server on test failure.
+            self.send(b"\x03:q!\r")
+            deadline = time.monotonic() + 2
+            while self.poll() is None and time.monotonic() < deadline:
+                self.drain()
+            if self.status is None:
+                os.killpg(self.pid, signal.SIGKILL)
         os.close(self.restoration)
         os.close(self.master)
         os.close(self.slave)
+        # Close the PTY before waiting: BSD terminal teardown can wait for output
+        # to drain, which cannot happen if this process is blocked in waitpid.
+        if self.status is None:
+            os.waitpid(self.pid, 0)
 
     def poll(self):
         if self.status is None:
