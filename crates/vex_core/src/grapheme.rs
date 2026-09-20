@@ -122,6 +122,33 @@ pub fn next(text: &Rope, position: CharOffset, count: usize) -> Result<CharOffse
     Ok(result)
 }
 
+/// Count clusters intersecting a scalar range without flattening the rope.
+/// Partial clusters at either edge count once; an empty range counts zero.
+pub fn count(text: &Rope, range: std::ops::Range<CharOffset>) -> Result<usize, Error> {
+    if range.start > range.end {
+        return Err(Error::ReversedRange {
+            start: range.start,
+            end: range.end,
+        });
+    }
+    if range.end.0 > text.len_chars() {
+        return Err(Error::PositionOutOfBounds {
+            position: range.end,
+            len: text.len_chars(),
+        });
+    }
+    let mut cursor = Cursor::new(text, range.start)?;
+    let end = text.char_to_byte(range.end.0);
+    let mut count = 0;
+    while cursor.cursor.cur_cursor() < end {
+        cursor
+            .query(GraphemeCursor::next_boundary)
+            .expect("range ends within the rope");
+        count += 1;
+    }
+    Ok(count)
+}
+
 /// Move backward by up to `count` grapheme boundaries, stopping at BOF.
 /// Starting inside a cluster moves to its start on the first step.
 pub fn previous(text: &Rope, position: CharOffset, count: usize) -> Result<CharOffset, Error> {
@@ -168,6 +195,10 @@ mod tests {
         for grapheme in input.graphemes(true) {
             boundaries.push(boundaries.last().unwrap() + grapheme.chars().count());
         }
+        assert_eq!(
+            count(&text, CharOffset(0)..CharOffset(text.len_chars())).unwrap(),
+            boundaries.len() - 1
+        );
         for position in 0..=text.len_chars() {
             let before = boundaries
                 .iter()
@@ -223,6 +254,10 @@ mod tests {
         );
         assert_eq!(next(&text, CharOffset(1), 0).unwrap(), CharOffset(1));
         assert!(next(&text, CharOffset(4), 0).is_err());
+        assert_eq!(count(&text, CharOffset(1)..CharOffset(2)).unwrap(), 1);
+        assert_eq!(count(&text, CharOffset(1)..CharOffset(1)).unwrap(), 0);
+        assert!(count(&text, CharOffset(3)..CharOffset(2)).is_err());
+        assert!(count(&text, CharOffset(0)..CharOffset(4)).is_err());
         check_against_flat_text("");
     }
 

@@ -821,6 +821,30 @@ commands! {
     /// Enter insert mode with a caret after every selection.
     fn append_mode(ctx) { enter_insert(ctx.editor, true) }
 
+    /// Enter insert mode at the first non-whitespace character on each cursor's line, or its start if blank. Carets on the same line merge; does not infer indentation or use a count.
+    fn insert_at_line_start(ctx) { crate::editing::insert_at_line_edge(ctx.editor, false) }
+
+    /// Enter insert mode before the line ending on each cursor's line. Carets on the same line merge; does not infer indentation or use a count.
+    fn insert_at_line_end(ctx) { crate::editing::insert_at_line_edge(ctx.editor, true) }
+
+    /// Replace each selected grapheme with the following character in one undo step, retaining selection direction and returning to normal mode. Enter uses the buffer's line ending; Tab inserts a literal tab. Empty EOF cursors do nothing; ignores counts and leaves the yank register unchanged.
+    fn replace(ctx) [Character] { crate::editing::replace(ctx) }
+
+    /// Indent each selected nonblank line once, using the buffer's language indentation settings. Counts add levels; spaces advance to an indent boundary. Retains selected text and returns to normal mode in one undo step.
+    fn indent(ctx) { crate::editing::indent(ctx, false) }
+
+    /// Remove up to a counted number of indentation levels from each selected line, measuring tabs at the buffer's tab stops. Retains selected text and returns to normal mode in one undo step.
+    fn unindent(ctx) { crate::editing::indent(ctx, true) }
+
+    /// Join lines within each selection; a single-line selection joins the next line. Remove the line break and following indentation, adding a separating space if needed. Shared joins happen once; counts are ignored, selections and normal/select mode are retained. Comment prefixes are kept literally.
+    fn join_selections(ctx) { crate::editing::join(ctx.editor) }
+
+    /// Add a counted number of empty lines above each selection without entering insert mode. Shared insertion points are handled once; uses the buffer's line ending and retains selections on the original text in one undo step.
+    fn add_newline_above(ctx) { crate::editing::add_newlines(ctx, false) }
+
+    /// Add a counted number of empty lines below each selection without entering insert mode. Shared insertion points are handled once; uses the buffer's line ending and retains selections on the original text in one undo step.
+    fn add_newline_below(ctx) { crate::editing::add_newlines(ctx, true) }
+
     /// Open lines below each selection and enter insert mode, copying indentation. A count creates that many lines and carets; opening and subsequent typing share one undo step.
     /// Uses the loaded line ending; multiple selections ending on the same line share the new lines.
     fn open_below(ctx) { open_lines(ctx, true) }

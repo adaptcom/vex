@@ -105,6 +105,9 @@ impl Editor {
     /// query on the syntax worker (or at first draw for synchronous integrations).
     /// Selecting the same language again also invalidates pending results.
     pub fn set_language(&mut self, language: Option<Language>) {
+        if self.language() != language {
+            self.set_indentation(language.map(Language::indentation).unwrap_or_default());
+        }
         let syntax = self.syntax.get_mut();
         syntax.reset(&self.document, language, syntax.background);
     }

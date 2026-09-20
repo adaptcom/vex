@@ -1,10 +1,38 @@
 //! Built-in language registry shared by syntax, file previews, and LSP sessions.
 //! Add a grammar dependency and one entry below to support another language.
 
-use std::{path::Path, sync::OnceLock};
+use std::{num::NonZeroUsize, path::Path, sync::OnceLock};
 use vex_core::Rope;
 
 use super::Configuration;
+
+/// Whitespace added by one indentation level, separate from tab display width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndentStyle {
+    Spaces(NonZeroUsize),
+    Tabs,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Indentation {
+    pub style: IndentStyle,
+    pub tab_width: NonZeroUsize,
+}
+
+impl Indentation {
+    pub const fn spaces(width: NonZeroUsize) -> Self {
+        Self {
+            style: IndentStyle::Spaces(width),
+            tab_width: width,
+        }
+    }
+}
+
+impl Default for Indentation {
+    fn default() -> Self {
+        Self::spaces(NonZeroUsize::new(4).unwrap())
+    }
+}
 
 /// Default stdio server command and project discovery rules. Executables are
 /// supplied by the user; arguments are passed directly without a shell.
@@ -25,6 +53,7 @@ pub(super) struct Definition {
     filenames: &'static [&'static str],
     interpreters: &'static [&'static str],
     language_id: &'static str,
+    indentation: Indentation,
     server: Option<LanguageServer>,
     grammar: fn() -> tree_sitter::Language,
     queries: &'static [&'static str],
@@ -67,10 +96,14 @@ const TYPESCRIPT_SERVER: Option<LanguageServer> = Some(LanguageServer {
     outermost_root: false,
 });
 
+const TWO_SPACES: Indentation = Indentation::spaces(NonZeroUsize::new(2).unwrap());
+const FOUR_SPACES: Indentation = Indentation::spaces(NonZeroUsize::new(4).unwrap());
+
 languages! {
     Rust {
         name: "rust", aliases: &["rs"], extensions: &["rs"], filenames: &[], interpreters: &[],
         language_id: "rust",
+        indentation: FOUR_SPACES,
         server: Some(LanguageServer {
             command: "rust-analyzer", arguments: &[], environment: "VEX_RUST_ANALYZER", label: "RA",
             root_markers: &["Cargo.toml"], outermost_root: true,
@@ -81,6 +114,7 @@ languages! {
     Markdown {
         name: "markdown", aliases: &["md"], extensions: &["md", "markdown", "mdown", "mkd"],
         filenames: &[], interpreters: &[], language_id: "markdown",
+        indentation: TWO_SPACES,
         server: Some(LanguageServer {
             command: "marksman", arguments: &["server"], environment: "VEX_MARKSMAN", label: "Marksman",
             root_markers: &[".marksman.toml"], outermost_root: false,
@@ -93,6 +127,7 @@ languages! {
         name: "bash", aliases: &["sh", "shell", "shellscript"], extensions: &["sh", "bash"],
         filenames: &[".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile", "PKGBUILD"],
         interpreters: &["bash", "sh", "dash"], language_id: "shellscript",
+        indentation: TWO_SPACES,
         server: Some(LanguageServer {
             command: "bash-language-server", arguments: &["start"], environment: "VEX_BASH_LANGUAGE_SERVER", label: "Bash",
             root_markers: &[".shellcheckrc"], outermost_root: false,
@@ -103,6 +138,7 @@ languages! {
     JavaScript {
         name: "javascript", aliases: &["js"], extensions: &["js", "mjs", "cjs"],
         filenames: &[], interpreters: &["node", "nodejs"], language_id: "javascript",
+        indentation: TWO_SPACES,
         server: TYPESCRIPT_SERVER,
         grammar: || tree_sitter_javascript::LANGUAGE.into(),
         queries: &[tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY], inline: None,
@@ -110,6 +146,7 @@ languages! {
     Jsx {
         name: "jsx", aliases: &["javascriptreact"], extensions: &["jsx"],
         filenames: &[], interpreters: &[], language_id: "javascriptreact",
+        indentation: TWO_SPACES,
         server: TYPESCRIPT_SERVER,
         grammar: || tree_sitter_javascript::LANGUAGE.into(),
         queries: &[tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY], inline: None,
@@ -117,6 +154,7 @@ languages! {
     TypeScript {
         name: "typescript", aliases: &["ts"], extensions: &["ts", "mts", "cts"],
         filenames: &[], interpreters: &[], language_id: "typescript",
+        indentation: TWO_SPACES,
         server: TYPESCRIPT_SERVER,
         grammar: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         queries: &[tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_typescript::HIGHLIGHTS_QUERY], inline: None,
@@ -124,6 +162,7 @@ languages! {
     Tsx {
         name: "tsx", aliases: &["typescriptreact"], extensions: &["tsx"],
         filenames: &[], interpreters: &[], language_id: "typescriptreact",
+        indentation: TWO_SPACES,
         server: TYPESCRIPT_SERVER,
         grammar: || tree_sitter_typescript::LANGUAGE_TSX.into(),
         queries: &[tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY, tree_sitter_typescript::HIGHLIGHTS_QUERY], inline: None,
@@ -192,6 +231,10 @@ impl Language {
 
     pub fn language_id(self) -> &'static str {
         self.definition().language_id
+    }
+
+    pub fn indentation(self) -> Indentation {
+        self.definition().indentation
     }
 
     pub fn server(self) -> Option<&'static LanguageServer> {

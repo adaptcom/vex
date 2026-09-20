@@ -32,6 +32,22 @@ The same language selection controls [language servers](lsp.md) for named files;
 The terminal honors a nonempty `NO_COLOR` environment variable, which suppresses
 all colors, including syntax and selection colors.
 
+## Indentation
+
+The language registry also sets indentation for `>` and `<`: Rust and plain
+text use four spaces; Markdown, Bash/shell, JavaScript/JSX, and TypeScript/TSX
+use two. Tab display width defaults to that same number. Changing language
+applies its defaults without rewriting the file. Resetting the same language
+for syntax highlighting retains any buffer override.
+
+The editor API exposes `Indentation { style: IndentStyle, tab_width }` and
+`Editor::set_indentation`. `IndentStyle::Spaces(NonZeroUsize)` and
+`IndentStyle::Tabs` support independent indentation and tab display widths.
+Project/user configuration and indentation detection remain future work.
+`o`, `O`, and Enter continue copying the existing whitespace prefix literally;
+Tab in insert mode still inserts a literal tab. Syntax-based indentation is
+not inferred by these settings.
+
 ## Parsing and drawing
 
 `vex_syntax` owns the parser, syntax tree, a shared document snapshot, and a bounded
@@ -134,7 +150,7 @@ smoke test checks idle completion, editing, and undo colors in a real PTY.
 
 The shared registry is [`crates/vex_syntax/src/language.rs`](../crates/vex_syntax/src/language.rs).
 Each `languages!` entry defines names/aliases, extensions, filenames, interpreters,
-LSP language ID, grammar, ordered highlight queries, and an optional server.
+LSP language ID, indentation, grammar, ordered highlight queries, and an optional server.
 The macro generates language identities and lookup; query compilation is cached
 once per language. Editor opening, Save As, `:language`, file previews, server
 startup, and completion all use this registry.
@@ -142,7 +158,8 @@ startup, and completion all use this registry.
 To add another bundled language:
 
 1. Add its Tree-sitter grammar to the workspace and `vex_syntax` dependencies.
-2. Add a registry entry with its grammar and queries. Use `server: None` for
+2. Add a registry entry with its grammar, queries, and `indentation` defaults.
+   Use `server: None` for
    syntax-only support, or provide the server executable, argument list,
    environment override, status label, and root markers.
 3. Add representative source fixtures to the colocated syntax tests and check
@@ -150,5 +167,5 @@ To add another bundled language:
    language-specific branches.
 
 The registry is compiled into Vex. Loading languages or server settings from a
-user configuration file remains future work. Indentation continues to copy the
-current line's whitespace; these configurations do not infer indentation rules.
+user configuration file remains future work. These indentation settings control
+explicit shifts; they do not infer indentation from syntax.

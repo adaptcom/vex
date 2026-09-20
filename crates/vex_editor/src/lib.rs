@@ -14,12 +14,14 @@
 //! # Ok::<(), vex_editor::Error>(())
 //! ```
 
+use std::fmt::Debug;
 use std::{cell::RefCell, num::NonZeroUsize};
 use vex_core::layout::LayoutCache;
 use vex_core::{CharOffset, Document, Selection, SelectionSet, grapheme, motion};
 
 pub mod background;
 pub mod commands;
+mod editing;
 mod error;
 mod keymap;
 mod register;
@@ -34,7 +36,7 @@ pub use register::YankRegister;
 pub use search::{SearchCancellation, SearchCompletion, SearchJob, SearchResult, SearchStatus};
 pub use syntax::{SyntaxJob, SyntaxResult, SyntaxWorker};
 pub use vex_core::search::Direction as SearchDirection;
-pub use vex_syntax::{Highlight, HighlightSpan, Language};
+pub use vex_syntax::{Highlight, HighlightSpan, IndentStyle, Indentation, Language};
 pub use views::ViewId;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -99,6 +101,7 @@ pub struct Editor {
     mode: Mode,
     preferred_columns: Option<Vec<usize>>,
     tab_width: NonZeroUsize,
+    indent_style: IndentStyle,
     newline: &'static str,
     layout: RefCell<LayoutCache>,
     syntax: RefCell<syntax::Highlighting>,
@@ -128,6 +131,7 @@ impl Editor {
             mode: Mode::Normal,
             preferred_columns: None,
             tab_width: NonZeroUsize::new(4).unwrap(),
+            indent_style: Indentation::default().style,
             newline,
             layout: RefCell::default(),
             syntax: RefCell::default(),
@@ -221,6 +225,20 @@ impl Editor {
     }
     pub fn tab_width(&self) -> NonZeroUsize {
         self.tab_width
+    }
+
+    pub fn indentation(&self) -> Indentation {
+        Indentation {
+            style: self.indent_style,
+            tab_width: self.tab_width,
+        }
+    }
+
+    /// Override this buffer's indentation and tab display width. Changing to a
+    /// different language restores that language's defaults; text is untouched.
+    pub fn set_indentation(&mut self, indentation: Indentation) {
+        self.indent_style = indentation.style;
+        self.set_tab_width(indentation.tab_width);
     }
 
     pub fn set_tab_width(&mut self, width: NonZeroUsize) {

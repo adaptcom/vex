@@ -13,7 +13,7 @@ should be deliberate and documented. Alt bindings are deferred for now.
 2. [x] Precise movement: `f`/`F`, `t`/`T`, `W`/`B`/`E`, `gs`, counted `gg`/`G`,
    and counted `g|`. Add command input for a following character without losing
    counts or cancellation.
-3. [ ] Everyday edits: `I`, `A`, `r`, `>`, `<`, `J`, and `[Space`/`]Space`.
+3. [x] Everyday edits: `I`, `A`, `r`, `>`, `<`, `J`, and `[Space`/`]Space`.
    Add language indentation settings for indent/unindent.
 4. [ ] (Hold for now) Comments: `<space>c` and `<space>C`, with language-specific line/block
    delimiters. Decide whether normal-mode Ctrl-c should keep its current cancel
@@ -67,6 +67,13 @@ should be deliberate and documented. Alt bindings are deferred for now.
 
 ## Later editing and interface work
 
+- [ ] User/project indentation overrides and optional indentation detection for
+  existing files. The registry now supplies spaces/tabs and tab display widths;
+  add configuration (including EditorConfig) without rewriting existing text.
+- [ ] Use language/buffer tab widths in file-picker and Git diff previews, which
+  currently display tabs at four-column stops.
+- [ ] Language-aware joining that removes repeated comment prefixes. `J`
+  currently joins whitespace only and preserves comment markers literally.
 - [ ] Add cancellable or bounded scanning for character finds and WORD motions
   on very large files or with many selections; preserve counts and input ordering.
 - [ ] Replace two-second polling of visible files with filesystem notifications.

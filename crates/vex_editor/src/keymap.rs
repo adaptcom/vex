@@ -176,6 +176,14 @@ impl Default for Keymap {
                 (vec![Char('v')], "select_mode"),
                 (vec![Char('i')], "insert_mode"),
                 (vec![Char('a')], "append_mode"),
+                (vec![Char('I')], "insert_at_line_start"),
+                (vec![Char('A')], "insert_at_line_end"),
+                (vec![Char('r')], "replace"),
+                (vec![Char('>')], "indent"),
+                (vec![Char('<')], "unindent"),
+                (vec![Char('J')], "join_selections"),
+                (vec![Char('['), Char(' ')], "add_newline_above"),
+                (vec![Char(']'), Char(' ')], "add_newline_below"),
                 (vec![Char('o')], "open_below"),
                 (vec![Char('O')], "open_above"),
                 (vec![Char('y')], "yank"),
@@ -1137,12 +1145,82 @@ mod tests {
         assert!(keys.pending_keys().is_empty());
     }
 
+    #[test]
+    fn everyday_edit_bindings_dispatch_counts_and_line_prefixes() {
+        for mode in [Mode::Normal, Mode::Select] {
+            for (sequence, command, after) in [
+                ("I!", "insert_at_line_start", "  !one\n two"),
+                ("A!", "insert_at_line_end", "  one!\n two"),
+                ("2>", "indent", "        one\n two"),
+                ("2<", "unindent", "one\n two"),
+                ("J", "join_selections", "  one two"),
+                ("2[ ", "add_newline_above", "\n\n  one\n two"),
+                ("2] ", "add_newline_below", "  one\n\n\n two"),
+            ] {
+                let mut editor = Editor::new(Document::from("  one\n two"));
+                if mode == Mode::Select {
+                    editor.execute("select_mode", 1).unwrap();
+                }
+                let mut keys = KeyHandler::default();
+                let binding = keys
+                    .keymap()
+                    .bindings()
+                    .find(|binding| binding.mode == mode && binding.command.name == command)
+                    .unwrap();
+                assert!(!binding.command.description().is_empty());
+                press(&mut keys, &mut editor, sequence);
+                assert_eq!(editor.document().text(), after, "{sequence}");
+                assert_eq!(keys.count(), None);
+                assert!(keys.pending_keys().is_empty());
+                if editor.mode() == Mode::Insert {
+                    keys.handle(&mut editor, Key::Escape).unwrap();
+                }
+                press(&mut keys, &mut editor, "u");
+                assert_eq!(editor.document().text(), "  one\n two");
+            }
+        }
+    }
+
+    #[test]
+    fn replace_waits_for_a_literal_character_and_cancels_without_editing() {
+        for cancel in [Key::Escape, Key::Ctrl('c'), Key::Left] {
+            let mut editor = Editor::new(Document::from("e\u{301}🦀\r\n"));
+            let mut keys = KeyHandler::default();
+            press(&mut keys, &mut editor, "v2r");
+            assert_eq!(keys.hints().unwrap().title, "Character");
+            keys.handle(&mut editor, cancel).unwrap();
+            assert_eq!(editor.mode(), Mode::Select);
+            assert_eq!(editor.document().undo_depth(), 0);
+            assert!(keys.pending_keys().is_empty());
+            assert_eq!(keys.count(), None);
+        }
+        for (argument, expected) in [
+            (Key::Char(':'), ":🦀\r\n"),
+            (Key::Char('5'), "5🦀\r\n"),
+            (Key::Tab, "\t🦀\r\n"),
+            (Key::Enter, "\r\n🦀\r\n"),
+        ] {
+            let mut editor = Editor::new(Document::from("e\u{301}🦀\r\n"));
+            let mut keys = KeyHandler::default();
+            press(&mut keys, &mut editor, "v99r");
+            assert_eq!(
+                keys.handle(&mut editor, argument).unwrap(),
+                Dispatch::Executed("replace")
+            );
+            assert_eq!(editor.document().text(), expected);
+            assert_eq!(editor.mode(), Mode::Normal);
+            assert_eq!(keys.count(), None);
+            press(&mut keys, &mut editor, "u");
+            assert_eq!(editor.document().text(), "e\u{301}🦀\r\n");
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
         #[test]
         fn arbitrary_key_sequences_preserve_grapheme_and_mode_invariants(
             keys in prop::collection::vec(prop_oneof![
-                prop::sample::select("hjklwbeWBEfFtTvdciaxX%;,_uU025gGs|$".chars().map(Key::Char).collect::<Vec<_>>()),
+                prop::sample::select("hjklwbeWBEfFtTvdciaIArJxX%;,_uU025gGs|$".chars().map(Key::Char).collect::<Vec<_>>()),
                 Just(Key::Escape), Just(Key::Backspace), Just(Key::Delete), Just(Key::Enter),
                 Just(Key::Char('🦀')), Just(Key::Char('\u{301}')), Just(Key::Char('\u{200d}')),
                 Just(Key::Down), Just(Key::Up), Just(Key::Left), Just(Key::Right),

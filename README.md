@@ -22,6 +22,11 @@ Omit the path for a scratch buffer. Press `i` to insert, `Esc` for normal mode,
 require `:q!` to discard. `:wq` saves and quits. Use `:help` or
 `:help move_word_forward` for command documentation.
 
+Everyday edits include `I`/`A` for insertion at line edges, `r<char>` to replace
+selected characters, `>`/`<` for language-configured indentation, `J` to join
+lines, and `[Space`/`]Space` to add blank lines. See the
+[editing controls](docs/terminal.md#controls) for selection and count behavior.
+
 The interface includes line numbers, selection highlighting, cursor-following
 scrolling, a status line, and an editable command prompt. Unicode graphemes,
 wide characters, tabs, bracketed paste, and terminal resizing are supported.

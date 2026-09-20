@@ -36,6 +36,11 @@ and calls that existing dispatcher.
 | Page Up, Page Down | Move by roughly one viewport of logical lines |
 | Ctrl-u, Ctrl-d | Move cursors and scroll half a page up/down in normal/select mode; counts multiply the distance |
 | `i`, `a` | Insert before/after the selection |
+| `I`, `A` | Insert at the first non-whitespace character / end of each cursor's line |
+| `r<char>` | Replace each selected grapheme with a character; Enter and Tab also work |
+| `>`, `<` | Indent/unindent selected lines, using language defaults and repeat counts |
+| `J` | Join selected lines, or join the next line for a single-line selection |
+| `[Space`, `]Space` | Add empty lines above/below selections, retaining normal/select mode |
 | `o`, `O` | Open lines below/above selections and enter insert mode |
 | Enter in insert mode | Split the line and copy indentation before the caret |
 | Backspace, Ctrl-h in insert mode | Delete the preceding grapheme |
@@ -110,6 +115,39 @@ only indentation before the caret, so splitting leading whitespace preserves the
 remaining indentation without duplicating it. Counts such as `3o` create three
 lines with a caret on each. Tab inserts a literal tab, displayed at the editor's
 configured tab stops.
+
+`I` and `A` enter insert mode on each selection's cursor line; duplicate carets
+on a line merge. `I` uses the first non-whitespace grapheme, or the line start
+when blank. `A` stops before the line ending. They do not infer indentation on
+empty lines. Typing then forms one undo step, as with `i` and `a`.
+
+`r` waits for a character, replacing each selected grapheme once (a combining
+cluster, emoji sequence, or CRLF pair counts as one). Enter uses the buffer's
+line ending, Tab inserts a literal tab, and Escape/Ctrl-c cancels without edits.
+Replacement retains the ranges and their directions, returns to normal mode,
+and leaves the yank register unchanged. An empty EOF selection does nothing.
+
+`>` and `<` edit each touched line once, including when multiple selections
+share it. An endpoint at the next line's start excludes that line. Indenting
+skips blank lines; spaces advance to the next indentation boundary, with counts
+adding further levels. Unindent removes leading spaces/tabs up to the counted
+width, consuming whole tabs at the configured tab stops. These commands return
+to normal mode, retain the selected text, and create one undo step.
+See [language indentation defaults](syntax.md) for widths and API overrides.
+
+`J` removes line endings within the selected lines and the following indentation.
+A single-line selection joins the next line. It adds a space where needed,
+preserves existing spacing, and avoids adding trailing whitespace at EOF.
+Comment markers are preserved literally; stripping repeated comment prefixes
+is future work. Shared joins happen once. `J` retains normal/select mode.
+
+`[Space` and `]Space` add counted blank lines outside selections, preserving
+the original selected text and mode. Shared insertion points are handled once;
+each command is one undo step and uses the buffer's line endings. Below an
+unterminated last line, the first inserted break starts the new empty line.
+Counts apply to `>`/`<` and blank-line insertion; `I`, `A`, `r`, and `J` ignore
+them, following the selection-based behavior of the
+[Helix keymap](https://docs.helix-editor.com/keymap.html).
 
 The internal yank register lives for the session, independently of buffer and undo
 history. `y`, `p`, `P`, and `R` return to normal mode; pastes select the inserted
