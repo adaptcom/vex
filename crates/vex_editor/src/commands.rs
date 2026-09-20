@@ -68,6 +68,32 @@ fn normalize(editor: &mut Editor) -> Result<(), Error> {
     Ok(())
 }
 
+// Selection commands retain normal/select mode. Direct calls from insert mode
+// enter normal mode so their ranges are not immediately collapsed to carets.
+fn select_ranges(editor: &mut Editor, ranges: Vec<Selection>, primary: usize) -> Result<(), Error> {
+    let mode = if editor.mode == Mode::Insert {
+        Mode::Normal
+    } else {
+        editor.mode
+    };
+    let selections = editor.normalized(SelectionSet::new(ranges, primary)?, mode)?;
+    editor.finish_undo_group();
+    editor.selections = selections;
+    editor.mode = mode;
+    editor.preferred_columns = None;
+    Ok(())
+}
+
+/// Full bounds of the lines touched by a half-open selection, plus the exclusive
+/// ending line index. An endpoint at the next line's start excludes that line.
+fn selected_line_bounds(text: &vex_core::Rope, selection: Selection) -> (Selection, usize) {
+    let start = text.line_to_char(text.char_to_line(selection.start().0));
+    let last = selection.end().0 - usize::from(!selection.is_empty());
+    let end_line = text.char_to_line(last) + 1;
+    let end = text.line_to_char(end_line);
+    (Selection::new(CharOffset(start), CharOffset(end)), end_line)
+}
+
 fn at_destination(
     editor: &Editor,
     selection: Selection,
@@ -572,23 +598,79 @@ commands! {
     /// Move to the end-of-file boundary.
     fn goto_file_end(ctx) { move_to(ctx, |editor, _, _| Ok(CharOffset(editor.document.text().len_chars()))) }
 
-    /// Select logical lines from each cursor, including line endings; accepts a count.
+    /// Expand each selection to whole logical lines, including line endings, facing forward. If already line-aligned, extend below by the count; otherwise alignment counts as the first step.
+    /// Repeated x keeps earlier lines selected. Counts clamp at EOF and overlapping ranges merge while retaining the primary selection.
     fn select_line(ctx) {
         let editor = &mut *ctx.editor;
-        editor.finish_undo_group();
         let text = editor.document.text();
         let ranges = editor.selections.ranges().iter().map(|&selection| {
-            let pos = position(editor, selection)?;
-            let line = text.char_to_line(pos.0);
-            let end_line = line.saturating_add(ctx.count.get()).min(text.len_lines());
-            let start = CharOffset(text.line_to_char(line));
+            let (bounds, end_line) = selected_line_bounds(text, selection);
+            let aligned = selection.range() == bounds.range();
+            let extra = ctx.count.get() - usize::from(!aligned);
+            let end_line = end_line.saturating_add(extra).min(text.len_lines());
             let end = CharOffset(text.line_to_char(end_line));
-            Ok(Selection::new(start, end))
+            Selection::new(bounds.start(), end)
+        }).collect();
+        let primary = editor.selections.primary_index();
+        select_ranges(editor, ranges, primary)
+    }
+
+    /// Select the entire document as one forward range, retaining normal/select mode. Empty documents retain a single EOF cursor.
+    fn select_all(ctx) {
+        let end = CharOffset(ctx.editor.document.text().len_chars());
+        select_ranges(ctx.editor, vec![Selection::new(CharOffset(0), end)], 0)
+    }
+
+    /// Collapse every selection to its displayed cursor, preserving multiple cursors and the primary. Normal/select cursors cover one whole grapheme, or remain empty at EOF.
+    fn collapse_selection(ctx) {
+        let editor = &mut *ctx.editor;
+        let ranges = editor.selections.ranges().iter().map(|&selection| {
+            Ok(Selection::cursor(position(editor, selection)?))
         }).collect::<Result<Vec<_>, Error>>()?;
-        editor.selections = SelectionSet::new(ranges, editor.selections.primary_index())?;
-        if editor.mode == Mode::Insert { editor.mode = Mode::Normal; }
-        editor.preferred_columns = None;
-        Ok(())
+        let primary = editor.selections.primary_index();
+        select_ranges(editor, ranges, primary)
+    }
+
+    /// Keep only the primary selection, preserving its direction and normal/select mode.
+    fn keep_primary_selection(ctx) {
+        let primary = ctx.editor.selections.primary();
+        select_ranges(ctx.editor, vec![primary], 0)
+    }
+
+    /// Expand selections to the full logical lines they touch, including line endings and preserving direction. Repeating this command does not add lines; a range ending at the next line's start excludes that line.
+    fn extend_to_line_bounds(ctx) {
+        let editor = &mut *ctx.editor;
+        let ranges = editor.selections.ranges().iter().map(|&selection| {
+            let (bounds, _) = selected_line_bounds(editor.document.text(), selection);
+            if selection.is_backward() { Selection::new(bounds.end(), bounds.start()) } else { bounds }
+        }).collect();
+        let primary = editor.selections.primary_index();
+        select_ranges(editor, ranges, primary)
+    }
+
+    /// Trim Unicode whitespace from selection edges without editing text or splitting graphemes. Remove empty/whitespace-only selections; retain the primary if it survives, otherwise use the last survivor.
+    /// If no selection survives, keep a single cursor at the original primary's displayed position. Retains normal/select mode and leaves undo history and the yank register unchanged.
+    fn trim_selections(ctx) {
+        let editor = &mut *ctx.editor;
+        let text = editor.document.text();
+        let mut ranges = Vec::with_capacity(editor.selections.ranges().len());
+        let mut primary = None;
+        for (index, &selection) in editor.selections.ranges().iter().enumerate() {
+            let slice = text.slice(selection.start().0..selection.end().0);
+            let Some(leading) = slice.chars().position(|ch| !ch.is_whitespace()) else { continue };
+            let trailing = slice.chars_at(slice.len_chars()).reversed().take_while(|ch| ch.is_whitespace()).count();
+            // A whitespace scalar can belong to a cluster with non-whitespace
+            // combining marks. Keep that whole cluster rather than cutting it.
+            let start = grapheme::floor(text, CharOffset(selection.start().0 + leading))?;
+            let end = grapheme::ceil(text, CharOffset(selection.end().0 - trailing))?;
+            if index == editor.selections.primary_index() { primary = Some(ranges.len()); }
+            ranges.push(if selection.is_backward() { Selection::new(end, start) } else { Selection::new(start, end) });
+        }
+        if ranges.is_empty() {
+            ranges.push(Selection::cursor(position(editor, editor.selections.primary())?));
+        }
+        let primary = primary.unwrap_or(ranges.len() - 1);
+        select_ranges(editor, ranges, primary)
     }
 
     /// Toggle select mode; movements in select mode retain the anchor grapheme.
@@ -853,6 +935,234 @@ mod tests {
     }
 
     #[test]
+    fn select_all_replaces_multiple_ranges_and_preserves_select_mode() {
+        for mode in [Mode::Normal, Mode::Select] {
+            let mut editor = Editor::new(Document::from("ae\u{301}🦀\r\nz"));
+            editor
+                .set_selections(SelectionSet::new(vec![range(0, 1), range(4, 3)], 1).unwrap())
+                .unwrap();
+            if mode == Mode::Select {
+                editor.execute("select_mode", 1).unwrap();
+            }
+            editor.execute("select_all", 99).unwrap();
+            assert_eq!(editor.selections(), &SelectionSet::single(range(0, 7)));
+            assert_eq!(editor.mode(), mode);
+            assert_eq!(editor.document().revision().get(), 0);
+        }
+    }
+
+    #[test]
+    fn collapse_uses_displayed_cursors_and_retains_multiple_cursors_and_primary() {
+        let mut editor = Editor::new(Document::from("ae\u{301}🦀\r\nz"));
+        editor
+            .set_selections(
+                SelectionSet::new(vec![range(0, 3), range(6, 3), range(7, 7)], 1).unwrap(),
+            )
+            .unwrap();
+        editor.execute("select_mode", 1).unwrap();
+        editor.execute("collapse_selection", 1).unwrap();
+        assert_eq!(
+            editor.selections().ranges(),
+            &[range(1, 3), range(3, 4), range(7, 7)]
+        );
+        assert_eq!(editor.selections().primary_index(), 1);
+        assert_eq!(editor.mode(), Mode::Select);
+        editor
+            .set_selections(SelectionSet::single(range(3, 6)))
+            .unwrap();
+        editor.execute("collapse_selection", 1).unwrap();
+        assert_eq!(editor.selections().primary(), range(4, 6));
+    }
+
+    #[test]
+    fn keeping_primary_preserves_its_full_range_direction_and_mode() {
+        let mut editor = Editor::new(Document::from("one two three"));
+        editor
+            .set_selections(
+                SelectionSet::new(vec![range(0, 3), range(7, 4), range(8, 13)], 1).unwrap(),
+            )
+            .unwrap();
+        editor.execute("select_mode", 1).unwrap();
+        editor.execute("keep_primary_selection", 10).unwrap();
+        assert_eq!(editor.selections(), &SelectionSet::single(range(7, 4)));
+        assert_eq!(editor.mode(), Mode::Select);
+    }
+
+    #[test]
+    fn line_bounds_preserve_direction_and_do_not_include_the_next_line_or_repeat() {
+        for (before, after) in [
+            (range(1, 5), range(0, 8)),
+            (range(5, 1), range(8, 0)),
+            (range(0, 4), range(0, 4)),
+            (range(4, 0), range(4, 0)),
+            (range(2, 4), range(0, 4)),
+            (range(10, 10), range(8, 10)),
+        ] {
+            let mut editor = Editor::new(Document::from("aa\r\nbb\r\ncc"));
+            editor.set_selections(SelectionSet::single(before)).unwrap();
+            editor.execute("extend_to_line_bounds", 1).unwrap();
+            assert_eq!(editor.selections().primary(), after);
+            editor.execute("extend_to_line_bounds", usize::MAX).unwrap();
+            assert_eq!(editor.selections().primary(), after);
+        }
+    }
+
+    #[test]
+    fn repeated_line_selection_extends_counts_without_losing_earlier_lines() {
+        let mut editor = Editor::new(Document::from("one\ntwo\nthree\nfour\nlast"));
+        editor.execute("select_line", 1).unwrap();
+        assert_eq!(editor.selections().primary(), range(0, 4));
+        editor.execute("select_line", 2).unwrap();
+        assert_eq!(editor.selections().primary(), range(0, 14));
+        editor.execute("select_line", 1).unwrap();
+        assert_eq!(editor.selections().primary(), range(0, 19));
+        editor.execute("select_line", usize::MAX).unwrap();
+        assert_eq!(editor.selections().primary(), range(0, 23));
+        editor.execute("select_line", usize::MAX).unwrap();
+        assert_eq!(editor.selections().primary(), range(0, 23));
+        for selection in [range(1, 6), range(6, 1)] {
+            editor
+                .set_selections(SelectionSet::single(selection))
+                .unwrap();
+            editor.execute("select_line", 2).unwrap();
+            assert_eq!(editor.selections().primary(), range(0, 14));
+        }
+    }
+
+    #[test]
+    fn line_counts_apply_independently_and_merging_tracks_the_primary() {
+        let mut editor = Editor::new(Document::from("aa\nbb\ncc\ndd\nee"));
+        editor
+            .set_selections(
+                SelectionSet::new(vec![range(0, 3), range(4, 5), range(14, 12)], 2).unwrap(),
+            )
+            .unwrap();
+        editor.execute("select_line", 1).unwrap();
+        // The already-aligned first range adds a line; the second only aligns.
+        assert_eq!(editor.selections().ranges(), &[range(0, 6), range(12, 14)]);
+        assert_eq!(editor.selections().primary_index(), 1);
+        editor.execute("select_line", 2).unwrap();
+        assert_eq!(editor.selections().ranges(), &[range(0, 12), range(12, 14)]);
+        editor.execute("select_line", 1).unwrap();
+        assert_eq!(editor.selections(), &SelectionSet::single(range(0, 14)));
+
+        editor
+            .set_selections(SelectionSet::new(vec![range(0, 1), range(2, 1)], 1).unwrap())
+            .unwrap();
+        editor.execute("extend_to_line_bounds", 1).unwrap();
+        assert_eq!(editor.selections(), &SelectionSet::single(range(3, 0)));
+    }
+
+    #[test]
+    fn trimming_removes_blank_ranges_and_keeps_or_reassigns_the_primary() {
+        for primary in 0..3 {
+            let mut editor = Editor::new(Document::from("  one \t two  \n   "));
+            editor
+                .set_selections(
+                    SelectionSet::new(vec![range(0, 7), range(13, 7), range(14, 17)], primary)
+                        .unwrap(),
+                )
+                .unwrap();
+            editor.execute("select_mode", 1).unwrap();
+            editor.execute("trim_selections", 1).unwrap();
+            assert_eq!(editor.selections().ranges(), &[range(2, 5), range(11, 8)]);
+            assert_eq!(editor.selections().primary_index(), primary.min(1));
+            assert_eq!(editor.mode(), Mode::Select);
+        }
+    }
+
+    #[test]
+    fn trimming_all_whitespace_keeps_only_the_original_primary_cursor() {
+        for (primary, expected) in [(0, range(1, 2)), (1, range(2, 4)), (2, range(5, 5))] {
+            let mut editor = Editor::new(Document::from(" \t\r\n "));
+            editor
+                .set_selections(
+                    SelectionSet::new(vec![range(0, 2), range(4, 2), range(5, 5)], primary)
+                        .unwrap(),
+                )
+                .unwrap();
+            editor.execute("select_mode", 1).unwrap();
+            editor.execute("trim_selections", 1).unwrap();
+            assert_eq!(editor.selections(), &SelectionSet::single(expected));
+            assert_eq!(editor.mode(), Mode::Select);
+        }
+    }
+
+    #[test]
+    fn trimming_unicode_whitespace_keeps_combining_clusters_intact() {
+        for (text, expected) in [
+            (" \u{a0}e\u{301}🦀\u{2003}\r\n", range(5, 2)),
+            (" \u{301} e\u{301} \u{2003}", range(5, 0)),
+            ("hi \u{301} ", range(4, 0)),
+        ] {
+            let mut editor = Editor::new(Document::from(text));
+            let len = editor.document().text().len_chars();
+            editor
+                .set_selections(SelectionSet::single(range(len, 0)))
+                .unwrap();
+            editor.execute("trim_selections", 1).unwrap();
+            assert_eq!(editor.selections().primary(), expected);
+            assert!(grapheme::is_boundary(editor.document().text(), expected.head).unwrap());
+            assert!(grapheme::is_boundary(editor.document().text(), expected.anchor).unwrap());
+        }
+        let source = format!("{}e\u{301}{}", " \t".repeat(2000), "\r\n".repeat(2000));
+        let mut editor = Editor::new(Document::from(source.as_str()));
+        editor.execute("select_all", 1).unwrap();
+        let snapshot = editor.document().snapshot();
+        editor.execute("trim_selections", 1).unwrap();
+        assert_eq!(editor.selections().primary(), range(4000, 4002));
+        assert!(editor.document().text().is_instance(snapshot.text()));
+    }
+
+    #[test]
+    fn selection_controls_handle_empty_buffers_without_changes() {
+        let mut editor = Editor::new(Document::default());
+        editor.execute("select_mode", 1).unwrap();
+        for command in [
+            "select_all",
+            "collapse_selection",
+            "keep_primary_selection",
+            "extend_to_line_bounds",
+            "trim_selections",
+            "select_line",
+        ] {
+            editor.execute(command, usize::MAX).unwrap();
+            assert_eq!(editor.selections(), &SelectionSet::single(range(0, 0)));
+            assert_eq!(editor.mode(), Mode::Select);
+            assert_eq!(editor.document().revision().get(), 0);
+            assert_eq!(editor.document().undo_depth(), 0);
+        }
+    }
+
+    #[test]
+    fn selection_controls_preserve_redo_and_yanked_text() {
+        for command in [
+            "select_all",
+            "collapse_selection",
+            "keep_primary_selection",
+            "extend_to_line_bounds",
+            "trim_selections",
+            "select_line",
+        ] {
+            let mut editor = Editor::new(Document::from(" one\n two\n"));
+            editor.execute("select_all", 1).unwrap();
+            editor.execute("yank", 1).unwrap();
+            editor.execute("insert_mode", 1).unwrap();
+            editor.insert_text("edit").unwrap();
+            editor.execute("normal_mode", 1).unwrap();
+            editor.execute("undo", 1).unwrap();
+            let revision = editor.document().revision();
+            editor.execute(command, 1).unwrap();
+            assert_eq!(editor.document().revision(), revision);
+            assert_eq!(editor.document().redo_depth(), 1);
+            assert_eq!(editor.document().undo_depth(), 0);
+            let mut other = Editor::with_yank_register(Document::default(), editor.yank_register());
+            other.execute("paste_before", 1).unwrap();
+            assert_eq!(other.document().text(), " one\n two\n");
+        }
+    }
+
+    #[test]
     fn insert_mode_arrows_preserve_carets_and_escape_stays_on_the_same_line() {
         let mut editor = Editor::new(Document::from("a\r\ne\u{301}"));
         editor.execute("insert_mode", 1).unwrap();
@@ -896,6 +1206,11 @@ mod tests {
             goto_file_start,
             goto_file_end,
             select_line,
+            select_all,
+            collapse_selection,
+            keep_primary_selection,
+            extend_to_line_bounds,
+            trim_selections,
             select_mode,
             normal_mode,
             insert_mode,

@@ -49,7 +49,12 @@ Generated from command Rustdoc and the default keymap.
 | `goto_line_end` | Normal: `$`, Normal: `gl`, Normal: `<End>`, Select: `$`, Select: `gl`, Select: `<End>`, Insert: `<End>` | Move to the last grapheme of the line, or its end boundary in insert mode. |
 | `goto_file_start` | Normal: `gg`, Select: `gg` | Move to the start of the document. |
 | `goto_file_end` | Normal: `ge`, Select: `ge` | Move to the end-of-file boundary. |
-| `select_line` | Normal: `x`, Select: `x` | Select logical lines from each cursor, including line endings; accepts a count. |
+| `select_line` | Normal: `x`, Select: `x` | Expand each selection to whole logical lines, including line endings, facing forward. If already line-aligned, extend below by the count; otherwise alignment counts as the first step.  Repeated x keeps earlier lines selected. Counts clamp at EOF and overlapping ranges merge while retaining the primary selection. |
+| `select_all` | Normal: `%`, Select: `%` | Select the entire document as one forward range, retaining normal/select mode. Empty documents retain a single EOF cursor. |
+| `collapse_selection` | Normal: `;`, Select: `;` | Collapse every selection to its displayed cursor, preserving multiple cursors and the primary. Normal/select cursors cover one whole grapheme, or remain empty at EOF. |
+| `keep_primary_selection` | Normal: `,`, Select: `,` | Keep only the primary selection, preserving its direction and normal/select mode. |
+| `extend_to_line_bounds` | Normal: `X`, Select: `X` | Expand selections to the full logical lines they touch, including line endings and preserving direction. Repeating this command does not add lines; a range ending at the next line's start excludes that line. |
+| `trim_selections` | Normal: `_`, Select: `_` | Trim Unicode whitespace from selection edges without editing text or splitting graphemes. Remove empty/whitespace-only selections; retain the primary if it survives, otherwise use the last survivor.  If no selection survives, keep a single cursor at the original primary's displayed position. Retains normal/select mode and leaves undo history and the yank register unchanged. |
 | `select_mode` | Normal: `v`, Select: `v` | Toggle select mode; movements in select mode retain the anchor grapheme. |
 | `normal_mode` | Normal: `<Escape>`, Select: `<Escape>`, Insert: `<Escape>` | Enter normal mode. Leaving insert mode places the cursor on the preceding grapheme in the same line. |
 | `insert_mode` | Normal: `i`, Select: `i` | Enter insert mode with a caret before every selection. |

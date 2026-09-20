@@ -7,7 +7,7 @@ register, `y`/`p`/`P`/`R`, and cut behavior for `d`/`c`. Bindings follow the
 [Helix keymap](https://docs.helix-editor.com/keymap.html); compatibility differences
 should be deliberate and documented. Alt bindings are deferred for now.
 
-1. [ ] Selection controls: `%` select all, `;` collapse, `,` keep primary, `X`
+1. [x] Selection controls: `%` select all, `;` collapse, `,` keep primary, `X`
    extend to line boundaries, and `_` trim whitespace. Make repeated `x` extend
    to subsequent lines.
 2. [ ] Precise movement: `f`/`F`, `t`/`T`, `W`/`B`/`E`, `gs`, counted `gg`/`G`,
@@ -15,7 +15,7 @@ should be deliberate and documented. Alt bindings are deferred for now.
    counts or cancellation.
 3. [ ] Everyday edits: `I`, `A`, `r`, `>`, `<`, `J`, and `[Space`/`]Space`.
    Add language indentation settings for indent/unindent.
-4. [ ] Comments: `<space>c` and `<space>C`, with language-specific line/block
+4. [ ] (Hold for now) Comments: `<space>c` and `<space>C`, with language-specific line/block
    delimiters. Decide whether normal-mode Ctrl-c should keep its current cancel
    behavior or adopt Helix's comment binding.
 5. [ ] Multiple selections and search: `s`, `S`, `C`, `K`, `*`, regex `/`/`?`,
@@ -27,7 +27,7 @@ should be deliberate and documented. Alt bindings are deferred for now.
    when switching files.
 7. [ ] Match mode: `mm`, `mi`/`ma` textobjects for words, paragraphs, and paired
    delimiters, followed by `ms`/`mr`/`md` surrounds.
-8. [ ] Repeat the last insert with `.`. Record logical editing actions, including
+8. [ ] (Hold for now) Repeat the last insert with `.`. Record logical editing actions, including
    counted commands and completion, so replay stays independent of terminal input.
 
 ## Registers and input follow-ups

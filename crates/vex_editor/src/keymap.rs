@@ -161,6 +161,11 @@ impl Default for Keymap {
                 (vec![Char('b')], "move_word_backward"),
                 (vec![Char('e')], "move_word_end"),
                 (vec![Char('x')], "select_line"),
+                (vec![Char('X')], "extend_to_line_bounds"),
+                (vec![Char('%')], "select_all"),
+                (vec![Char(';')], "collapse_selection"),
+                (vec![Char(',')], "keep_primary_selection"),
+                (vec![Char('_')], "trim_selections"),
                 (vec![Char('v')], "select_mode"),
                 (vec![Char('i')], "insert_mode"),
                 (vec![Char('a')], "append_mode"),
@@ -613,6 +618,67 @@ mod tests {
     }
 
     #[test]
+    fn selection_controls_dispatch_documented_functions_and_remain_literal_in_insert_mode() {
+        for mode in [Mode::Normal, Mode::Select] {
+            for (key, name) in [
+                ('%', "select_all"),
+                (';', "collapse_selection"),
+                (',', "keep_primary_selection"),
+                ('X', "extend_to_line_bounds"),
+                ('_', "trim_selections"),
+                ('x', "select_line"),
+            ] {
+                let mut editor = Editor::new(Document::from(" one \r\ntwo"));
+                let mut keys = KeyHandler::default();
+                if mode == Mode::Select {
+                    press(&mut keys, &mut editor, "v");
+                }
+                assert_eq!(
+                    keys.handle(&mut editor, Key::Char(key)).unwrap(),
+                    Dispatch::Executed(name)
+                );
+                assert_eq!(editor.mode(), mode);
+                assert!(!commands::find(name).unwrap().description().is_empty());
+            }
+        }
+        let mut editor = Editor::new(Document::default());
+        let mut keys = KeyHandler::default();
+        press(&mut keys, &mut editor, "i%;,X_x");
+        assert_eq!(editor.document().text(), "%;,X_x");
+    }
+
+    #[test]
+    fn repeated_line_selection_and_trimming_work_with_cut_paste_and_undo() {
+        let mut editor = Editor::new(Document::from("one\ntwo\nthree\n"));
+        let mut keys = KeyHandler::default();
+        press(&mut keys, &mut editor, "xxd");
+        assert_eq!(editor.document().text(), "three\n");
+        press(&mut keys, &mut editor, "P");
+        assert_eq!(editor.document().text(), "one\ntwo\nthree\n");
+        press(&mut keys, &mut editor, "uu");
+        assert_eq!(editor.document().text(), "one\ntwo\nthree\n");
+        assert_eq!(
+            editor.selections().primary().range(),
+            CharOffset(0)..CharOffset(8)
+        );
+
+        let mut editor = Editor::new(Document::from("  alpha  \n beta \n"));
+        let mut keys = KeyHandler::default();
+        press(&mut keys, &mut editor, "X_");
+        assert_eq!(
+            editor.selections().primary().range(),
+            CharOffset(2)..CharOffset(7)
+        );
+        press(&mut keys, &mut editor, "y;");
+        assert_eq!(
+            editor.selections().primary().range(),
+            CharOffset(6)..CharOffset(7)
+        );
+        press(&mut keys, &mut editor, "%R");
+        assert_eq!(editor.document().text(), "alpha");
+    }
+
+    #[test]
     fn counts_prefixes_cancel_and_do_not_leak() {
         let mut editor = Editor::new(Document::from("one two three four"));
         let mut keys = KeyHandler::default();
@@ -862,7 +928,7 @@ mod tests {
         #[test]
         fn arbitrary_key_sequences_preserve_grapheme_and_mode_invariants(
             keys in prop::collection::vec(prop_oneof![
-                prop::sample::select("hjklwbevdciaxuU025g$".chars().map(Key::Char).collect::<Vec<_>>()),
+                prop::sample::select("hjklwbevdciaxX%;,_uU025g$".chars().map(Key::Char).collect::<Vec<_>>()),
                 Just(Key::Escape), Just(Key::Backspace), Just(Key::Delete), Just(Key::Enter),
                 Just(Key::Char('🦀')), Just(Key::Char('\u{301}')), Just(Key::Char('\u{200d}')),
                 Just(Key::Down), Just(Key::Up), Just(Key::Left), Just(Key::Right),

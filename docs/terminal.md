@@ -39,7 +39,12 @@ and calls that existing dispatcher.
 | `p`, `P` | Paste after/before selections; newline-terminated yanks paste below/above selected lines |
 | `R` | Replace selections with yanked text without overwriting the register |
 | `d`, `c` | Cut selections to the internal register, then delete/change them |
-| `x` | Select lines |
+| `%` | Select the entire document |
+| `;` | Collapse each selection to its displayed cursor |
+| `,` | Keep only the primary selection |
+| `x` | Expand to whole lines, then extend below on repeated presses; accepts counts |
+| `X` | Expand to line boundaries, preserving direction |
+| `_` | Trim whitespace from selection edges |
 | `u`, `U` | Undo/redo |
 | `K`, `gd`, Ctrl-o | Hover, go to definition, return from a definition jump |
 | `]d`, `[d` | Next/previous diagnostic, with counts and wrapping |
@@ -57,6 +62,25 @@ Prefix groups display their available commands. The [file picker](pickers.md)
 supports background discovery and fuzzy matching, Unicode query editing, a preview
 on wide terminals, and Ctrl-o return jumps. It protects unsaved changes when opening
 another file.
+
+Selection controls work in normal and select mode, retaining the current mode.
+`%` replaces all selections with one range covering the document; `;` keeps every
+cursor but collapses its range to one whole grapheme (or an empty cursor at EOF).
+`,` keeps the primary range with its direction intact.
+
+`x` first expands each range to the full logical lines it touches, including line
+endings, and faces forward. Once aligned, each further press adds a line below.
+Counts include the initial alignment, so `3x` from a character selects three
+lines, while `3x` on already selected lines adds three more. `X` aligns without
+adding lines and preserves direction. Both merge overlapping ranges, retain the
+primary, and exclude the next line when a selection ends exactly at its start.
+
+`_` trims Unicode whitespace without editing the document or splitting graphemes.
+Whitespace-only selections are removed; if the primary is removed, the last
+surviving range becomes primary. If no ranges survive, one cursor remains at the
+original primary's displayed position. Selection controls leave the yank register
+and undo/redo entries intact, and end any ongoing typing group.
+
 Enter in insert mode and `o`/`O` follow the loaded file's first line ending (LF,
 CRLF, or CR), retained even after deleting all line breaks. They copy leading tabs
 and spaces literally, without language-specific indentation rules. Enter copies
