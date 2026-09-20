@@ -395,12 +395,14 @@ impl App {
                 }
             }
         }
-        match action {
-            Some(LanguageAction::NextDiagnostic(count)) => self.navigate_diagnostic(false, count),
-            Some(LanguageAction::PreviousDiagnostic(count)) => {
-                self.navigate_diagnostic(true, count)
-            }
-            _ => {}
+        if let Some(
+            action @ (LanguageAction::NextDiagnostic
+            | LanguageAction::PreviousDiagnostic
+            | LanguageAction::FirstDiagnostic
+            | LanguageAction::LastDiagnostic),
+        ) = action
+        {
+            self.navigate_diagnostic(action);
         }
         self.language.force = false;
         self.language.document = document.clone();
@@ -607,28 +609,29 @@ impl App {
         Ok(())
     }
 
-    fn navigate_diagnostic(&mut self, backward: bool, count: usize) {
-        if self.language.diagnostics.is_empty() {
-            self.fail("no diagnostics");
-            return;
-        }
+    fn navigate_diagnostic(&mut self, action: LanguageAction) {
         let cursor = self.language_cursor();
         let diagnostics = &self.language.diagnostics;
-        let len = diagnostics.len();
-        let index = if backward {
-            let before = diagnostics.partition_point(|diagnostic| diagnostic.start < cursor);
-            (before + len - (count - 1) % len - 1) % len
-        } else {
-            (diagnostics.partition_point(|diagnostic| diagnostic.start <= cursor)
-                + (count - 1) % len)
-                % len
+        let diagnostic = match action {
+            LanguageAction::FirstDiagnostic => diagnostics.first(),
+            LanguageAction::LastDiagnostic => diagnostics.last(),
+            LanguageAction::NextDiagnostic => diagnostics
+                .get(diagnostics.partition_point(|diagnostic| diagnostic.start <= cursor)),
+            LanguageAction::PreviousDiagnostic => diagnostics
+                .partition_point(|diagnostic| diagnostic.start < cursor)
+                .checked_sub(1)
+                .and_then(|index| diagnostics.get(index)),
+            _ => unreachable!(),
         };
-        let position = diagnostics[index].start;
-        let message = diagnostics[index].message.clone();
-        match self.move_to(position) {
-            Ok(()) => self.message = message,
-            Err(error) => self.fail(error),
-        }
+        let Some(diagnostic) = diagnostic else {
+            return;
+        };
+        let selection = if action == LanguageAction::PreviousDiagnostic {
+            vex_core::Selection::new(diagnostic.end, diagnostic.start)
+        } else {
+            vex_core::Selection::new(diagnostic.start, diagnostic.end)
+        };
+        self.begin_diagnostic_navigation(selection, diagnostic.message.clone());
     }
 
     pub(super) fn refresh_diagnostics(&mut self) {
@@ -837,7 +840,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_render_navigate_wrap_and_disappear_immediately_after_edit() {
+    fn diagnostics_select_ranges_stop_at_ends_and_disappear_immediately_after_edit() {
         let directory = tempfile::tempdir().unwrap();
         let mut app = app(directory.path());
         let epoch = app.language.epoch;
@@ -868,16 +871,43 @@ mod tests {
         app.paint(&mut frame).unwrap();
         assert!(frame.row_text(0).starts_with('!'));
         assert!(frame.row_text(10).contains("1E 1W"));
-        for (command, expected) in [
-            ("goto_next_diagnostic", 3),
-            ("goto_next_diagnostic", 17),
-            ("goto_next_diagnostic", 3),
-            ("goto_previous_diagnostic", 17),
+        for (command, anchor, head, moves) in [
+            ("goto_next_diagnostic", 3, 9, true),
+            ("goto_next_diagnostic", 17, 21, true),
+            ("goto_next_diagnostic", 17, 21, false),
+            ("goto_previous_diagnostic", 21, 17, true),
+            ("goto_previous_diagnostic", 9, 3, true),
+            ("goto_previous_diagnostic", 9, 3, false),
+            ("goto_last_diagnostic", 17, 21, true),
+            ("goto_first_diagnostic", 3, 9, true),
         ] {
-            app.execute(command).unwrap();
+            // Helix diagnostic motions ignore a numeric prefix.
+            app.editor.execute(command, 99).unwrap();
             app.take_lsp_update();
-            assert_eq!(app.language_cursor(), CharOffset(expected));
+            let job = app.take_location_navigation();
+            assert_eq!(job.is_some(), moves, "{command}");
+            if let Some(job) = job {
+                assert!(app.input_waiting());
+                assert!(app.handle_location_navigation(job.run().unwrap()));
+            }
+            assert!(!app.input_waiting());
+            assert_eq!(
+                app.editor.selections().primary(),
+                vex_core::Selection::new(CharOffset(anchor), CharOffset(head)),
+                "{command}"
+            );
+            assert_eq!(app.editor.mode(), Mode::Normal);
         }
+        app.execute("jump_backward").unwrap();
+        assert_eq!(app.editor.selections().primary().anchor, CharOffset(17));
+        app.editor.execute("select_mode", 1).unwrap();
+        app.editor.execute("goto_first_diagnostic", 1).unwrap();
+        app.take_lsp_update();
+        let result = app.take_location_navigation().unwrap().run().unwrap();
+        app.handle_location_navigation(result);
+        assert_eq!(app.editor.mode(), Mode::Select);
+        assert_eq!(app.editor.selections().primary().anchor, CharOffset(3));
+        assert_eq!(app.editor.selections().primary().head, CharOffset(9));
         app.editor.execute("insert_mode", 1).unwrap();
         app.editor.insert_text("x").unwrap();
         app.paint(&mut frame).unwrap();
@@ -887,6 +917,33 @@ mod tests {
             revision,
             diagnostics
         }));
+    }
+
+    #[test]
+    fn diagnostic_navigation_rejects_cancelled_and_changed_origins() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = app(directory.path());
+        let destination = vex_core::Selection::new(CharOffset(3), CharOffset(9));
+        let initial = app.editor.selections().clone();
+        app.begin_diagnostic_navigation(destination, "message".into());
+        let job = app.take_location_navigation().unwrap();
+        press(&mut app, KeyCode::Esc);
+        assert!(job.run().is_none());
+        assert_eq!(app.editor.selections(), &initial);
+        assert!(!app.input_waiting());
+
+        for change in ["move_right", "select_mode", "insert_mode"] {
+            app.begin_diagnostic_navigation(destination, "message".into());
+            let result = app.take_location_navigation().unwrap().run().unwrap();
+            app.editor.execute(change, 1).unwrap();
+            if change == "insert_mode" {
+                app.editor.insert_text("x").unwrap();
+            }
+            let expected = app.editor.selections().clone();
+            assert!(app.handle_location_navigation(result));
+            assert_eq!(app.editor.selections(), &expected);
+            assert!(!app.input_waiting());
+        }
     }
 
     #[test]

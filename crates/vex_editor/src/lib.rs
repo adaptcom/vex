@@ -71,8 +71,10 @@ pub enum LanguageAction {
     FormatSelections,
     FormatDocument,
     Completion,
-    NextDiagnostic(usize),
-    PreviousDiagnostic(usize),
+    NextDiagnostic,
+    PreviousDiagnostic,
+    FirstDiagnostic,
+    LastDiagnostic,
 }
 
 /// Application UI requested by documented commands without performing file I/O.

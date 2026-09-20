@@ -67,8 +67,10 @@ Generated from command Rustdoc and the default keymap.
 | `code_action` | Normal: `<Space>a`, Select: `<Space>a` | Show language-server code actions for the primary selection.  The frontend resolves the selected action and applies its edits before  executing any accompanying server command. |
 | `format_selections` | Normal: `=`, Select: `=` | Format the current selection through the language server. Like Helix,  this requires exactly one selection and range-formatting support.  Text preparation runs in the background; changes remain unsaved and undoable. |
 | `format_document` |  | Format the whole document through its language server, preserving all  selections and creating one unsaved undo step. Used by :format and :fmt. |
-| `goto_next_diagnostic` | Normal: `]d`, Select: `]d` | Move to the next diagnostic, wrapping and honoring the repeat count. |
-| `goto_previous_diagnostic` | Normal: `[d`, Select: `[d` | Move to the previous diagnostic, wrapping and honoring the repeat count. |
+| `goto_next_diagnostic` | Normal: `]d`, Select: `]d` | Select the next diagnostic range without wrapping. Numeric prefixes are  ignored, matching Helix; the frontend records a jump-history entry. |
+| `goto_previous_diagnostic` | Normal: `[d`, Select: `[d` | Select the previous diagnostic range with the cursor at its start, without  wrapping. Numeric prefixes are ignored, matching Helix. |
+| `goto_first_diagnostic` | Normal: `[D`, Select: `[D` | Select the first diagnostic range and record the origin in jump history. |
+| `goto_last_diagnostic` | Normal: `]D`, Select: `]D` | Select the last diagnostic range and record the origin in jump history. |
 | `search_forward` | Normal: `/`, Select: `/` | Begin a forward regex search after the primary selection. Matches wrap; counts select successive matches, and select mode adds them. Acceptance stores the query in the chosen register (default: /) and makes it active for n/N across buffers. |
 | `search_backward` | Normal: `?`, Select: `?` | Begin a backward regex search before the primary selection, wrapping at document boundaries. Acceptance stores the query in the chosen register (default: /) and makes it active for n/N across buffers. |
 | `select_regex` | Normal: `s`, Select: `s` | Select regex matches inside the current selections; lowercase queries ignore case. |

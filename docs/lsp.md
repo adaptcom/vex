@@ -47,8 +47,10 @@ protocol failures, and request errors leave editing and saving available.
 | `Space-S` / `:workspace_symbol_picker` | Search symbols across the active server's workspace |
 | `Ctrl-o` / `:jump_backward` | Move backward through the current pane's jump history |
 | `Ctrl-i` / `:jump_forward` | Move forward through the current pane's jump history |
-| `]d` / `:goto_next_diagnostic` | Next diagnostic, wrapping and accepting a count |
-| `[d` / `:goto_previous_diagnostic` | Previous diagnostic, wrapping and accepting a count |
+| `]d` / `:goto_next_diagnostic` | Select the next diagnostic |
+| `[d` / `:goto_previous_diagnostic` | Select the previous diagnostic, with the cursor at its start |
+| `[D` / `:goto_first_diagnostic` | Select the first diagnostic |
+| `]D` / `:goto_last_diagnostic` | Select the last diagnostic |
 | `:lsp-restart` | Restart the server for the current file |
 
 These keys apply in normal and select modes. Each editing action is an ordinary
@@ -66,7 +68,10 @@ Diagnostic gutter markers and counts update asynchronously; the message at the
 cursor appears on the bottom line when
 no other message or prompt is active. Errors take precedence over other markers
 on the same line. Editing clears diagnostics immediately until a current result
-arrives.
+arrives. Diagnostic jumps select the complete range, retain normal/select mode,
+and record the origin in jump history. Like Helix, they stop at the first/last
+diagnostic and ignore numeric prefixes. Selection preparation uses the navigation
+worker with cancellation and stale-origin checks.
 
 Definition and symbol jumps open another local file in the focused pane, retaining
 the old buffer and any unsaved edits. Each pane's [jump list](windows.md#jump-history)

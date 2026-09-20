@@ -287,6 +287,8 @@ impl Default for Keymap {
                     "select_references_to_symbol_under_cursor",
                 ),
                 (vec![Char(']'), Char('d')], "goto_next_diagnostic"),
+                (vec![Char('['), Char('D')], "goto_first_diagnostic"),
+                (vec![Char(']'), Char('D')], "goto_last_diagnostic"),
                 (vec![Char('['), Char('d')], "goto_previous_diagnostic"),
                 (vec![Char('g'), Char('g')], "goto_file_start"),
                 (vec![Char('g'), Char('a')], "goto_last_accessed_file"),
@@ -1081,6 +1083,10 @@ mod tests {
                 (" r", crate::LanguageAction::Rename),
                 (" a", crate::LanguageAction::CodeAction),
                 ("=", crate::LanguageAction::FormatSelections),
+                ("]d", crate::LanguageAction::NextDiagnostic),
+                ("[d", crate::LanguageAction::PreviousDiagnostic),
+                ("[D", crate::LanguageAction::FirstDiagnostic),
+                ("]D", crate::LanguageAction::LastDiagnostic),
             ] {
                 let mut editor = Editor::new(Document::from("name"));
                 if mode == Mode::Select {

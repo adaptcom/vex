@@ -839,17 +839,33 @@ commands! {
         Ok(())
     }
 
-    /// Move to the next diagnostic, wrapping and honoring the repeat count.
+    /// Select the next diagnostic range without wrapping. Numeric prefixes are
+    /// ignored, matching Helix; the frontend records a jump-history entry.
     fn goto_next_diagnostic(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.request_language_action(crate::LanguageAction::NextDiagnostic(ctx.count.get()));
+        ctx.editor.request_language_action(crate::LanguageAction::NextDiagnostic);
         Ok(())
     }
 
-    /// Move to the previous diagnostic, wrapping and honoring the repeat count.
+    /// Select the previous diagnostic range with the cursor at its start, without
+    /// wrapping. Numeric prefixes are ignored, matching Helix.
     fn goto_previous_diagnostic(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.request_language_action(crate::LanguageAction::PreviousDiagnostic(ctx.count.get()));
+        ctx.editor.request_language_action(crate::LanguageAction::PreviousDiagnostic);
+        Ok(())
+    }
+
+    /// Select the first diagnostic range and record the origin in jump history.
+    fn goto_first_diagnostic(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_language_action(crate::LanguageAction::FirstDiagnostic);
+        Ok(())
+    }
+
+    /// Select the last diagnostic range and record the origin in jump history.
+    fn goto_last_diagnostic(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_language_action(crate::LanguageAction::LastDiagnostic);
         Ok(())
     }
 

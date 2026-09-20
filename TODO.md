@@ -100,6 +100,9 @@ selections, and measure operations that could affect input latency.
   `:format` by default; range formatting requires server support.
 - [ ] Document/workspace diagnostic pickers (`<space>d`/`D`) and first/last
   diagnostic jumps (`[D`/`]D`). Retain diagnostics beyond the active document.
+  All four diagnostic jumps now select full ranges without wrapping, retain
+  normal/select mode, and add jump-history entries. Range preparation runs on
+  the navigation worker; retained diagnostics and pickers remain.
 - [ ] Scrollable hover documentation and signature help.
   Hover now has a bordered Markdown popup, cached wrapping, and Helix-style
   Ctrl-u/Ctrl-d and PageUp/PageDown scrolling. Signature help remains.

@@ -69,7 +69,7 @@ and calls that existing dispatcher.
 | `u`, `U` | Undo/redo |
 | `.` | [Repeat the last insert](repeat.md), including its entry command; counts repeat the entire session |
 | `gd`, Ctrl-o | Go to definition / return to the previous jump checkpoint |
-| `]d`, `[d` | Next/previous diagnostic, with counts and wrapping |
+| `]d`, `[d`, `[D`, `]D` | Select next/previous/first/last diagnostic; stop at list ends |
 | Space-f, Space-k | Open file picker / show hover |
 | Space-s, Space-S | Open document / workspace symbol picker |
 | Space-r | Rename the symbol at the primary cursor; edits remain unsaved in each affected buffer |

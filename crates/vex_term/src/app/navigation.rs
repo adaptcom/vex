@@ -3,7 +3,7 @@
 use super::{App, jumps::Jump};
 use crate::{files::FileState, picker::search::OpenDocument};
 use std::{io, path::PathBuf, sync::Arc};
-use vex_core::{Document, DocumentId, Revision};
+use vex_core::{Document, DocumentId, Revision, Selection, SelectionSet, Snapshot};
 use vex_editor::{Mode, PreparedSelections, background::Cancellation};
 use vex_lsp::Destination;
 
@@ -17,6 +17,7 @@ struct Pending {
     origin: Jump,
     window: u64,
     mode: Mode,
+    message: Option<String>,
     cancellation: Cancellation,
 }
 
@@ -26,9 +27,20 @@ impl Drop for Pending {
     }
 }
 
+enum Target {
+    Location {
+        destination: Destination,
+        documents: Arc<[OpenDocument]>,
+    },
+    Diagnostic {
+        snapshot: Snapshot,
+        selection: Selection,
+        mode: Mode,
+    },
+}
+
 pub(crate) struct Job {
-    destination: Destination,
-    documents: Arc<[OpenDocument]>,
+    target: Target,
     pub cancellation: Cancellation,
 }
 
@@ -40,8 +52,13 @@ pub(super) struct Loaded {
     pub selections: PreparedSelections,
 }
 
+enum Prepared {
+    Location(Box<Loaded>),
+    Diagnostic(PreparedSelections),
+}
+
 pub(crate) struct Result {
-    loaded: io::Result<Box<Loaded>>,
+    loaded: io::Result<Prepared>,
     cancellation: Cancellation,
 }
 
@@ -51,9 +68,29 @@ impl Job {
             if self.cancellation.is_cancelled() {
                 return Err(io::Error::other("navigation cancelled"));
             }
-            let path = crate::files::resolve(&self.destination.path)?;
+            let (destination, documents) = match self.target {
+                Target::Diagnostic {
+                    snapshot,
+                    selection,
+                    mode,
+                } => {
+                    return PreparedSelections::new(
+                        &snapshot,
+                        SelectionSet::single(selection),
+                        mode,
+                        &self.cancellation,
+                    )
+                    .map(Prepared::Diagnostic)
+                    .map_err(io::Error::other);
+                }
+                Target::Location {
+                    destination,
+                    documents,
+                } => (destination, documents),
+            };
+            let path = crate::files::resolve(&destination.path)?;
             let (snapshot, file) = if let Some(open) =
-                self.documents.iter().find(|open| open.path == path)
+                documents.iter().find(|open| open.path == path)
             {
                 (open.snapshot.clone(), None)
             } else {
@@ -64,19 +101,16 @@ impl Job {
                     FileState::load_with_cancel(Some(&path), || self.cancellation.is_cancelled())?;
                 (document.snapshot(), Some((document, files)))
             };
-            let selections = vex_lsp::destination_selection(
-                &snapshot,
-                self.destination.range,
-                &self.cancellation,
-            )
-            .map_err(io::Error::other)?;
-            Ok(Box::new(Loaded {
+            let selections =
+                vex_lsp::destination_selection(&snapshot, destination.range, &self.cancellation)
+                    .map_err(io::Error::other)?;
+            Ok(Prepared::Location(Box::new(Loaded {
                 path,
                 document: snapshot.id(),
                 revision: snapshot.revision(),
                 file,
                 selections,
-            }))
+            })))
         })();
         (!self.cancellation.is_cancelled()).then_some(Result {
             loaded,
@@ -87,17 +121,38 @@ impl Job {
 
 impl App {
     pub(super) fn begin_location_navigation(&mut self, destination: Destination) {
+        self.begin_navigation(
+            Target::Location {
+                destination,
+                documents: self.workspace_documents(),
+            },
+            None,
+        );
+    }
+
+    pub(super) fn begin_diagnostic_navigation(&mut self, selection: Selection, message: String) {
+        self.begin_navigation(
+            Target::Diagnostic {
+                snapshot: self.editor.document().snapshot(),
+                selection,
+                mode: self.editor.mode(),
+            },
+            Some(message),
+        );
+    }
+
+    fn begin_navigation(&mut self, target: Target, message: Option<String>) {
         self.cancel_location_navigation();
         let cancellation = Cancellation::default();
         self.navigation.pending = Some(Pending {
             origin: self.current_jump(),
             window: self.focused_window_id(),
             mode: self.editor.mode(),
+            message,
             cancellation: cancellation.clone(),
         });
         self.navigation.job = Some(Job {
-            destination,
-            documents: self.workspace_documents(),
+            target,
             cancellation,
         });
         self.message = "opening location…".into();
@@ -133,14 +188,21 @@ impl App {
         {
             return true;
         }
-        match result
-            .loaded
-            .and_then(|loaded| self.open_loaded_location(*loaded))
-        {
+        match result.loaded.and_then(|loaded| match loaded {
+            Prepared::Location(loaded) => self.open_loaded_location(*loaded),
+            Prepared::Diagnostic(selections) => self
+                .editor
+                .apply_prepared_selections(selections)
+                .then_some(())
+                .ok_or_else(|| io::Error::other("diagnostic destination changed")),
+        }) {
             Ok(()) => {
                 self.push_jump(pending.origin.clone());
                 self.keys.cancel(&mut self.editor);
                 self.clear_message();
+                if let Some(message) = &pending.message {
+                    self.message = message.clone();
+                }
             }
             Err(error) => self.fail(error),
         }
@@ -222,7 +284,10 @@ mod tests {
         app.execute("jump_backward").unwrap();
         app.begin_location_navigation(target);
         let result = app.take_location_navigation().unwrap().run().unwrap();
-        let changed = result.loaded.as_ref().unwrap().document;
+        let Prepared::Location(loaded) = result.loaded.as_ref().unwrap() else {
+            panic!("expected a file destination");
+        };
+        let changed = loaded.document;
         app.with_file_buffer_mut(changed, |editor, _, _| {
             editor.execute("insert_mode", 1).unwrap();
             editor.insert_text("Y").unwrap();
