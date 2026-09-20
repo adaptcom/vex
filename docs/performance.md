@@ -50,6 +50,34 @@ through long lines. The first application target remains under 5 ms at p95 for
 ordinary editing in a 10 MiB file on a documented machine; the core measurements
 above do not establish that end-to-end result.
 
+## Retained buffers
+
+Recorded on 2026-09-20 on the same development machine and optimized profile:
+
+```sh
+cargo bench -p vex_term --bench rendering --locked -- buffers --noplot
+```
+
+| Document | Loaded buffers | Next/previous pair | Move and draw 120×40 |
+|---|---:|---:|---:|
+| 1 MiB | 2 | 0.432 µs | 50.5 µs |
+| 1 MiB | 1,000 | 1.34 µs | 52.5 µs |
+| 100 MiB | 2 | 0.431 µs | 53.0 µs |
+| 100 MiB | 1,000 | 1.31 µs | 52.4 µs |
+
+Navigation switches from a large scratch buffer to a small file and back,
+including command dispatch, view restoration, and buffer bookkeeping. It uses
+existing buffers without file I/O, text copying, or rendering. Initial loading,
+catalog construction, and viewport indexing are outside the timed loop. Ordinary
+next/previous lookup uses an ordered map, with counts reduced modulo buffer count.
+
+The drawing cases move one cursor and render only the visible document, emitting
+ANSI output to an in-memory sink. The other buffers are hidden. These results
+exercise per-frame overhead from retention; they do not measure terminal display
+latency, many visible panes, memory retained by undo, or closing large histories.
+Hidden documents receive no syntax, Git gutter, or file polling jobs. Buffer-picker
+ranking and preview parsing use the existing cancellable worker services.
+
 ## Command and movement baseline
 
 Recorded on the same development machine on 2026-09-19 with the same Criterion

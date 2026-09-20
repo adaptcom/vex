@@ -35,7 +35,7 @@ impl App {
         self.dismiss_language_help();
         self.keys.cancel();
         self.prompt = None;
-        if self.editor.search_direction().is_some() {
+        if self.editor.search_prompt().is_some() {
             let _ = self.editor.execute("search_cancel", 1);
         }
         self.clear_message();

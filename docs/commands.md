@@ -26,6 +26,12 @@ Generated from command Rustdoc and the default keymap.
 | `goto_file_vsplit` | Normal: `<Space>wF`, Normal: `<C-w>F`, Select: `<Space>wF`, Select: `<C-w>F` | Open filenames in the selections in vertical splits. Paths are relative to the current file. |
 | `completion` | Insert: `<C-x>` | Request language-server completion at the insertion cursor. |
 | `file_picker` | Normal: `<Space>f`, Select: `<Space>f` | Open a fuzzy file picker at the current project root. |
+| `buffer_picker` | Normal: `<Space>b`, Select: `<Space>b` | Open a fuzzy picker of loaded buffers, including hidden and unsaved buffers. |
+| `goto_last_accessed_file` | Normal: `ga`, Select: `ga` | Switch to the last buffer accessed in this pane, restoring its view. |
+| `goto_last_modified_file` | Normal: `gm`, Select: `gm` | Switch to the last other buffer modified in this pane. |
+| `goto_next_buffer` | Normal: `gn`, Select: `gn` | Switch to the next loaded buffer in opening order, wrapping; accepts a count. |
+| `goto_previous_buffer` | Normal: `gp`, Select: `gp` | Switch to the previous loaded buffer in opening order, wrapping; accepts a count. |
+| `goto_file` | Normal: `gf`, Select: `gf` | Open filenames in the selections in the current pane. Paths are relative to the current file; earlier buffers remain loaded. |
 | `git_status` | Normal: `<Space>g`, Select: `<Space>g` | Open the repository status view with expandable staged and unstaged diffs. |
 | `symbol_picker` | Normal: `<Space>s`, Select: `<Space>s` | Open a searchable picker of symbols in the current document using its language server. |
 | `workspace_symbol_picker` | Normal: `<Space>S`, Select: `<Space>S` | Search workspace symbols using the current document's language server. |

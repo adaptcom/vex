@@ -113,6 +113,7 @@ impl App {
     }
 
     fn after_reload(&mut self, id: vex_core::DocumentId) {
+        self.refresh_picker_buffer(id);
         if id == self.editor.document().id() {
             self.dismiss_language_help();
             self.invalidate_completion();

@@ -68,11 +68,23 @@ pub enum ApplicationAction {
     SaveSelection,
     GitStatus,
     FilePicker,
+    BufferPicker,
+    Buffer(BufferAction, usize),
     DocumentSymbols,
     WorkspaceSymbols,
     HalfPageUp(usize),
     HalfPageDown(usize),
     Window(WindowAction, usize),
+}
+
+/// Buffer navigation interpreted by the frontend, without reading files here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BufferAction {
+    LastAccessed,
+    LastModified,
+    Next,
+    Previous,
+    OpenSelected,
 }
 
 /// Window operations interpreted by the frontend's split layout.

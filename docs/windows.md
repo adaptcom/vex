@@ -66,6 +66,26 @@ including unsaved edits. Switching files retains the old buffer, even when no
 pane displays it. Each pane restores its own saved selections and scroll position
 when returning to a buffer. Switching moves ownership without copying the text.
 
+Buffer bindings work in normal/select mode and follow Helix:
+
+| Key | Action |
+|---|---|
+| `Space b` | Pick a loaded buffer, including scratch and hidden buffers |
+| `ga` | Return to the previous buffer accessed in this pane; repeat to toggle |
+| `gn`, `gp` | Next/previous in opening order; counts wrap around |
+| `gm` | Return to the last other buffer modified in this pane |
+| `gf` | Open selected filenames in this pane; all selected files remain loaded |
+
+`gf` uses the same relative-path rules and validation as window-mode `f`/`F`,
+without creating splits. Up to 16 selected paths are accepted. All loads are
+validated before switching; Ctrl-o returns to the origin, including scratch
+buffers. `:bn`/`:bp` are aliases for next/previous navigation. Plain next/previous
+lookups use the ordered buffer map; counts reduce modulo the number of buffers.
+
+`:bc` (`:buffer-close`) releases the current buffer from all panes; unsaved edits
+require `:bc!`. Panes showing it switch to another retained buffer. Closing the
+last buffer creates an empty scratch buffer and keeps the editor running.
+
 `:q` closes the focused pane, retaining its buffers. Closing the last pane checks
 all buffers for unsaved text, including hidden buffers; `:q!` skips that check.
 `:only` keeps the focused pane and retains buffers from the other panes;
@@ -81,3 +101,7 @@ the focused pane and are canceled when focus changes. Language services still
 maintain one active document session: switching to a different file changes that
 session; switching between views of the same file keeps it. Concurrent LSP
 sessions for multiple buffers remain future work.
+
+Hidden buffers retain text, undo history, saved views, and cached colors, but
+receive no syntax jobs, Git gutter jobs, or disk polls. Frame work visits only
+visible panes; loaded-buffer matching and previews use the picker workers.

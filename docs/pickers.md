@@ -69,6 +69,27 @@ undo history. Successful opens add the origin to the existing Ctrl-o jump list.
 Loaded files reuse their buffers even when no pane displays them; an error leaves
 the picker open.
 
+## Buffer picker
+
+Space-b (`:buffer_picker`) uses the same floating boxes and navigation keys to
+choose a loaded buffer. Entries include hidden files, scratch buffers, and commit
+drafts. `*` marks the current buffer and `+` marks unsaved edits. An empty query
+orders entries by recent access; fuzzy scores take priority for a nonempty query.
+
+The picker captures labels and identities once on opening. Query changes share
+that catalog with the existing matching worker, keeping at most 512 results in
+a bounded heap. Matching checks cancellation between candidates and computes
+highlight positions only for retained results. The UI never scans document text
+to build or filter the list.
+
+Only the selected buffer supplies a shared rope snapshot to the preview worker.
+Previews show unsaved text around its cursor, with syntax colors from its language
+configuration; scratch buffers need no file on disk. Text is limited to 200 lines
+and the existing byte cap. Buffers over 8 MiB get a bounded plain-text preview
+without parsing the whole document. External reloads invalidate pending previews.
+Accepting switches the current pane and records a Ctrl-o checkpoint; early Enter
+waits for the current query before dispatching subsequent editing keys.
+
 ## Symbol pickers
 
 Space-s (`:symbol_picker`) opens document symbols, and Space-S
@@ -146,8 +167,8 @@ rescans to observe filesystem and ignore-rule changes.
 
 `picker::Picker<T>` owns query editing, selection, scrolling, and cell-grid
 drawing independently of the entry payload. The file provider supplies paths
-and match positions. Additional providers can reuse this view for buffers,
-commands, symbols, or diagnostics.
+and match positions. Buffer and symbol providers share the same view and worker;
+additional providers can reuse them for commands or diagnostics.
 
 Directory traversal and matching run on one persistent worker, interleaving
 small scan/ranking batches. Preview reads and syntax use a second worker. Both

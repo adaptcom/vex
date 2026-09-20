@@ -163,6 +163,13 @@ impl App {
     }
 
     fn handle_at(&mut self, event: Event, now: std::time::Instant) -> bool {
+        self.observe_buffer_revision();
+        let changed = self.handle_event_at(event, now);
+        self.observe_buffer_revision();
+        changed
+    }
+
+    fn handle_event_at(&mut self, event: Event, now: std::time::Instant) -> bool {
         if matches!(event, Event::FocusGained) {
             self.refresh_git();
             self.refresh_status();
@@ -278,6 +285,12 @@ impl App {
     /// Dispatch a colon command. The remaining text is one literal path argument,
     /// so file names may contain spaces. A trailing ! on the command means force.
     pub fn execute(&mut self, text: &str) -> io::Result<()> {
+        let result = self.execute_command(text);
+        self.observe_buffer_revision();
+        result
+    }
+
+    fn execute_command(&mut self, text: &str) -> io::Result<()> {
         let text = text.trim();
         if text.is_empty() {
             return Ok(());
@@ -334,6 +347,7 @@ impl App {
     }
 
     pub fn paint(&mut self, frame: &mut Frame) -> io::Result<()> {
+        self.observe_buffer_revision();
         self.apply_application_action();
         self.refresh_diagnostics();
         self.open_search_prompt();
@@ -446,6 +460,11 @@ impl App {
                 self.open_file_picker();
                 Ok(())
             }
+            Some(ApplicationAction::BufferPicker) => {
+                self.open_buffer_picker();
+                Ok(())
+            }
+            Some(ApplicationAction::Buffer(action, count)) => self.buffer_action(action, count),
             Some(ApplicationAction::DocumentSymbols) => {
                 self.open_symbol_picker(false);
                 Ok(())
@@ -686,7 +705,7 @@ commands! {
         app.split_with_path(false, argument)
     }
 
-    /// Keep only the current window. Use ! to discard unsaved buffers in other windows.
+    /// Keep only the current window, retaining all buffers and unsaved edits. Accepts ! for compatibility.
     fn only(app, argument, force) ["only"] {
         if !argument.is_empty() { return Err(io::Error::other("only takes no arguments")); }
         app.only_window(force)
@@ -731,10 +750,28 @@ commands! {
         Ok(())
     }
 
-    /// Close the current window; quit when it is the last one. Discarding the last view of unsaved text requires :q!.
+    /// Close the current window, retaining its buffers. Quitting the last window protects all unsaved buffers unless :q! is used.
     fn quit(app, argument, force) ["quit", "q"] {
         if !argument.is_empty() { return Err(io::Error::other("quit takes no arguments")); }
         app.close_window(force)
+    }
+
+    /// Close the current buffer in all panes. Unsaved changes require :bc!; closing the final buffer creates a scratch buffer.
+    fn buffer_close(app, argument, force) ["buffer-close", "bc", "bclose"] {
+        if !argument.is_empty() { return Err(io::Error::other("buffer-close takes no arguments")); }
+        app.close_buffer(force)
+    }
+
+    /// Switch to the next loaded buffer in opening order, wrapping around.
+    fn buffer_next(app, argument, force) ["buffer-next", "bn", "bnext"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("buffer-next takes no arguments or !")); }
+        app.buffer_action(vex_editor::BufferAction::Next, 1)
+    }
+
+    /// Switch to the previous loaded buffer in opening order, wrapping around.
+    fn buffer_previous(app, argument, force) ["buffer-previous", "bp", "bprevious"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("buffer-previous takes no arguments or !")); }
+        app.buffer_action(vex_editor::BufferAction::Previous, 1)
     }
 
     /// Write and quit after a successful save. Accepts the same path and ! options as :write.

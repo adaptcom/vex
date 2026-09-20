@@ -173,6 +173,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             if let Some(job) = app.take_symbol_job() {
                 runtime.submit_symbols(job);
             }
+            if let Some(job) = app.take_buffer_job() {
+                runtime.submit_buffers(job);
+            }
             if let Some(job) = app.take_preview_job() {
                 runtime.submit_preview(job);
             }
@@ -216,6 +219,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Symbols(result)) => {
                     redraw |= app.handle_symbol_result(result)
                 }
+                AppEvent::Background(BackgroundEvent::Buffers(result)) => {
+                    redraw |= app.handle_buffer_result(result)
+                }
                 AppEvent::Background(BackgroundEvent::Preview(result)) => {
                     redraw |= app.handle_preview_result(result)
                 }
@@ -252,6 +258,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(job) = app.take_symbol_job() {
                 runtime.submit_symbols(job);
+            }
+            if let Some(job) = app.take_buffer_job() {
+                runtime.submit_buffers(job);
             }
             if let Some(job) = app.take_preview_job() {
                 runtime.submit_preview(job);

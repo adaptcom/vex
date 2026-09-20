@@ -1,6 +1,7 @@
 //! Wakeable event inbox and owned producer threads. Terminal input is bounded;
 //! independent services have typed completions and explicit delivery policies.
 
+use crate::picker::buffers::{BufferJob, BufferResult};
 use crate::picker::files::{FileJob, FileResult, FileWorker, PreviewJob, PreviewResult};
 use crate::picker::symbols::{SymbolJob, SymbolResult};
 use crossterm::event::{self, Event};
@@ -33,6 +34,7 @@ pub(crate) enum BackgroundEvent {
     Syntax(Vec<SyntaxResult>),
     Files(FileResult),
     Symbols(SymbolResult),
+    Buffers(BufferResult),
     Preview(PreviewResult),
     Git(vex_git::Result),
     GitStatus(vex_git::status::Result),
@@ -103,7 +105,9 @@ impl EventQueue {
             let slot = match &result {
                 BackgroundEvent::Search(_) => 0,
                 BackgroundEvent::Syntax(_) => 1,
-                BackgroundEvent::Files(_) | BackgroundEvent::Symbols(_) => 2,
+                BackgroundEvent::Files(_)
+                | BackgroundEvent::Symbols(_)
+                | BackgroundEvent::Buffers(_) => 2,
                 BackgroundEvent::Preview(_) => 3,
                 BackgroundEvent::Git(_) => 4,
                 BackgroundEvent::GitStatus(_) => 5,
@@ -279,6 +283,7 @@ impl SyntaxBuffers {
 enum PickerJob {
     Files(FileJob),
     Symbols(SymbolJob),
+    Buffers(BufferJob),
 }
 
 impl Job for PickerJob {
@@ -286,6 +291,7 @@ impl Job for PickerJob {
         match self {
             Self::Files(job) => job.cancellation.clone(),
             Self::Symbols(job) => job.cancellation.clone(),
+            Self::Buffers(job) => job.cancellation.clone(),
         }
     }
 }
@@ -512,6 +518,10 @@ impl Runtime {
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::Symbols)
             }
+            PickerJob::Buffers(job) => {
+                file_state = FileWorker::default();
+                job.run().map(BackgroundEvent::Buffers)
+            }
         })?;
         let preview = LatestWorker::spawn("vex-preview", events.clone(), |job: PreviewJob| {
             job.run().map(BackgroundEvent::Preview)
@@ -583,6 +593,9 @@ impl Runtime {
     }
     pub(crate) fn submit_symbols(&self, job: SymbolJob) {
         self.files.as_ref().unwrap().submit(PickerJob::Symbols(job));
+    }
+    pub(crate) fn submit_buffers(&self, job: BufferJob) {
+        self.files.as_ref().unwrap().submit(PickerJob::Buffers(job));
     }
     pub(crate) fn submit_preview(&self, job: PreviewJob) {
         self.preview.as_ref().unwrap().submit(job);
@@ -732,6 +745,9 @@ mod tests {
             }
             AppEvent::Background(BackgroundEvent::Symbols(result)) => {
                 app.handle_symbol_result(result);
+            }
+            AppEvent::Background(BackgroundEvent::Buffers(result)) => {
+                app.handle_buffer_result(result);
             }
             AppEvent::Background(BackgroundEvent::Preview(result)) => {
                 app.handle_preview_result(result);

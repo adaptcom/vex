@@ -1,6 +1,7 @@
 //! Reusable picker presentation and selection state. Providers own discovery and
 //! matching; the view only receives bounded results and paints visible rows.
 
+pub(crate) mod buffers;
 pub(crate) mod files;
 mod fuzzy;
 mod ignore;

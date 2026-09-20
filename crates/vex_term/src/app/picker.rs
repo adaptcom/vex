@@ -5,6 +5,7 @@ use crate::{
     input,
     picker::{
         self, Action, Entry, Item, Layout, Picker, Preview,
+        buffers::{BufferJob, BufferResult, CatalogEntry},
         files::{FileJob, FileResult, PreviewJob, PreviewResult},
         symbols::SymbolJob,
     },
@@ -16,24 +17,17 @@ use vex_editor::background::Cancellation;
 
 mod symbols;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Target {
     File(PathBuf),
     Symbol(vex_lsp::Location),
-}
-
-impl Target {
-    fn path(&self) -> &PathBuf {
-        match self {
-            Self::File(path) => path,
-            Self::Symbol(location) => &location.path,
-        }
-    }
+    Buffer(vex_core::DocumentId),
 }
 
 enum Source {
     Files(Option<PathBuf>, PathBuf),
     Symbols(symbols::Source),
+    Buffers(Arc<[CatalogEntry]>),
 }
 
 struct Active {
@@ -62,6 +56,7 @@ pub(super) struct State {
     file_job: Option<FileJob>,
     preview_job: Option<PreviewJob>,
     symbol_job: Option<SymbolJob>,
+    buffer_job: Option<BufferJob>,
 }
 
 impl App {
@@ -77,7 +72,7 @@ impl App {
         self.dismiss_language_help();
         self.keys.cancel();
         self.prompt = None;
-        if self.editor.search_direction().is_some() {
+        if self.editor.search_prompt().is_some() {
             let _ = self.editor.execute("search_cancel", 1);
         }
         self.picker.next_session += 1;
@@ -86,6 +81,31 @@ impl App {
             session: self.picker.next_session,
             revision: 0,
             source: Source::Files(self.files.target().map(PathBuf::from), cwd),
+            cancellation: Cancellation::default(),
+            preview_cancel: Cancellation::default(),
+            preview_request: 0,
+            preview_target: None,
+            accept_pending: false,
+        });
+        self.submit_picker_query();
+    }
+
+    pub(super) fn open_buffer_picker(&mut self) {
+        self.close_picker();
+        self.dismiss_language_help();
+        self.keys.cancel();
+        self.prompt = None;
+        if self.editor.search_prompt().is_some() {
+            let _ = self.editor.execute("search_cancel", 1);
+        }
+        let mut view = Picker::new("Buffers · * current · + modified".into());
+        view.noun = "buffers";
+        self.picker.next_session += 1;
+        self.picker.active = Some(Active {
+            view,
+            session: self.picker.next_session,
+            revision: 0,
+            source: Source::Buffers(self.buffer_catalog()),
             cancellation: Cancellation::default(),
             preview_cancel: Cancellation::default(),
             preview_request: 0,
@@ -108,6 +128,16 @@ impl App {
         active.preview_target = None;
         active.accept_pending = false;
         self.picker.preview_job = None;
+        if let Source::Buffers(catalog) = &active.source {
+            self.picker.buffer_job = Some(BufferJob {
+                session: active.session,
+                revision: active.revision,
+                catalog: catalog.clone(),
+                query: active.view.query.text().into(),
+                cancellation: active.cancellation.clone(),
+            });
+            return;
+        }
         let Source::Files(origin, cwd) = &active.source else {
             unreachable!()
         };
@@ -144,20 +174,43 @@ impl App {
         let session = active.session;
         let request = active.preview_request;
         let cancellation = active.preview_cancel.clone();
-        self.picker.preview_job = target.map(|target| PreviewJob {
-            session,
-            request,
-            snapshot: match &target {
-                Target::Symbol(_) => self.snapshot_for_path(target.path()),
-                _ => None,
-            },
-            position: match &target {
-                Target::Symbol(location) => Some(location.position),
-                _ => None,
-            },
-            path: target.path().clone(),
-            cancellation,
+        self.picker.preview_job = target.and_then(|target| {
+            let (path, position) = match target {
+                Target::Buffer(id) => {
+                    return self.buffer_preview(id, session, request, cancellation);
+                }
+                Target::File(path) => (path, None),
+                Target::Symbol(location) => (location.path, Some(location.position)),
+            };
+            Some(PreviewJob {
+                session,
+                request,
+                snapshot: self.snapshot_for_path(&path),
+                language: None,
+                position,
+                path: Some(path),
+                cancellation,
+            })
         });
+    }
+
+    pub(super) fn refresh_picker_buffer(&mut self, document: vex_core::DocumentId) {
+        let target = self
+            .picker
+            .active
+            .as_ref()
+            .and_then(|active| active.preview_target.as_ref());
+        let changed = match target {
+            Some(Target::Buffer(id)) => *id == document,
+            Some(Target::File(path)) | Some(Target::Symbol(vex_lsp::Location { path, .. })) => self
+                .snapshot_for_path(path)
+                .is_some_and(|snapshot| snapshot.id() == document),
+            None => false,
+        };
+        if changed {
+            self.picker.active.as_mut().unwrap().preview_target = None;
+            self.request_picker_preview();
+        }
     }
 
     fn close_picker(&mut self) {
@@ -176,6 +229,7 @@ impl App {
         }
         self.picker.preview_job = None;
         self.picker.symbol_job = None;
+        self.picker.buffer_job = None;
     }
 
     pub(crate) fn take_picker_job(&mut self) -> Option<FileJob> {
@@ -187,6 +241,46 @@ impl App {
 
     pub(crate) fn take_symbol_job(&mut self) -> Option<SymbolJob> {
         self.picker.symbol_job.take()
+    }
+
+    pub(crate) fn take_buffer_job(&mut self) -> Option<BufferJob> {
+        self.picker.buffer_job.take()
+    }
+
+    pub(crate) fn handle_buffer_result(&mut self, result: BufferResult) -> bool {
+        let Some(active) = &mut self.picker.active else {
+            return false;
+        };
+        if !matches!(active.source, Source::Buffers(_))
+            || active.session != result.session
+            || active.revision != result.revision
+            || active.cancellation.is_cancelled()
+        {
+            return false;
+        }
+        active.view.replace(
+            result
+                .items
+                .into_iter()
+                .map(|item| Item {
+                    entry: Arc::new(Entry {
+                        label: item.entry.label.clone(),
+                        value: Target::Buffer(item.entry.value),
+                    }),
+                    matched: item.matched,
+                })
+                .collect(),
+        );
+        active.view.matched = result.matched;
+        active.view.total = result.total;
+        active.view.pending = false;
+        if active.accept_pending {
+            active.accept_pending = false;
+            self.accept_picker();
+        } else {
+            self.request_picker_preview();
+        }
+        true
     }
 
     /// Early Enter waits for the current ranking, preserving later editing keys
@@ -283,7 +377,7 @@ impl App {
         };
         if active.session != result.session
             || active.preview_request != result.request
-            || active.preview_target.as_ref().map(Target::path) != Some(&result.path)
+            || active.preview_target.is_none()
             || active.preview_cancel.is_cancelled()
         {
             return false;
@@ -308,6 +402,12 @@ impl App {
         let result = match target {
             Target::File(path) => self.open_picked_file(path),
             Target::Symbol(location) => self.open_location(location),
+            Target::Buffer(id) => {
+                if id != self.editor.document().id() {
+                    self.record_jump();
+                }
+                self.open_buffer(id)
+            }
         };
         match result {
             Ok(()) => {
@@ -534,6 +634,85 @@ mod tests {
             assert!(!app.handle_picker_result(result));
         }
         assert!(app.picker.active.as_ref().unwrap().view.items.is_empty());
+    }
+
+    #[test]
+    fn buffer_picker_previews_unsaved_text_accepts_early_and_rejects_stale_results() {
+        let (directory, mut app) = fixture();
+        press(&mut app, "iUNSAVED ");
+        app.handle(key(KeyCode::Esc));
+        let original = app.editor.document().id();
+        app.open_window_file(&directory.path().join("beta.txt"))
+            .unwrap();
+        press(&mut app, " b");
+        let old = app.take_buffer_job().unwrap().run().unwrap();
+        press(&mut app, "alpha");
+        assert!(!app.handle_buffer_result(old));
+        let result = app.take_buffer_job().unwrap().run().unwrap();
+        assert!(app.handle_buffer_result(result));
+        let active = app.picker.active.as_ref().unwrap();
+        assert_eq!(active.view.items[0].entry.value, Target::Buffer(original));
+        assert!(active.view.items[0].entry.label.contains('+'));
+        let preview = app.take_preview_job().unwrap().run().unwrap();
+        assert!(preview.preview.text.contains("UNSAVED alpha"));
+        assert!(app.handle_preview_result(preview));
+        let stale = app
+            .buffer_preview(
+                original,
+                app.picker.active.as_ref().unwrap().session,
+                app.picker.active.as_ref().unwrap().preview_request,
+                Cancellation::default(),
+            )
+            .unwrap()
+            .run()
+            .unwrap();
+        app.refresh_picker_buffer(original);
+        assert!(!app.handle_preview_result(stale));
+        // A query change cancels the previous generation, including early Enter.
+        app.handle(key(KeyCode::Backspace));
+        app.handle(key(KeyCode::Enter));
+        assert!(app.input_waiting());
+        let result = app.take_buffer_job().unwrap().run().unwrap();
+        assert!(app.handle_buffer_result(result));
+        assert!(!app.input_waiting());
+        assert!(app.picker.active.is_none());
+        assert_eq!(app.editor.document().id(), original);
+        assert!(app.is_dirty());
+        press(&mut app, " b");
+        let job = app.take_buffer_job().unwrap();
+        app.handle(key(KeyCode::Esc));
+        assert!(job.run().is_none());
+        press(&mut app, " bdoes-not-exist");
+        app.handle(key(KeyCode::Enter));
+        let result = app.take_buffer_job().unwrap().run().unwrap();
+        app.handle_buffer_result(result);
+        assert!(!app.input_waiting());
+        assert!(
+            app.picker
+                .active
+                .as_ref()
+                .unwrap()
+                .view
+                .notice
+                .contains("No matching buffers")
+        );
+    }
+
+    #[test]
+    fn scratch_buffer_picker_uses_the_configured_language_and_has_no_disk_dependency() {
+        let mut app = App::from_document(vex_core::Document::from("fn main() {}\n"), (120, 24));
+        app.editor.set_language(Some(vex_editor::Language::Rust));
+        press(&mut app, " b");
+        let result = app.take_buffer_job().unwrap().run().unwrap();
+        app.handle_buffer_result(result);
+        let job = app.take_preview_job().unwrap();
+        assert!(job.path.is_none());
+        let result = job.run().unwrap();
+        assert_eq!(result.preview.text, "fn main() {}\n");
+        assert!(!result.preview.highlights.is_empty());
+        app.handle_preview_result(result);
+        app.handle(key(KeyCode::Enter));
+        assert!(app.picker.active.is_none());
     }
 
     #[test]

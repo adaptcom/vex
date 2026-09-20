@@ -340,8 +340,9 @@ impl FileWorker {
 pub(crate) struct PreviewJob {
     pub session: u64,
     pub request: u64,
-    pub path: PathBuf,
+    pub path: Option<PathBuf>,
     pub snapshot: Option<vex_core::Snapshot>,
+    pub language: Option<Language>,
     pub position: Option<vex_lsp::Position>,
     pub cancellation: Cancellation,
 }
@@ -349,7 +350,6 @@ pub(crate) struct PreviewJob {
 pub(crate) struct PreviewResult {
     pub session: u64,
     pub request: u64,
-    pub path: PathBuf,
     pub preview: Preview,
 }
 
@@ -358,30 +358,42 @@ impl PreviewJob {
         if self.cancellation.is_cancelled() {
             return None;
         }
-        let preview = if let Some(position) = self.position {
-            symbol_preview(&self.path, self.snapshot, position, &self.cancellation)
+        let preview = if self.snapshot.is_some() || self.position.is_some() {
+            snapshot_preview(
+                self.path.as_deref(),
+                self.snapshot,
+                self.language,
+                self.position.unwrap_or(vex_lsp::Position {
+                    line: 0,
+                    character: 0,
+                }),
+                &self.cancellation,
+            )
+        } else if let Some(path) = &self.path {
+            preview(path, &self.cancellation)
         } else {
-            preview(&self.path, &self.cancellation)
+            Err(io::Error::other("preview has no file or buffer"))
         }
         .unwrap_or_else(|error| Preview::plain(format!("Preview unavailable: {error}")));
         (!self.cancellation.is_cancelled()).then_some(PreviewResult {
             session: self.session,
             request: self.request,
-            path: self.path,
             preview,
         })
     }
 }
 
-fn symbol_preview(
-    path: &Path,
+fn snapshot_preview(
+    path: Option<&Path>,
     snapshot: Option<vex_core::Snapshot>,
+    language: Option<Language>,
     position: vex_lsp::Position,
     cancellation: &Cancellation,
 ) -> io::Result<Preview> {
     let snapshot = match snapshot {
         Some(snapshot) => snapshot,
         None => {
+            let path = path.ok_or_else(|| io::Error::other("preview has no file or buffer"))?;
             if !fs::symlink_metadata(path)?.is_file() {
                 return Err(io::Error::other("not a regular file"));
             }
@@ -408,9 +420,6 @@ fn symbol_preview(
             Document::from(text).snapshot()
         }
     };
-    if snapshot.text().len_bytes() > vex_lsp::MAX_DOCUMENT_BYTES {
-        return Err(io::Error::other("symbol preview exceeds 8 MiB"));
-    }
     let text = snapshot.text();
     let offset = vex_lsp::offset(text, position)
         .ok_or_else(|| io::Error::other("invalid symbol position"))?;
@@ -426,8 +435,11 @@ fn symbol_preview(
         focus_line: Some(line - first_line),
         ..Preview::default()
     };
+    // Large retained buffers still get a bounded text preview. Parsing remains
+    // capped and entirely on this worker, never on the input/drawing thread.
     if !cancellation.is_cancelled()
-        && let Some(language) = Language::detect(Some(path), text)
+        && text.len_bytes() <= vex_lsp::MAX_DOCUMENT_BYTES
+        && let Some(language) = language.or_else(|| Language::detect(path, text))
     {
         let mut syntax = Syntax::from_snapshot(language, snapshot.clone());
         preview.highlights = syntax
@@ -506,6 +518,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn large_buffer_preview_uses_a_bounded_slice_without_parsing_or_disk_reads() {
+        let document = Document::from("line\n".repeat(2_000_000).as_str());
+        let result = PreviewJob {
+            session: 1,
+            request: 1,
+            path: None,
+            snapshot: Some(document.snapshot()),
+            language: Some(Language::Rust),
+            position: Some(vex_lsp::Position {
+                line: 1_000_000,
+                character: 0,
+            }),
+            cancellation: Cancellation::default(),
+        }
+        .run()
+        .unwrap();
+        assert_eq!(result.preview.line_offset, Some(999_997));
+        assert!(result.preview.text.starts_with("line\n"));
+        assert!(result.preview.text.len() < PREVIEW_BYTES + 100);
+        assert!(result.preview.highlights.is_empty());
+    }
+    #[test]
     fn symbol_previews_follow_late_lines_preserve_multiline_syntax_and_use_snapshots() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("late.rs");
@@ -515,9 +549,10 @@ mod tests {
         );
         fs::write(&path, "saved contents differ").unwrap();
         let document = Document::from(source.as_str());
-        let result = symbol_preview(
-            &path,
+        let result = snapshot_preview(
+            Some(&path),
             Some(document.snapshot()),
+            None,
             vex_lsp::Position {
                 line: 301,
                 character: 3,
@@ -537,8 +572,9 @@ mod tests {
                     && span.highlight == vex_syntax::Highlight::Comment)
         );
         fs::write(&path, &source).unwrap();
-        let disk = symbol_preview(
-            &path,
+        let disk = snapshot_preview(
+            Some(&path),
+            None,
             None,
             vex_lsp::Position {
                 line: 301,
@@ -549,8 +585,9 @@ mod tests {
         .unwrap();
         assert_eq!(disk.text, result.text);
         assert!(
-            symbol_preview(
-                &path,
+            snapshot_preview(
+                Some(&path),
+                None,
                 None,
                 vex_lsp::Position {
                     line: 999,
@@ -765,8 +802,9 @@ mod tests {
                 session: 1,
                 request: 1,
                 snapshot: None,
+                language: None,
                 position: None,
-                path,
+                path: Some(path),
                 cancellation: cancel
             }
             .run()

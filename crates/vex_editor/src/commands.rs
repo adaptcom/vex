@@ -574,6 +574,43 @@ commands! {
         Ok(())
     }
 
+    /// Open a fuzzy picker of loaded buffers, including hidden and unsaved buffers.
+    fn buffer_picker(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.application_action = Some(crate::ApplicationAction::BufferPicker);
+        Ok(())
+    }
+
+    /// Switch to the last buffer accessed in this pane, restoring its view.
+    fn goto_last_accessed_file(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Buffer(crate::BufferAction::LastAccessed, 1));
+        Ok(())
+    }
+
+    /// Switch to the last other buffer modified in this pane.
+    fn goto_last_modified_file(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Buffer(crate::BufferAction::LastModified, 1));
+        Ok(())
+    }
+
+    /// Switch to the next loaded buffer in opening order, wrapping; accepts a count.
+    fn goto_next_buffer(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Buffer(crate::BufferAction::Next, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Switch to the previous loaded buffer in opening order, wrapping; accepts a count.
+    fn goto_previous_buffer(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Buffer(crate::BufferAction::Previous, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Open filenames in the selections in the current pane. Paths are relative to the current file; earlier buffers remain loaded.
+    fn goto_file(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Buffer(crate::BufferAction::OpenSelected, 1));
+        Ok(())
+    }
+
     /// Open the repository status view with expandable staged and unstaged diffs.
     fn git_status(ctx) {
         ctx.editor.finish_undo_group();

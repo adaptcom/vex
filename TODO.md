@@ -23,7 +23,7 @@ selections, and measure operations that could affect input latency.
    and accumulating matches with `n`/`N` in select mode. `K` is reserved for
    selection filtering; hover uses `<space>k`. `C` now copies selections to
    following lines, with counts and cancellable background scans.
-6. [ ] Buffer switching: retain ordinary buffers without visible panes, then add
+6. [x] Buffer switching: retain ordinary buffers without visible panes, then add
    `<space>b`, `ga`, `gn`/`gp`, and `gm`. Add `gf` to open selected paths in the
    current pane. Preserve unsaved text, undo history, and per-view selections
    when switching files.

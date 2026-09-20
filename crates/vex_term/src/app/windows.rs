@@ -15,8 +15,8 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
-use vex_core::DocumentId;
-use vex_editor::{Editor, Language, ViewId, WindowAction};
+use vex_core::{DocumentId, Revision};
+use vex_editor::{BufferAction, Editor, Language, ViewId, WindowAction};
 
 enum Content {
     Document,
@@ -36,6 +36,8 @@ struct Pane {
     view: ViewId,
     viewport: Viewport,
     saved: HashMap<DocumentId, SavedView>,
+    last_accessed: Option<DocumentId>,
+    last_modified: [Option<DocumentId>; 2],
 }
 
 struct Buffer {
@@ -52,7 +54,12 @@ enum Prepared {
 pub(super) struct State {
     layout: Layout,
     panes: BTreeMap<WindowId, Pane>,
-    buffers: HashMap<DocumentId, Buffer>,
+    // IDs increase in opening order. Successor/predecessor lookup avoids
+    // sorting the full buffer catalog for every gn/gp.
+    buffers: BTreeMap<DocumentId, Buffer>,
+    accessed: HashMap<DocumentId, u64>,
+    access_clock: u64,
+    observed_revision: Revision,
     frame: Frame,
     syntax_documents: Vec<DocumentId>,
 }
@@ -69,9 +76,14 @@ impl State {
                     view: editor.active_view(),
                     viewport: Viewport::default(),
                     saved: HashMap::new(),
+                    last_accessed: None,
+                    last_modified: [None; 2],
                 },
             )]),
-            buffers: HashMap::new(),
+            buffers: BTreeMap::new(),
+            accessed: HashMap::from([(editor.document().id(), 0)]),
+            access_clock: 0,
+            observed_revision: editor.document().revision(),
             frame: Frame::default(),
             syntax_documents: Vec::new(),
         }
@@ -411,6 +423,7 @@ impl App {
     }
 
     fn focus_window(&mut self, id: WindowId) {
+        self.observe_buffer_revision();
         self.remember_viewport();
         self.dismiss_language_help();
         self.editor.finish_undo_group();
@@ -428,6 +441,7 @@ impl App {
         assert!(self.editor.focus_view(view));
         self.viewport = viewport;
         self.windows.layout.active = id;
+        self.record_buffer_access();
         self.keys.cancel();
         self.git_write.prefix = None;
         self.git_write.status_prefix = None;
@@ -467,6 +481,7 @@ impl App {
             return Ok(());
         }
         self.dismiss_language_help();
+        self.observe_buffer_revision();
         self.editor.finish_undo_group();
         let window = self.windows.layout.active;
         let old_id = self.editor.document().id();
@@ -517,6 +532,8 @@ impl App {
         pane.document = self.editor.document().id();
         pane.view = self.editor.active_view();
         pane.viewport = viewport;
+        pane.last_accessed = Some(old_id);
+        self.record_buffer_access();
         self.keys.cancel();
         self.prompt = None;
         Ok(())
@@ -534,6 +551,136 @@ impl App {
         self.replace_window_buffer(Prepared::Existing(id))
     }
 
+    fn record_buffer_access(&mut self) {
+        self.windows.access_clock += 1;
+        self.windows
+            .accessed
+            .insert(self.editor.document().id(), self.windows.access_clock);
+        self.windows.observed_revision = self.editor.document().revision();
+    }
+
+    /// Constant-time bookkeeping; never inspects document contents or hidden buffers.
+    pub(super) fn observe_buffer_revision(&mut self) {
+        let revision = self.editor.document().revision();
+        if revision == self.windows.observed_revision {
+            return;
+        }
+        self.windows.observed_revision = revision;
+        let id = self.editor.document().id();
+        let history = &mut self
+            .windows
+            .panes
+            .get_mut(&self.windows.layout.active)
+            .unwrap()
+            .last_modified;
+        if history[0] != Some(id) {
+            *history = [Some(id), history[0]];
+        }
+    }
+
+    pub(super) fn buffer_action(&mut self, action: BufferAction, count: usize) -> io::Result<()> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        self.observe_buffer_revision();
+        let current = self.editor.document().id();
+        let pane = &self.windows.panes[&self.windows.layout.active];
+        let id = match action {
+            BufferAction::OpenSelected => return self.open_selected_paths(None),
+            BufferAction::LastAccessed => pane
+                .last_accessed
+                .ok_or_else(|| io::Error::other("no last accessed buffer"))?,
+            BufferAction::LastModified => pane
+                .last_modified
+                .into_iter()
+                .flatten()
+                .find(|&id| id != current)
+                .ok_or_else(|| io::Error::other("no other modified buffer in this pane"))?,
+            BufferAction::Next | BufferAction::Previous => {
+                let count = count % (self.windows.buffers.len() + 1);
+                if count == 0 {
+                    return Ok(());
+                }
+                let before = self.windows.buffers.range(..current).map(|(&id, _)| id);
+                let after = self
+                    .windows
+                    .buffers
+                    .range((Excluded(current), Unbounded))
+                    .map(|(&id, _)| id);
+                if action == BufferAction::Next {
+                    after.chain(before).nth(count - 1).unwrap()
+                } else {
+                    before.rev().chain(after.rev()).nth(count - 1).unwrap()
+                }
+            }
+        };
+        self.open_buffer(id)
+    }
+
+    /// Explicitly release a document in every pane. Pane closing only hides it.
+    pub(super) fn close_buffer(&mut self, force: bool) -> io::Result<()> {
+        let closing = self.editor.document().id();
+        if self.is_dirty() && !force {
+            return Err(io::Error::other(
+                "unsaved changes; save the buffer or use :bc! to discard",
+            ));
+        }
+        if self.git_write.drafts.contains_key(&closing) {
+            self.check_git_writes_finished()?;
+        }
+        let active = self.windows.layout.active;
+        let replacement = self.windows.panes[&active]
+            .last_accessed
+            .filter(|id| self.windows.buffers.contains_key(id))
+            .or_else(|| self.windows.buffers.keys().next().copied());
+        let prepared = if let Some(id) = replacement {
+            Prepared::Existing(id)
+        } else {
+            let document = vex_core::Document::default();
+            let files = FileState::scratch(&document);
+            let mut editor = Editor::with_yank_register(document, self.editor.yank_register());
+            editor.set_background_search(true);
+            editor.set_background_syntax(true);
+            Prepared::New(Box::new(Buffer {
+                editor,
+                files,
+                automatic_language: true,
+            }))
+        };
+        self.replace_window_buffer(prepared)?;
+        let replacement = self.editor.document().id();
+        let other_panes: Vec<_> = self
+            .windows
+            .panes
+            .iter()
+            .filter(|(_, pane)| pane.document == closing)
+            .map(|(&id, _)| id)
+            .collect();
+        for id in other_panes {
+            self.focus_window(id);
+            let content = std::mem::replace(
+                &mut self.windows.panes.get_mut(&id).unwrap().content,
+                Content::Document,
+            );
+            self.open_buffer(replacement)?;
+            self.windows.panes.get_mut(&id).unwrap().content = content;
+        }
+        self.focus_window(active);
+        for pane in self.windows.panes.values_mut() {
+            pane.saved.remove(&closing);
+            if pane.last_accessed == Some(closing) {
+                pane.last_accessed = None;
+            }
+            for modified in &mut pane.last_modified {
+                if *modified == Some(closing) {
+                    *modified = None;
+                }
+            }
+        }
+        self.windows.buffers.remove(&closing);
+        self.windows.accessed.remove(&closing);
+        self.git_write.drafts.remove(&closing);
+        Ok(())
+    }
+
     pub(super) fn snapshot_for_path(&self, path: &Path) -> Option<vex_core::Snapshot> {
         if self.files.target() == Some(path) {
             return Some(self.editor.document().snapshot());
@@ -543,6 +690,75 @@ impl App {
             .values()
             .find(|buffer| buffer.files.target() == Some(path))
             .map(|buffer| buffer.editor.document().snapshot())
+    }
+
+    pub(super) fn buffer_catalog(&self) -> std::sync::Arc<[crate::picker::buffers::CatalogEntry]> {
+        use crate::picker::{Entry, buffers::CatalogEntry};
+        use std::sync::Arc;
+        let current = self.editor.document().id();
+        std::iter::once((&self.editor, &self.files))
+            .chain(
+                self.windows
+                    .buffers
+                    .values()
+                    .map(|buffer| (&buffer.editor, &buffer.files)),
+            )
+            .map(|(editor, files)| {
+                let id = editor.document().id();
+                let mut label = self.commit_title(id).unwrap_or_else(|| {
+                    files
+                        .path()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "[scratch]".into())
+                });
+                let dirty = files.is_dirty(editor.document());
+                if dirty || id == current {
+                    label.push_str("  [");
+                    if id == current {
+                        label.push('*');
+                    }
+                    if dirty {
+                        label.push('+');
+                    }
+                    label.push(']');
+                }
+                CatalogEntry {
+                    entry: Arc::new(Entry { label, value: id }),
+                    accessed: self.windows.accessed[&id],
+                }
+            })
+            .collect()
+    }
+
+    pub(super) fn buffer_preview(
+        &self,
+        id: DocumentId,
+        session: u64,
+        request: u64,
+        cancellation: vex_editor::background::Cancellation,
+    ) -> Option<crate::picker::files::PreviewJob> {
+        let (editor, files) = if id == self.editor.document().id() {
+            (&self.editor, &self.files)
+        } else {
+            let buffer = self.windows.buffers.get(&id)?;
+            (&buffer.editor, &buffer.files)
+        };
+        let line = editor
+            .document()
+            .text()
+            .char_to_line(editor.selections().primary().head.0);
+        Some(crate::picker::files::PreviewJob {
+            session,
+            request,
+            cancellation,
+            path: files.target().map(Path::to_path_buf),
+            snapshot: Some(editor.document().snapshot()),
+            language: editor.language(),
+            position: Some(vex_lsp::Position {
+                line: line.try_into().ok()?,
+                character: 0,
+            }),
+        })
     }
 
     pub(super) fn open_window_definition(
@@ -570,6 +786,8 @@ impl App {
     }
 
     fn split_window(&mut self, axis: Axis) -> io::Result<()> {
+        self.observe_buffer_revision();
+        let last_modified = self.windows.panes[&self.windows.layout.active].last_modified;
         let id = self.windows.layout.split(axis, self.window_area())?;
         let view = self.editor.duplicate_view();
         self.windows.panes.insert(
@@ -580,6 +798,8 @@ impl App {
                 view,
                 viewport: self.viewport,
                 saved: HashMap::new(),
+                last_accessed: None,
+                last_modified,
             },
         );
         self.focus_window(id);
@@ -754,19 +974,28 @@ impl App {
     }
 
     fn open_selected_files(&mut self, axis: Axis) -> io::Result<()> {
+        self.open_selected_paths(Some(axis))
+    }
+
+    fn open_selected_paths(&mut self, axis: Option<Axis>) -> io::Result<()> {
         let paths = self.selected_paths()?;
         // Validate all splits and file loads before changing the current layout.
         let mut proposed = self.windows.layout.clone();
         let mut prepared = Vec::new();
         for path in paths {
-            proposed.active = proposed.split(axis, self.window_area())?;
+            if let Some(axis) = axis {
+                proposed.active = proposed.split(axis, self.window_area())?;
+            }
             if !std::fs::metadata(&path)?.is_file() {
                 return Err(io::Error::other("selected path is not a regular file"));
             }
             prepared.push(self.prepare_file(&path)?);
         }
+        self.record_jump();
         for buffer in prepared {
-            self.split_window(axis)?;
+            if let Some(axis) = axis {
+                self.split_window(axis)?;
+            }
             // Selections may refer to the same file through different aliases.
             let buffer = match buffer {
                 Prepared::New(buffer) => {
@@ -1283,6 +1512,168 @@ mod tests {
         app.open_window_file(&b).unwrap();
         app.open_window_file(&a).unwrap();
         assert_eq!(app.editor.selections(), &second);
+    }
+
+    #[test]
+    fn buffer_navigation_cycles_counts_and_tracks_each_panes_edits() {
+        let directory = tempfile::tempdir().unwrap();
+        let b = directory.path().join("b.txt");
+        let c = directory.path().join("c.txt");
+        std::fs::write(&b, "beta").unwrap();
+        std::fs::write(&c, "gamma").unwrap();
+        let mut app = App::from_document(Document::from("alpha"), (100, 24));
+        let a = app.editor.document().id();
+        press(&mut app, "iX");
+        key(&mut app, KeyCode::Esc);
+        app.open_window_file(&b).unwrap();
+        let b_id = app.editor.document().id();
+        press(&mut app, "iY");
+        key(&mut app, KeyCode::Esc);
+        app.open_window_file(&c).unwrap();
+        let c_id = app.editor.document().id();
+        for (keys, expected) in [
+            ("ga", b_id),
+            ("ga", c_id),
+            ("2gp", a),
+            ("5gn", c_id),
+            ("gm", b_id),
+            ("gm", a),
+            ("gm", b_id),
+        ] {
+            press(&mut app, keys);
+            assert_eq!(app.editor.document().id(), expected, "{keys}");
+            assert!(!app.error, "{}", app.message);
+        }
+        app.buffer_action(BufferAction::Next, usize::MAX).unwrap();
+        assert_eq!(app.editor.document().id(), b_id); // usize::MAX is divisible by 3.
+        app.execute("vsplit").unwrap();
+        app.open_window_file(&c).unwrap();
+        press(&mut app, "iZ");
+        key(&mut app, KeyCode::Esc);
+        app.execute("jump_view_left").unwrap();
+        press(&mut app, "gm");
+        assert_eq!(app.editor.document().id(), a); // Other pane's edit did not change gm.
+        assert_eq!(app.editor.document().text(), "Xalpha");
+        press(&mut app, "u");
+        assert_eq!(app.editor.document().text(), "alpha");
+        press(&mut app, "vgn"); // Buffer bindings also work in select mode.
+        assert_eq!(app.editor.document().id(), b_id);
+    }
+
+    #[test]
+    fn selected_files_open_in_the_current_pane_and_can_jump_to_hidden_scratch() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target.txt");
+        std::fs::write(&target, "target").unwrap();
+        let mut app = App::from_document(Document::from(target.to_str().unwrap()), (80, 24));
+        let scratch = app.editor.document().id();
+        press(&mut app, "gf");
+        assert_eq!(app.windows.panes.len(), 1);
+        assert_eq!(app.editor.document().text(), "target");
+        app.execute("jump_back").unwrap();
+        app.take_lsp_update();
+        assert_eq!(app.editor.document().id(), scratch);
+        press(&mut app, "g");
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.editor.document().id(), scratch);
+    }
+
+    #[test]
+    fn edits_map_a_hidden_saved_view_before_it_is_restored() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("other.txt");
+        std::fs::write(&path, "other").unwrap();
+        let mut app = App::from_document(Document::from("abc\ndef\n"), (100, 24));
+        let scratch = app.editor.document().id();
+        app.execute("vsplit").unwrap();
+        press(&mut app, "jl");
+        assert_eq!(app.editor.selections().primary().start(), CharOffset(5));
+        app.open_window_file(&path).unwrap();
+        app.execute("jump_view_left").unwrap();
+        press(&mut app, "iXX");
+        key(&mut app, KeyCode::Esc);
+        app.execute("jump_view_right").unwrap();
+        press(&mut app, "ga");
+        assert_eq!(app.editor.document().id(), scratch);
+        assert_eq!(app.editor.selections().primary().start(), CharOffset(7));
+        assert_eq!(app.editor.document().text().char(7), 'e');
+    }
+
+    #[test]
+    fn goto_file_validates_all_paths_before_switching_and_retains_every_opened_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let origin = directory.path().join("origin.txt");
+        std::fs::write(&origin, "one.txt two.txt").unwrap();
+        std::fs::write(directory.path().join("one.txt"), "one").unwrap();
+        let mut app = App::open(Some(&origin), (100, 24)).unwrap();
+        let original = app.editor.document().id();
+        app.editor
+            .set_selections(
+                SelectionSet::new(
+                    vec![
+                        Selection::new(CharOffset(0), CharOffset(7)),
+                        Selection::new(CharOffset(8), CharOffset(15)),
+                    ],
+                    0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        press(&mut app, "gf");
+        assert!(app.error);
+        assert_eq!(app.editor.document().id(), original);
+        assert!(app.windows.buffers.is_empty());
+        std::fs::write(directory.path().join("two.txt"), "two").unwrap();
+        press(&mut app, "gf");
+        assert!(!app.error);
+        assert_eq!(app.editor.document().text(), "two");
+        assert_eq!(app.windows.panes.len(), 1);
+        assert_eq!(app.windows.buffers.len(), 2);
+        press(&mut app, "gp");
+        assert_eq!(app.editor.document().text(), "one");
+        press(&mut app, "gp");
+        assert_eq!(app.editor.document().id(), original);
+    }
+
+    #[test]
+    fn explicit_buffer_close_protects_edits_replaces_every_pane_and_releases_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("other.txt");
+        std::fs::write(&path, "other").unwrap();
+        let mut app = App::from_document(Document::from("scratch"), (100, 24));
+        let scratch = app.editor.document().id();
+        app.open_window_file(&path).unwrap();
+        let other = app.editor.document().id();
+        press(&mut app, "iX");
+        key(&mut app, KeyCode::Esc);
+        app.execute("vsplit").unwrap();
+        assert!(app.execute("bc").is_err());
+        assert_eq!(app.windows.panes.len(), 2);
+        app.execute("bc!").unwrap();
+        assert!(
+            app.windows
+                .panes
+                .values()
+                .all(|pane| pane.document == scratch)
+        );
+        assert!(app.windows.buffers.is_empty());
+        assert!(!app.windows.accessed.contains_key(&other));
+        assert!(
+            app.windows
+                .panes
+                .values()
+                .all(|pane| !pane.saved.contains_key(&other))
+        );
+        app.execute("bc").unwrap();
+        let new = app.editor.document().id();
+        assert_ne!(new, scratch);
+        assert_eq!(app.editor.document().text(), "");
+        assert!(app.windows.panes.values().all(|pane| pane.document == new));
+        assert!(app.windows.buffers.is_empty());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "other");
+        app.execute("bn").unwrap();
+        app.execute("bp").unwrap();
+        assert_eq!(app.editor.document().id(), new);
     }
 
     #[test]

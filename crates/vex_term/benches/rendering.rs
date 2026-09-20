@@ -234,11 +234,56 @@ fn background_syntax(c: &mut Criterion) {
     group.finish();
 }
 
+fn buffers(c: &mut Criterion) {
+    let mut group = c.benchmark_group("buffers");
+    for mib in [1usize, 100] {
+        for count in [2usize, 1000] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = App::from_document(
+                Document::from("line\n".repeat((mib << 20).div_ceil(5)).as_str()),
+                (120, 40),
+            );
+            for index in 1..count {
+                let path = directory.path().join(format!("{index}.txt"));
+                std::fs::write(&path, "small\n").unwrap();
+                app.execute(&format!("vsplit {}", path.display())).unwrap();
+                app.execute("only").unwrap();
+            }
+            app.execute("bn").unwrap(); // The initial large scratch buffer.
+            let label = format!("{mib}MiB_{count}_buffers");
+            // Both directions return to the same large document. Setup, initial
+            // reads, and initial viewport indexing are outside the measurement.
+            app.execute("bn").unwrap();
+            app.execute("bp").unwrap();
+            group.bench_function(BenchmarkId::new("next_previous", &label), |b| {
+                b.iter(|| {
+                    app.execute("bn").unwrap();
+                    app.execute("bp").unwrap();
+                    black_box(app.editor.document().id());
+                });
+            });
+            let mut renderer = Renderer::default();
+            paint(&mut app, &mut renderer, (120, 40));
+            let mut right = false;
+            group.bench_function(BenchmarkId::new("move_draw", &label), |b| {
+                b.iter(|| {
+                    app.editor
+                        .execute(if right { "move_right" } else { "move_left" }, 1)
+                        .unwrap();
+                    right = !right;
+                    black_box(paint(&mut app, &mut renderer, (120, 40)));
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = rendering, long_lines, rust_syntax, background_syntax
+    targets = rendering, long_lines, rust_syntax, background_syntax, buffers
 }
 criterion_main!(benches);

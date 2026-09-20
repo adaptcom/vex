@@ -66,9 +66,23 @@ def main():
             terminal.expect_screen(b"Xunique preview contents")
             terminal.send(b"\x0f")
             terminal.expect_screen(b"DIRTYoriginal")
+            terminal.resize(120, 20)
+            terminal.send(b"ga")
+            terminal.expect_screen(b"Xunique preview contents")
+            terminal.send(b" b")
+            terminal.expect_screen("Buffers ·".encode())
+            terminal.send(b"origin")
+            terminal.expect_screen(b"DIRTYoriginal")  # Unsaved preview from memory.
+            terminal.send(b"\riMORE")  # Acceptance must precede the queued edit.
+            terminal.leave_insert()
+            terminal.send(b":w\r")
+            terminal.expect_screen(b"wrote")
+            assert origin.read_text() == "DIRTMOREYoriginal document\n"
+            terminal.send(b"gm")
+            terminal.expect_screen(b"Xunique preview contents")
             terminal.send(b":q!\r")
             terminal.finish()
-        print("PASS: group hints, floating borders, visible original buffer, syntax preview, Unicode fuzzy query, resize, cancellation, early Enter/edit/save, jump back, dirty-buffer protection, terminal cleanup")
+        print("PASS: group hints, floating borders, syntax previews, Unicode fuzzy query, resize, cancellation, early acceptance/edit/save, hidden unsaved buffers, ga/gm, buffer picker, terminal cleanup")
 
 
 if __name__ == "__main__":
