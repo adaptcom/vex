@@ -40,6 +40,7 @@ protocol failures, and request errors leave editing and saving available.
 | `gr` / `:goto_reference` | Find references across files, including the declaration |
 | `Space-h` / `:select_references_to_symbol_under_cursor` | Select related occurrences in the current document |
 | `Space-r` / `:rename_symbol` | Rename the symbol across files through a prefilled prompt |
+| `Space-a` / `:code_action` | Choose and apply a language-server code action |
 | `Space-s` / `:symbol_picker` | Pick a symbol from the current document |
 | `Space-S` / `:workspace_symbol_picker` | Search symbols across the active server's workspace |
 | `Ctrl-o` / `:jump_backward` | Move backward through the current pane's jump history |
@@ -140,6 +141,36 @@ Preparation, server requests, and edit delivery preserve subsequent key order;
 resize and background events continue while waiting. Escape/Ctrl-c cancel when
 next in input order. The editable prompt does not block the event loop. Changing
 its original document, revision, mode, selection, or pane invalidates submission.
+
+## Code actions
+
+`Space-a` requests actions for the primary selection with the current overlapping
+server diagnostics. Quick fixes sort first, followed by refactoring categories;
+diagnostic fixes and preferred actions break ties while equal actions retain
+server order. Disabled actions are omitted. The cursor-anchored menu uses the same
+border, bold title, and grey selection as the other popups.
+
+Up/Down, Ctrl-p/Ctrl-n, or BackTab/Tab cycle actions. Ctrl-u/Ctrl-d and
+PageUp/PageDown move by half the visible rows. Enter applies the selected action;
+Escape/Ctrl-c dismiss. Other editing keys close the menu and dispatch normally.
+The first action is selected when the menu opens.
+
+Vex resolves the chosen action when the server supports resolution and its edit
+or command is missing. Opaque data is preserved. The server's literal edit is
+prepared and validated as one workspace batch before any accompanying command
+runs. That command sees the changed active and hidden buffers and may request
+further edit batches. Each batch has its own per-buffer undo step; an error in a
+later batch does not roll back an earlier applied batch. Changes remain unsaved.
+Cancelling before application or changing the request's origin rejects its reply.
+Cancelling or failing a literal edit also discards its accompanying command.
+
+Only short labels and opaque tickets cross to the menu. Raw action payloads stay
+on the LSP service, including when the menu closes. Lists are capped at 256
+entries and 8 MiB of retained JSON; titles at 256 characters. Edit parsing,
+resolution, JSON work, and workspace preparation run on workers. A replaced list,
+changed document revision, or restarted server invalidates old action tickets.
+Resource operations and confirmation-required annotations remain unsupported,
+as described under [workspace edits](workspace-edits.md).
 
 ## Completion
 
@@ -307,7 +338,7 @@ proportional to document size on the service thread. Definition/type/implementat
 reference destinations and workspace-edit files load on workers; some older
 symbol-jump paths still load synchronously.
 
-Signature help, formatting, code actions,
+Signature help, formatting,
 semantic tokens, multi-buffer server reuse, and configurable server settings are
 future work.
 
@@ -320,7 +351,7 @@ The popup caches wrapping until
 its available width changes, and redraw visits only visible rows. Unsupported
 or unusual Markdown may remain literal rather than matching a browser renderer.
 
-The command/application backend for code actions is available through
+The code-action menu uses the command/application backend through
 `App::execute_lsp_command`: advertised server commands can request validated edits
 across synchronized buffers. Ordered requests and replies preserve command
 completion, cancellation, and synchronization before `applied:true`. See

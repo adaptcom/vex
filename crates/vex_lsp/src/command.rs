@@ -11,6 +11,11 @@ pub struct ServerCommand {
 
 impl ServerCommand {
     pub(crate) fn params(&self, capabilities: &Value) -> Result<Value, String> {
+        self.validate(capabilities)?;
+        Ok(json!({"command":self.name.as_ref(),"arguments":self.arguments.as_ref()}))
+    }
+
+    pub(crate) fn validate(&self, capabilities: &Value) -> Result<(), String> {
         if self.name.is_empty() || self.name.len() > 4096 || self.name.chars().any(char::is_control)
         {
             return Err("invalid language server command name".into());
@@ -43,7 +48,7 @@ impl ServerCommand {
             },
         )
         .map_err(|error| error.to_string())?;
-        Ok(json!({"command":self.name.as_ref(),"arguments":self.arguments.as_ref()}))
+        Ok(())
     }
 }
 

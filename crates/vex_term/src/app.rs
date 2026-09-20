@@ -21,6 +21,7 @@ mod git;
 mod git_write;
 mod jumps;
 pub(crate) use jumps::{Job as JumpNavigationJob, Result as JumpNavigationResult};
+mod actions;
 mod language;
 mod navigation;
 pub(crate) use navigation::{Job as LocationNavigationJob, Result as LocationNavigationResult};
@@ -96,6 +97,7 @@ pub struct App {
     navigation: navigation::State,
     workspace: workspace::State,
     rename: rename::State,
+    actions: actions::State,
 }
 
 impl App {
@@ -139,6 +141,7 @@ impl App {
             navigation: navigation::State::default(),
             workspace: workspace::State::default(),
             rename: rename::State::default(),
+            actions: actions::State::default(),
         }
     }
 
@@ -281,6 +284,9 @@ impl App {
             return redraw;
         }
         if let Some(redraw) = self.handle_status_input(&event) {
+            return redraw;
+        }
+        if let Some(redraw) = self.handle_code_action_input(&event) {
             return redraw;
         }
         if let Some(redraw) = self.handle_completion_input(&event) {
@@ -560,6 +566,7 @@ impl App {
         let body_height = frame.height().saturating_sub(1 + reserved_bottom);
         self.paint_language(frame, body_height);
         self.paint_completion(frame, body_height);
+        self.paint_code_actions(frame, body_height);
         Ok(())
     }
 

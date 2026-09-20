@@ -156,10 +156,13 @@ impl App {
     }
 
     pub(super) fn language_waiting(&self) -> bool {
-        self.language
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.waiting)
+        self.language.command.is_some()
+            || self.actions.waiting()
+            || self
+                .language
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.waiting)
     }
 
     pub(super) fn dismiss_language_help(&mut self) {
@@ -199,6 +202,7 @@ impl App {
     pub(super) fn cancel_language_request(&mut self) {
         self.language.cancel();
         self.rename.clear();
+        self.actions.clear();
         self.language.command = None;
     }
 
@@ -215,6 +219,7 @@ impl App {
     /// Called after dispatch and drawing. Only shared snapshots and small
     /// metadata cross this boundary; JSON and UTF-16 work run on the service.
     pub fn take_lsp_update(&mut self) -> Option<vex_lsp::Update> {
+        self.invalidate_code_actions();
         self.invalidate_symbol_picker();
         self.invalidate_location_picker();
         self.poll_completion(Instant::now());
@@ -251,6 +256,7 @@ impl App {
         if identity_changed {
             self.language.cancel();
             self.rename.clear();
+            self.actions.clear();
             self.completion.clear();
             self.language.completion = None;
             self.language.epoch += 1;
@@ -307,12 +313,17 @@ impl App {
                 kind: self.prepare_rename_request(),
                 automatic: false,
             }),
+            Some(LanguageAction::CodeAction) => Some(super::completion::Request {
+                kind: self.prepare_code_actions_request(),
+                automatic: false,
+            }),
             Some(LanguageAction::Completion) => Some(super::completion::Request {
                 kind: RequestKind::Completion(CompletionTrigger::Invoked),
                 automatic: false,
             }),
             _ => self
                 .take_command_request()
+                .or_else(|| self.take_code_action_request())
                 .or_else(|| self.take_rename_request())
                 .or_else(|| self.take_symbol_request(Instant::now()))
                 .map(|kind| super::completion::Request {
@@ -357,6 +368,8 @@ impl App {
                             | RequestKind::DocumentHighlights
                             | RequestKind::PrepareRename { .. }
                             | RequestKind::Rename { .. }
+                            | RequestKind::CodeActions { .. }
+                            | RequestKind::ApplyCodeAction { .. }
                             | RequestKind::ExecuteCommand { .. }
                     ),
                 });
@@ -483,6 +496,8 @@ impl App {
                     Ok(Answer::Symbols(symbols)) => self.receive_symbols(symbols),
                     Ok(Answer::CompletionResolved(item)) => self.receive_resolved_completion(item),
                     Ok(Answer::RenamePrepared(name)) => self.receive_rename_preparation(name),
+                    Ok(Answer::CodeActions(actions)) => self.receive_code_actions(actions),
+                    Ok(Answer::CodeActionReady(action)) => self.receive_code_action_ready(action),
                     Ok(Answer::CommandExecuted) => {
                         self.message = "language server command completed".into()
                     }
@@ -498,6 +513,7 @@ impl App {
 
     fn fail_language_request(&mut self, error: String) {
         self.rename.clear();
+        self.actions.clear();
         if self.fail_symbol_picker(&error) {
             self.cancel_language_request();
             self.clear_message();

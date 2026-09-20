@@ -812,6 +812,15 @@ commands! {
         Ok(())
     }
 
+    /// Show language-server code actions for the primary selection.
+    /// The frontend resolves the selected action and applies its edits before
+    /// executing any accompanying server command.
+    fn code_action(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_language_action(crate::LanguageAction::CodeAction);
+        Ok(())
+    }
+
     /// Move to the next diagnostic, wrapping and honoring the repeat count.
     fn goto_next_diagnostic(ctx) {
         ctx.editor.finish_undo_group();

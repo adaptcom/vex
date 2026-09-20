@@ -73,6 +73,7 @@ and calls that existing dispatcher.
 | Space-f, Space-k | Open file picker / show hover |
 | Space-s, Space-S | Open document / workspace symbol picker |
 | Space-r | Rename the symbol at the primary cursor; edits remain unsaved in each affected buffer |
+| Space-a | Open the code-action menu; Enter applies, Escape cancels |
 | Space-g | Open the [repository status view](git-status.md) |
 | Ctrl-w, Space-w | Enter [window mode](windows.md) to split, focus, swap, and close panes |
 | Escape | Cancel a prefix/picker/prompt; otherwise enter normal mode |

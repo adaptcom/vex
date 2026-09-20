@@ -45,7 +45,8 @@ filename/shebang detection. See [syntax support and adding languages](docs/synta
 With the configured server on `PATH`, named files also get diagnostics, Space-k for
 Markdown hover (Ctrl-u/Ctrl-d scroll), `gd` / `gy` / `gi` for definitions, types, and implementations, `gr` for
 references, Space-h to select related occurrences in the document, and Space-r
-to rename a symbol across files. Rename preserves unsaved buffers and leaves
+to rename a symbol across files. Space-a opens the code-action menu for the
+primary selection. Rename and code actions preserve unsaved buffers and leave
 changes unsaved, with undo in each affected buffer. Use
 `Ctrl-o` to jump back and `]d` / `[d` to navigate diagnostics. See [language services and setup](docs/lsp.md).
 Tracked files show live Git gutter markers, including unsaved changes, with

@@ -1039,3 +1039,43 @@ the floating border, half-page scrolling, and dismissal.
 ```sh
 cargo test -p vex_term --release --locked benchmark_documentation_layout_and_redraw -- --ignored --nocapture
 ```
+
+## Code-action menu
+
+Code-action requests capture immutable buffer/view snapshots and send the primary
+selection to the LSP service. The service converts UTF-16 ranges, retains opaque
+server diagnostics, sorts actions, resolves the selected action, and decodes its
+edits. Raw action JSON stays in a service-owned catalog; menu entries carry only
+short titles and opaque tickets. Closing a menu cannot destroy that JSON on the
+input thread. The catalog retains at most 256 entries and 8 MiB of action JSON.
+
+A local release benchmark took 500 samples of `code_action` plus
+`take_lsp_update`, with three views of a single buffer. It excludes file opening,
+server processing, result delivery, cancellation, and destruction of the update.
+
+| Buffer | Selections per view | Median submission | Sample p95 |
+|---|---:|---:|---:|
+| 1 MiB | 1 | 0.750 µs | 1.042 µs |
+| 1 MiB | 1,000 | 2.792 µs | 3.000 µs |
+| 8 MiB | 1 | 0.583 µs | 0.625 µs |
+| 8 MiB | 1,000 | 2.083 µs | 2.209 µs |
+
+Another 500 samples used 256 labels, each containing 256 double-width characters,
+a 100×24 frame, and ten visible menu rows. Installing the menu and measuring label
+widths took 167.292 µs median / 176.791 µs p95. Cached redraw took 40.792 µs /
+44.916 µs. Closing took 0.667 µs / 0.834 µs. Label handles were retained by the
+fixture, so closing excludes freeing the final title allocations. Raw payloads
+are never held by the menu. These measurements exclude background parsing,
+frame reset, file drawing, ANSI encoding, and terminal output; they are local
+samples, not latency guarantees.
+
+Source tests exercise disabled actions, ordering, bounds, preserved opaque data,
+UTF-16 diagnostic ranges, obsolete tickets, menu input, and cancellation. A mock
+stdio server verifies literal edits precede commands, hidden unsaved buffers stay
+synchronized, failed edits suppress commands, and each batch is undoable. The
+real rust-analyzer PTY test applies a diagnostic quick fix and checks explicit
+saving and undo.
+
+```sh
+cargo test -p vex_term --release --locked benchmark_code_action_submission_and_menu -- --ignored --nocapture
+```

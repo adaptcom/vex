@@ -1,7 +1,9 @@
 //! Language servers over stdio, with a small futures executor and immutable editor
 //! snapshots. The UI submits coalesced state and receives typed, ordered events.
 
+mod actions;
 mod apply;
+pub use actions::{ActionEdit, CodeAction, CodeActions};
 mod documentation;
 pub use apply::{Applied, ApplyReply};
 pub use vex_syntax::markup::Document as Documentation;
@@ -108,6 +110,14 @@ pub enum RequestKind {
         name: String,
         documents: Arc<[WorkspaceDocument]>,
     },
+    CodeActions {
+        selection: Selection,
+        documents: Arc<[WorkspaceDocument]>,
+    },
+    ApplyCodeAction {
+        action: CodeAction,
+        documents: Arc<[WorkspaceDocument]>,
+    },
     ExecuteCommand {
         command: ServerCommand,
         documents: Arc<[WorkspaceDocument]>,
@@ -146,6 +156,8 @@ pub enum Answer {
     Completion(Completions),
     CompletionResolved(CompletionItem),
     RenamePrepared(String),
+    CodeActions(CodeActions),
+    CodeActionReady(ActionEdit),
     CommandExecuted,
     WorkspaceEdit {
         edit: workspace_edit::WorkspaceEdit,
@@ -518,6 +530,7 @@ async fn session(
                 "references":{},
                 "documentHighlight":{},
                 "rename":{"prepareSupport":true},
+                "codeAction":{"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["","quickfix","refactor","refactor.extract","refactor.inline","refactor.rewrite","source","source.organizeImports","source.fixAll"]}},"isPreferredSupport":true,"disabledSupport":true,"dataSupport":true,"resolveSupport":{"properties":["edit","command"]}},
                 "documentSymbol":{"hierarchicalDocumentSymbolSupport":true,"symbolKind":{"valueSet":(1..=26).collect::<Vec<_>>()}},
                 "completion":{"contextSupport":true,"completionItem":{
                     "snippetSupport":false,"insertReplaceSupport":true,
@@ -589,6 +602,8 @@ async fn session(
         }}))?;
         opened = true;
         let mut positions = protocol::Positions::new(document.snapshot.text());
+        let mut action_diagnostics = actions::Diagnostics::default();
+        let mut code_actions = actions::Catalog::default();
         emit(Event::Capabilities { epoch, completion: CompletionOptions::from_capabilities(&capabilities) });
         emit(Event::Status { epoch, message: format!("{} ready", server.command), failed: false });
         if let Some(update) = inbox.take_workspace(epoch) {
@@ -597,7 +612,7 @@ async fn session(
                 |cx| inbox.session_interrupted(cx, epoch)).await?;
         }
         if let Some(request) = initial_request.take() {
-            start_request(&mut transport, executor, &capabilities, &uri, &document, version, &root, &mut workspace, inbox, request, &mut pending, emit).await;
+            start_request(&mut transport, executor, &capabilities, &uri, &document, version, &root, &mut workspace, &action_diagnostics, &code_actions, inbox, request, &mut pending, emit).await;
         }
         loop {
             let input = poll_fn(|cx| {
@@ -701,7 +716,7 @@ async fn session(
                     }
                     document = newer;
                     if let Some(request) = update.request {
-                        start_request(&mut transport, executor, &capabilities, &uri, &document, version, &root, &mut workspace, inbox, request, &mut pending, emit).await;
+                        start_request(&mut transport, executor, &capabilities, &uri, &document, version, &root, &mut workspace, &action_diagnostics, &code_actions, inbox, request, &mut pending, emit).await;
                     }
                 }
                 Input::Answer(result) => {
@@ -718,12 +733,14 @@ async fn session(
                             RequestKind::ResolveCompletion(item) => completion::resolve(&item, value, document.snapshot.text(), request.position).map(Answer::CompletionResolved),
                             RequestKind::PrepareRename { selection, .. } => rename::placeholder(&value, &document.snapshot, selection, request.position, &positions, &request.cancellation).map(Answer::RenamePrepared),
                             RequestKind::Rename { .. } => workspace_edit::parse(&value, &request.cancellation).map(|edit| Answer::WorkspaceEdit { edit, versions }),
+                            RequestKind::CodeActions { .. } => code_actions.replace(value, &document, &request.cancellation).map(Answer::CodeActions),
+                            RequestKind::ApplyCodeAction { action, .. } => code_actions.ready(&action, &document, Some(value), &capabilities, versions, &request.cancellation).map(Answer::CodeActionReady),
                             RequestKind::ExecuteCommand { .. } => edit_failure.map_or(Ok(Answer::CommandExecuted), |error| Err(format!("workspace edit failed: {error}"))),
                         });
                         emit(Event::Answer { epoch, revision: document.snapshot.revision(), id: request.id, result });
                     }
                 }
-                Input::Wire(value) => {
+                Input::Wire(mut value) => {
                     if transport.receive_response(&value) { continue }
                     if value["method"] == "workspace/applyEdit" {
                         let request = pending.as_ref().map_or(0, |pending| pending.request.id);
@@ -744,16 +761,7 @@ async fn session(
                         // TypeScript) omit versions; those diagnostics refer to
                         // our latest synchronized snapshot on a best-effort basis.
                         if params["version"].as_i64().is_some_and(|v| v != i64::from(version)) { continue }
-                        let diagnostics = params["diagnostics"].as_array().into_iter().flatten().take(512)
-                            .filter_map(|value| serde_json::from_value::<protocol::Diagnostic>(value.clone()).ok())
-                            .filter_map(|diagnostic| {
-                                let start = positions.offset(document.snapshot.text(), diagnostic.range.start)?;
-                                let end = positions.offset(document.snapshot.text(), diagnostic.range.end)?;
-                                (end >= start).then(|| Diagnostic {
-                                    start, end, line: document.snapshot.text().char_to_line(start.0),
-                                    severity: diagnostic.severity.unwrap_or(1), message: diagnostic.message.chars().take(4096).collect(),
-                                })
-                            }).collect();
+                        let diagnostics = action_diagnostics.update(value["params"]["diagnostics"].take(), &document, &positions, version);
                         emit(Event::Diagnostics { epoch, revision: document.snapshot.revision(), diagnostics });
                     }
                 }
@@ -879,6 +887,8 @@ async fn start_request(
     version: i32,
     root: &Path,
     workspace: &mut workspace::Workspace,
+    diagnostics: &actions::Diagnostics,
+    code_actions: &actions::Catalog,
     inbox: &Inbox,
     request: Request,
     pending: &mut Option<PendingRequest>,
@@ -902,6 +912,8 @@ async fn start_request(
         RequestKind::ResolveCompletion(_) => ("completionItem/resolve", "completionProvider"),
         RequestKind::PrepareRename { .. } => ("textDocument/prepareRename", "renameProvider"),
         RequestKind::Rename { .. } => ("textDocument/rename", "renameProvider"),
+        RequestKind::CodeActions { .. } => ("textDocument/codeAction", "codeActionProvider"),
+        RequestKind::ApplyCodeAction { .. } => ("codeAction/resolve", "codeActionProvider"),
         RequestKind::ExecuteCommand { .. } => {
             ("workspace/executeCommand", "executeCommandProvider")
         }
@@ -916,6 +928,9 @@ async fn start_request(
         } else {
             None
         };
+        if let RequestKind::ApplyCodeAction { action, .. } = &request.kind {
+            code_actions.validate(action, document)?;
+        }
         if let RequestKind::Rename { name, .. } = &request.kind {
             rename::name(name)?;
             if name.is_empty() {
@@ -924,6 +939,8 @@ async fn start_request(
         }
         if let RequestKind::PrepareRename { documents, .. }
         | RequestKind::Rename { documents, .. }
+        | RequestKind::CodeActions { documents, .. }
+        | RequestKind::ApplyCodeAction { documents, .. }
         | RequestKind::ExecuteCommand { documents, .. } = &request.kind
         {
             workspace::validate_origin(document, documents)?;
@@ -938,6 +955,25 @@ async fn start_request(
                     |cx| inbox.interrupted(cx, document, &request.cancellation),
                 )
                 .await?;
+        }
+        if let RequestKind::ApplyCodeAction { action, .. } = &request.kind
+            && !code_actions.needs_resolution(action, document, capabilities)?
+        {
+            let result = code_actions.ready(
+                action,
+                document,
+                None,
+                capabilities,
+                std::mem::take(&mut versions),
+                &request.cancellation,
+            )?;
+            emit(Event::Answer {
+                epoch: document.epoch,
+                revision: document.snapshot.revision(),
+                id: request.id,
+                result: Ok(Answer::CodeActionReady(result)),
+            });
+            return Ok(None);
         }
         if let RequestKind::PrepareRename { selection, .. } = &request.kind
             && capabilities["renameProvider"]["prepareProvider"] != true
@@ -961,6 +997,10 @@ async fn start_request(
             RequestKind::WorkspaceSymbols(query) => json!({"query":query}),
             RequestKind::ResolveCompletion(item) => item.raw.clone(),
             RequestKind::ExecuteCommand { .. } => command_params.unwrap(),
+            RequestKind::CodeActions { selection, .. } => {
+                diagnostics.params(uri, document, version, *selection, &request.cancellation)?
+            }
+            RequestKind::ApplyCodeAction { action, .. } => code_actions.params(action, document)?,
             kind => {
                 let position = position(document.snapshot.text(), request.position)
                     .ok_or("invalid request position")?;

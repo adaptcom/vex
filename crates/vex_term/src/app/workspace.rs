@@ -74,6 +74,7 @@ struct Pending {
     context: Context,
     cancellation: Cancellation,
     server: Option<ServerEdit>,
+    command: Option<vex_lsp::ServerCommand>,
 }
 
 struct ServerEdit {
@@ -233,7 +234,17 @@ impl App {
         edit: WorkspaceEdit,
         versions: Vec<SynchronizedDocument>,
     ) -> io::Result<()> {
-        self.queue_workspace_edit(context, edit, versions, None)
+        self.queue_workspace_edit(context, edit, versions, None, None)
+    }
+
+    pub(super) fn begin_code_action_edit(
+        &mut self,
+        context: Context,
+        edit: WorkspaceEdit,
+        versions: Vec<SynchronizedDocument>,
+        command: Option<vex_lsp::ServerCommand>,
+    ) -> io::Result<()> {
+        self.queue_workspace_edit(context, edit, versions, None, command)
     }
 
     fn queue_workspace_edit(
@@ -242,6 +253,7 @@ impl App {
         edit: WorkspaceEdit,
         versions: Vec<SynchronizedDocument>,
         server: Option<ServerEdit>,
+        command: Option<vex_lsp::ServerCommand>,
     ) -> io::Result<()> {
         if !context.current(self) {
             return Err(io::Error::other("workspace edit origin changed"));
@@ -261,6 +273,7 @@ impl App {
             context: context.clone(),
             cancellation: cancellation.clone(),
             server,
+            command,
         });
         self.workspace.job = Some(Job {
             context,
@@ -311,6 +324,7 @@ impl App {
                 request,
                 reply,
             }),
+            None,
         );
         self.command_waiting(true);
         if let Err(error) = result {
@@ -363,6 +377,7 @@ impl App {
             context,
             cancellation,
             mut server,
+            command,
         } = self.workspace.pending.take().unwrap();
         if cancellation.is_cancelled() || !context.current(self) {
             cancellation.cancel();
@@ -399,6 +414,11 @@ impl App {
                 if let Some(server) = server {
                     let applied = self.acknowledge_command_edit();
                     server.reply.finish(Ok(applied));
+                }
+                if let Some(command) = command
+                    && let Err(error) = self.execute_lsp_command(command)
+                {
+                    self.fail(error);
                 }
             }
             Err(error) => {
@@ -573,7 +593,7 @@ mod tests {
 }
 
 #[cfg(all(test, unix))]
-mod server_tests {
+pub(super) mod server_tests {
     use super::*;
     use crossterm::event::{Event as TerminalEvent, KeyCode, KeyEvent, KeyModifiers};
     use std::{
@@ -597,10 +617,10 @@ def send(value):
     body = json.dumps(value).encode()
     sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n' % len(body)).encode() + body)
     sys.stdout.buffer.flush()
-def edits(name, advance=0):
+def edits(name, advance=0, old='foo'):
     changes = []
     for uri, doc in documents.items():
-        at = doc['text'].index('foo'); prefix = doc['text'][:at]
+        at = doc['text'].index(old); prefix = doc['text'][:at]
         line = prefix.count('\n'); column = len(prefix.split('\n')[-1].encode('utf-16-le')) // 2
         changes.append({'textDocument':{'uri':uri,'version':doc['version'] + advance},'edits':[{'range':{'start':{'line':line,'character':column},'end':{'line':line,'character':column+3}},'newText':name}]})
     return {'documentChanges':changes}
@@ -618,7 +638,7 @@ while True:
     method = value.get('method'); params = value.get('params', {})
     if method == 'initialize':
         assert params['capabilities']['workspace']['applyEdit']
-        send({'id':value['id'],'result':{'capabilities':{'textDocumentSync':2,'hoverProvider':True,'executeCommandProvider':{'commands':['test.early','test.multiple','test.bad','test.resource','test.hold']}}}})
+        send({'id':value['id'],'result':{'capabilities':{'textDocumentSync':2,'hoverProvider':True,'codeActionProvider':{'resolveProvider':True},'executeCommandProvider':{'commands':['test.action','test.early','test.multiple','test.bad','test.resource','test.hold']}}}})
     elif method == 'textDocument/didOpen':
         doc = params['textDocument']; documents[doc['uri']] = doc
     elif method == 'textDocument/didChange':
@@ -628,9 +648,32 @@ while True:
         log.write('CHANGE ' + str(doc['version']) + '\n')
     elif method == 'textDocument/didClose': documents.pop(params['textDocument']['uri'])
     elif method == 'textDocument/hover': send({'id':value['id'],'result':{'contents':'|'.join(doc['text'] for doc in documents.values())}})
+    elif method == 'textDocument/codeAction':
+        assert params['context']['triggerKind'] == 1
+        assert len(documents) == 2
+        assert any('// unsaved' in doc['text'] for doc in documents.values())
+        actions = [
+            {'title':'Resolve and apply', 'kind':'quickfix', 'isPreferred':True, 'data':{'opaque':[17,'kept']}},
+            {'title':'Disabled', 'kind':'quickfix', 'disabled':{'reason':'unavailable'}},
+            {'title':'Literal edit', 'kind':'refactor', 'edit':edits('bar'), 'command':{'title':'After edit','command':'test.action'}},
+            {'title':'Bad version', 'edit':edits('bar',99), 'command':{'title':'Never execute','command':'test.action'}},
+            {'title':'Command only', 'command':'test.early'}
+        ]
+        actions.extend({'title':'Action %02d' % i, 'command':'test.early'} for i in range(24))
+        send({'id':value['id'],'result':actions})
+    elif method == 'codeAction/resolve':
+        assert params['data'] == {'opaque':[17,'kept']}
+        params['edit'] = edits('bar')
+        params['command'] = {'title':'After edit', 'command':'test.action'}
+        log.write('RESOLVE\n')
+        send({'id':value['id'],'result':params})
     elif method == 'workspace/executeCommand':
         command = params['command']; assert params['arguments'] == []
-        if command == 'test.resource': ask('apply-1', {'documentChanges':[{'kind':'delete','uri':next(iter(documents))}]}, None)
+        if command == 'test.action':
+            assert all('bar' in doc['text'] and 'foo' not in doc['text'] for doc in documents.values())
+            log.write('AFTER_LITERAL\n')
+            ask('apply-1', edits('baz', old='bar'), 'baz')
+        elif command == 'test.resource': ask('apply-1', {'documentChanges':[{'kind':'delete','uri':next(iter(documents))}]}, None)
         elif command == 'test.bad': ask('apply-1', edits('bar',99), None)
         elif command == 'test.hold':
             held = value['id']; ask('apply-1',edits('bar'),None); continue
@@ -659,7 +702,7 @@ while True:
         path
     }
 
-    fn fixture() -> (
+    pub(in crate::app) fn fixture() -> (
         tempfile::TempDir,
         App,
         Service,
@@ -688,7 +731,7 @@ while True:
         (directory, app, service, receiver, paths)
     }
 
-    fn flush(app: &mut App, service: &Service) {
+    pub(in crate::app) fn flush(app: &mut App, service: &Service) {
         if let Some(update) = app.take_lsp_update() {
             service.update(update);
         }
@@ -697,7 +740,7 @@ while True:
         }
     }
 
-    fn receive(receiver: &mpsc::Receiver<Event>) -> Event {
+    pub(in crate::app) fn receive(receiver: &mpsc::Receiver<Event>) -> Event {
         let event = receiver
             .recv_timeout(Duration::from_secs(5))
             .expect("missing language event");

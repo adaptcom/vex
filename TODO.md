@@ -90,7 +90,10 @@ selections, and measure operations that could affect input latency.
   The server-command backend now processes `workspace/applyEdit` in order, applies
   prepared batches with cancellation and undo, and synchronizes resulting buffers
   before acknowledging success. Early command completion waits for its edits.
-  Next: code-action menu/resolution and range formatting.
+  Code actions now use a bordered `<space>a` menu with Helix navigation and
+  ordering, service-owned opaque payloads, selected-action resolution, and
+  edit-before-command delivery. Cancellation and failed literal edits discard
+  the continuation command. Next: range formatting.
 - [ ] Document/workspace diagnostic pickers (`<space>d`/`D`) and first/last
   diagnostic jumps (`[D`/`]D`). Retain diagnostics beyond the active document.
 - [ ] Scrollable hover documentation and signature help.

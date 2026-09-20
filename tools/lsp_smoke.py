@@ -96,6 +96,31 @@ def main():
             terminal.finish()
         print("PASS: Markdown hover, floating border, wrapping, half-page scrolling and dismissal")
 
+        # A diagnostic quick fix exercises the code-action menu with a real server.
+        action_source = "fn main() { let unused = 42; }\n"
+        main_file.write_text(action_source)
+        with Terminal([binary, str(main_file)]) as terminal:
+            terminal.start()
+            terminal.resize(140, 24)
+            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"1W")
+            terminal.send(b"]d a")
+            terminal.expect_screen(b"Code actions")
+            terminal.expect_screen(b"_unused")
+            terminal.send(b"\r")
+            terminal.expect_screen(b"let _unused = 42")
+            assert main_file.read_text() == action_source
+            terminal.send(b":w\r")
+            terminal.expect_screen(b"wrote")
+            assert main_file.read_text() == action_source.replace("unused", "_unused")
+            terminal.send(b"u:w\r")
+            terminal.expect_screen(b"let unused = 42")
+            terminal.expect_screen(b"wrote")
+            assert main_file.read_text() == action_source
+            terminal.send(b":q\r")
+            terminal.finish()
+        print("PASS: real rust-analyzer code actions, diagnostic quick fix, unsaved edits, explicit save and undo")
+
         # Navigation uses ranges and document highlights from the real server.
         navigation_source = (
             "struct Widget;\n"

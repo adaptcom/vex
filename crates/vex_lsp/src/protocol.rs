@@ -175,14 +175,6 @@ pub fn offset(text: &Rope, position: Position) -> Option<CharOffset> {
     Positions::new(text).offset(text, position)
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct Diagnostic {
-    pub range: Range,
-    #[serde(default)]
-    pub severity: Option<u32>,
-    pub message: String,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Location {
     pub path: PathBuf,
