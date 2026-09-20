@@ -20,8 +20,10 @@
 //! # Ok::<(), vex_core::Error>(())
 //! ```
 
+mod bookmark;
 pub mod display;
 mod document;
+pub use bookmark::{Bookmark, PositionResolver};
 mod error;
 pub mod grapheme;
 mod history;

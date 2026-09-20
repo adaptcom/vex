@@ -1,6 +1,6 @@
 use std::{hint::black_box, time::Duration};
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use vex_core::{CharOffset, Document, Edit, Rope, Selection, SelectionSet};
 
 fn fixture(bytes: usize, line: &str) -> Rope {
@@ -87,12 +87,52 @@ fn editing(c: &mut Criterion) {
     });
 }
 
+fn bookmarks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bookmarks");
+    for mib in [1usize, 100] {
+        let text = fixture(mib << 20, "fn main() {}\n");
+        for tracked in [false, true] {
+            group.bench_function(
+                BenchmarkId::new("type_64_undo", format!("{mib}MiB_tracked_{tracked}")),
+                |b| {
+                    b.iter_batched(
+                        || {
+                            let document = Document::from(text.clone());
+                            let bookmark = tracked.then(|| document.bookmark());
+                            (
+                                document,
+                                bookmark,
+                                SelectionSet::single(Selection::cursor(CharOffset(
+                                    text.len_chars() / 2,
+                                ))),
+                            )
+                        },
+                        |(mut document, bookmark, mut selections)| {
+                            for _ in 0..64 {
+                                let transaction =
+                                    document.replace_selections(&selections, "x").unwrap();
+                                document
+                                    .apply_grouped(transaction, &mut selections)
+                                    .unwrap();
+                            }
+                            document.undo(&mut selections).unwrap();
+                            black_box((&document, bookmark));
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
         .sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = editing
+    targets = editing, bookmarks
 }
 criterion_main!(benches);

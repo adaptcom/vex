@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::history::{History, State};
-use crate::mapping::PositionMap;
+use crate::mapping::{PositionMap, PositionMaps};
 use crate::{Affinity, ByteOffset, CharOffset, Edit, Error, Rope, SelectionSet, Transaction};
 
 /// Process-local identity, distinct even for documents containing identical text.
@@ -102,8 +102,9 @@ pub struct Document {
     text: Rope,
     history: History,
     pub(crate) change: ChangeExtent,
-    maps: Vec<Arc<PositionMap>>,
+    maps: Option<PositionMaps>,
     reverse_maps: bool,
+    journal: crate::bookmark::Journal,
 }
 
 impl Document {
@@ -113,6 +114,19 @@ impl Document {
 
     pub fn revision(&self) -> Revision {
         self.revision
+    }
+
+    /// Capture a text-free position for lazily remapping saved selections.
+    pub fn bookmark(&self) -> crate::Bookmark {
+        self.journal
+            .bookmark(self.id, self.revision, self.text.len_chars())
+    }
+
+    /// O(1) capture of the current journal boundary. Resolve bookmarks on a
+    /// worker; the descriptor excludes all later edits and retains no text.
+    pub fn position_resolver(&self) -> crate::PositionResolver {
+        self.journal
+            .resolver(self.id, self.revision, self.text.len_chars())
     }
 
     pub fn text(&self) -> &Rope {
@@ -139,12 +153,13 @@ impl Document {
     /// Call exactly once per revision, before another change is applied.
     pub fn map_other_selections(&self, selections: &SelectionSet) -> Result<SelectionSet, Error> {
         let mut selections = selections.clone();
+        let maps = self.maps.as_ref().map_or(&[][..], PositionMaps::as_slice);
         if self.reverse_maps {
-            for map in self.maps.iter().rev() {
+            for map in maps.iter().rev() {
                 selections = map.selections(&selections, true)?;
             }
         } else {
-            for map in &self.maps {
+            for map in maps {
                 selections = map.selections(&selections, false)?;
             }
         }
@@ -311,11 +326,13 @@ impl Document {
             new_end: CharOffset(text.len_chars() - (self.text.len_chars() - old_end.0)),
         };
         let map = Arc::new(PositionMap::new(&transaction));
-        self.maps.clear();
+        self.maps = None;
         self.reverse_maps = false;
         self.history
             .record(before, after, change, Arc::clone(&map), grouped);
-        self.maps.push(map);
+        let maps = PositionMaps::Single(map);
+        self.journal.record(revision, &maps, false);
+        self.maps = Some(maps);
         self.change = change;
         self.text = text;
         self.revision = revision;
@@ -330,7 +347,8 @@ impl Document {
         }
         let revision = self.revision.next()?;
         let (state, change, maps) = self.history.undo().expect("checked undo history");
-        self.maps = maps;
+        self.journal.record(revision, &maps, true);
+        self.maps = Some(maps);
         self.reverse_maps = true;
         self.change = change;
         self.text = state.text;
@@ -346,7 +364,8 @@ impl Document {
         }
         let revision = self.revision.next()?;
         let (state, change, maps) = self.history.redo().expect("checked redo history");
-        self.maps = maps;
+        self.journal.record(revision, &maps, false);
+        self.maps = Some(maps);
         self.reverse_maps = false;
         self.change = change;
         self.text = state.text;
@@ -386,8 +405,9 @@ impl From<Rope> for Document {
             text,
             history: History::default(),
             change: ChangeExtent::default(),
-            maps: Vec::new(),
+            maps: None,
             reverse_maps: false,
+            journal: crate::bookmark::Journal::default(),
         }
     }
 }

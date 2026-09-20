@@ -78,24 +78,20 @@ impl History {
         self.open_group = false;
     }
 
-    pub fn undo(&mut self) -> Option<(State, ChangeExtent, Vec<Arc<PositionMap>>)> {
+    pub fn undo(&mut self) -> Option<(State, ChangeExtent, PositionMaps)> {
         let entry = self.done.pop_back()?;
         let state = (
             entry.before.clone(),
             entry.change.reversed(),
-            entry.maps.as_slice().to_vec(),
+            entry.maps.clone(),
         );
         self.undone.push(entry);
         Some(state)
     }
 
-    pub fn redo(&mut self) -> Option<(State, ChangeExtent, Vec<Arc<PositionMap>>)> {
+    pub fn redo(&mut self) -> Option<(State, ChangeExtent, PositionMaps)> {
         let entry = self.undone.pop()?;
-        let state = (
-            entry.after.clone(),
-            entry.change,
-            entry.maps.as_slice().to_vec(),
-        );
+        let state = (entry.after.clone(), entry.change, entry.maps.clone());
         self.done.push_back(entry);
         Some(state)
     }
