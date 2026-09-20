@@ -4,14 +4,16 @@
 //! parsing is deferred until highlights are requested, coalescing input batches.
 //! Highlight queries use byte ranges and return non-overlapping semantic spans.
 
+mod language;
+pub use language::{Language, LanguageServer};
+
 use std::{
     cell::Cell,
     cmp::Reverse,
     collections::{BTreeSet, VecDeque},
     fmt,
     ops::{ControlFlow, Range},
-    path::Path,
-    sync::{Arc, OnceLock},
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tree_sitter::{
@@ -26,47 +28,6 @@ const PARSE_BUDGET: Duration = Duration::from_millis(25);
 const QUERY_BUDGET: Duration = Duration::from_millis(2);
 const MAX_CAPTURES: usize = 4_096;
 const MAX_CACHED_RANGES: usize = 128;
-
-/// Bundled languages. Grammar loading and detection stay outside the text model.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Language {
-    Rust,
-}
-
-impl Language {
-    pub fn from_path(path: &Path) -> Option<Self> {
-        path.extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
-            .then_some(Self::Rust)
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Rust => "rust",
-        }
-    }
-
-    fn configuration(self) -> &'static Configuration {
-        static RUST: OnceLock<Configuration> = OnceLock::new();
-        match self {
-            Self::Rust => RUST.get_or_init(|| {
-                let language = tree_sitter_rust::LANGUAGE.into();
-                let query = Query::new(&language, tree_sitter_rust::HIGHLIGHTS_QUERY)
-                    .expect("bundled Rust highlight query must match its grammar");
-                let highlights = query
-                    .capture_names()
-                    .iter()
-                    .map(|name| Highlight::from_capture(name))
-                    .collect();
-                Configuration {
-                    language,
-                    query,
-                    highlights,
-                }
-            }),
-        }
-    }
-}
 
 /// Semantic colors, independent of any terminal palette or theme.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,15 +45,28 @@ pub enum Highlight {
     Property,
     Label,
     Escape,
+    Heading,
+    Emphasis,
+    Strong,
+    Link,
 }
 
 impl Highlight {
     fn from_capture(name: &str) -> Option<Self> {
+        match name {
+            "string.escape" => return Some(Self::Escape),
+            "text.title" => return Some(Self::Heading),
+            "text.emphasis" => return Some(Self::Emphasis),
+            "text.strong" => return Some(Self::Strong),
+            "text.uri" | "text.reference" => return Some(Self::Link),
+            "text.literal" => return Some(Self::String),
+            _ => {}
+        }
         Some(match name.split('.').next()? {
             "keyword" => Self::Keyword,
-            "type" | "constructor" => Self::Type,
+            "type" | "constructor" | "tag" => Self::Type,
             "function" => Self::Function,
-            "constant" => Self::Constant,
+            "constant" | "number" | "boolean" => Self::Constant,
             "string" => Self::String,
             "comment" => Self::Comment,
             "operator" => Self::Operator,
@@ -118,6 +92,28 @@ struct Configuration {
     language: tree_sitter::Language,
     query: Query,
     highlights: Vec<Option<Highlight>>,
+    inline: Option<Box<Configuration>>,
+    inline_capture: Option<u32>,
+}
+
+impl Configuration {
+    fn new(language: tree_sitter::Language, sources: &[&str], inline: Option<Box<Self>>) -> Self {
+        let query = Query::new(&language, &sources.join("\n"))
+            .expect("bundled highlight queries must match their grammar");
+        let highlights = query
+            .capture_names()
+            .iter()
+            .map(|name| Highlight::from_capture(name))
+            .collect();
+        let inline_capture = query.capture_index_for_name("vex.inline");
+        Self {
+            language,
+            query,
+            highlights,
+            inline,
+            inline_capture,
+        }
+    }
 }
 
 struct CachedRange {
@@ -135,6 +131,7 @@ pub struct Syntax {
     language: Language,
     configuration: &'static Configuration,
     parser: Parser,
+    inline_parser: Option<Parser>,
     tree: Option<Tree>,
     snapshot: Snapshot,
     lf_count: usize,
@@ -171,12 +168,20 @@ impl Syntax {
         parser
             .set_language(&configuration.language)
             .expect("bundled grammar must be compatible with Tree-sitter");
+        let inline_parser = configuration.inline.as_ref().map(|configuration| {
+            let mut parser = Parser::new();
+            parser
+                .set_language(&configuration.language)
+                .expect("bundled inline grammar must be compatible with Tree-sitter");
+            parser
+        });
         let mut cursor = QueryCursor::new();
         cursor.set_match_limit(MAX_CAPTURES as u32);
         Self {
             language,
             configuration,
             parser,
+            inline_parser,
             tree: None,
             lf_count: initial_lf_count(snapshot.text()),
             snapshot,
@@ -346,6 +351,7 @@ impl Syntax {
             }
         };
         let mut raw = Vec::new();
+        let mut inline_ranges = Vec::new();
         {
             // Query predicates also borrow chunks, including nodes that straddle
             // rope leaves; only Tree-sitter's predicate scratch buffers may copy.
@@ -356,11 +362,18 @@ impl Syntax {
                 QueryCursorOptions::new().progress_callback(&mut progress),
             );
             while let Some((matched, index)) = captures.next() {
-                if is_cancelled() || raw.len() == MAX_CAPTURES || start.elapsed() >= budget {
+                if is_cancelled()
+                    || raw.len() + inline_ranges.len() >= MAX_CAPTURES
+                    || start.elapsed() >= budget
+                {
                     cancelled.set(true);
                     break;
                 }
                 let capture = matched.captures()[*index];
+                if Some(capture.index) == self.configuration.inline_capture {
+                    inline_ranges.push(capture.node.range());
+                    continue;
+                }
                 let Some(highlight) = self.configuration.highlights[capture.index as usize] else {
                     continue;
                 };
@@ -377,11 +390,77 @@ impl Syntax {
                 }
             }
         }
+        // Markdown has separate block and inline grammars. Parse each visible
+        // inline region in isolation so emphasis cannot leak across paragraphs
+        // or into code fences. The same total query budget bounds this work;
+        // the resulting spans share the regular viewport cache.
+        let mut exceeded = self.cursor.did_exceed_match_limit();
+        if let (Some(parser), Some(configuration)) =
+            (&mut self.inline_parser, &self.configuration.inline)
+        {
+            for included in inline_ranges {
+                if cancelled.get() || is_cancelled() || start.elapsed() >= budget {
+                    cancelled.set(true);
+                    break;
+                }
+                parser.reset();
+                parser
+                    .set_included_ranges(&[included])
+                    .expect("inline node has a valid range");
+                let mut parse_progress = |_: &tree_sitter::ParseState| {
+                    if is_cancelled() || start.elapsed() >= budget {
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::Continue(())
+                    }
+                };
+                let Some(tree) = parser.parse_with_options(
+                    &mut |byte, _| chunk_from(text, byte),
+                    None,
+                    Some(ParseOptions::new().progress_callback(&mut parse_progress)),
+                ) else {
+                    parser.reset();
+                    cancelled.set(true);
+                    break;
+                };
+                let mut captures = self.cursor.captures_with_options(
+                    &configuration.query,
+                    tree.root_node(),
+                    |node: Node| text.byte_slice(node.byte_range()).chunks(),
+                    QueryCursorOptions::new().progress_callback(&mut progress),
+                );
+                while let Some((matched, index)) = captures.next() {
+                    if is_cancelled() || raw.len() >= MAX_CAPTURES || start.elapsed() >= budget {
+                        cancelled.set(true);
+                        break;
+                    }
+                    let capture = matched.captures()[*index];
+                    let Some(highlight) = configuration.highlights[capture.index as usize] else {
+                        continue;
+                    };
+                    let node_range = capture.node.byte_range();
+                    let clipped =
+                        node_range.start.max(range.start.0)..node_range.end.min(range.end.0);
+                    if !clipped.is_empty() {
+                        raw.push(Capture {
+                            range: clipped,
+                            priority: (
+                                Reverse(node_range.len()),
+                                query.pattern_count() + matched.pattern_index,
+                                raw.len(),
+                            ),
+                            highlight,
+                        });
+                    }
+                }
+                drop(captures);
+                exceeded |= self.cursor.did_exceed_match_limit();
+            }
+        }
         if is_cancelled() {
             return Arc::from([]);
         }
-        let spans: Arc<[HighlightSpan]> = if cancelled.get() || self.cursor.did_exceed_match_limit()
-        {
+        let spans: Arc<[HighlightSpan]> = if cancelled.get() || exceeded {
             Arc::from([])
         } else {
             resolve(raw).into()
@@ -473,6 +552,7 @@ fn resolve(captures: Vec<Capture>) -> Vec<HighlightSpan> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::path::Path;
     use vex_core::{CharOffset, Edit, Selection, SelectionSet};
 
     // Correctness tests use generous budgets, independent of machine load.
@@ -495,6 +575,133 @@ mod tests {
             .iter()
             .find(|span| span.range.contains(&ByteOffset(byte)))
             .map(|span| span.highlight)
+    }
+
+    #[test]
+    fn bundled_languages_highlight_and_stay_correct_after_edits() {
+        use Highlight::*;
+        type Case<'a> = (Language, &'a str, &'a [(&'a str, Highlight)]);
+        let cases: &[Case<'_>] = &[
+            (
+                Language::Rust,
+                "fn main() { let n = 3; }",
+                &[("fn", Keyword), ("main", Function)],
+            ),
+            (
+                Language::Bash,
+                "# comment\nif true; then\n  echo \"hello\"\nfi\n",
+                &[
+                    ("# comment", Comment),
+                    ("if", Keyword),
+                    ("echo", Function),
+                    ("hello", String),
+                ],
+            ),
+            (
+                Language::JavaScript,
+                "const count = 42; function greet() { return \"hello\"; }",
+                &[
+                    ("const", Keyword),
+                    ("42", Constant),
+                    ("greet", Function),
+                    ("hello", String),
+                ],
+            ),
+            (
+                Language::Jsx,
+                "const view = <div title=\"hello\">text</div>;",
+                &[
+                    ("const", Keyword),
+                    ("div", Type),
+                    ("title", Attribute),
+                    ("hello", String),
+                ],
+            ),
+            (
+                Language::TypeScript,
+                "interface User { name: string }\nconst count: number = 42;",
+                &[
+                    ("interface", Keyword),
+                    ("User", Type),
+                    ("string", Type),
+                    ("const", Keyword),
+                    ("42", Constant),
+                ],
+            ),
+            (
+                Language::Tsx,
+                "const View = (props: { name: string }) => <div title=\"hello\">{props.name}</div>;",
+                &[
+                    ("const", Keyword),
+                    ("string", Type),
+                    ("div", Type),
+                    ("title", Attribute),
+                    ("hello", String),
+                ],
+            ),
+            (
+                Language::Markdown,
+                "# Heading\n\n**bold** and *italic* with `code` and [link](file.md).\n\n```sh\necho *literal*\n```\n",
+                &[
+                    ("Heading", Heading),
+                    ("bold", Strong),
+                    ("italic", Emphasis),
+                    ("code", String),
+                    ("link", Link),
+                    ("file.md", Link),
+                    ("literal", String),
+                    ("echo", String),
+                ],
+            ),
+        ];
+        for &(language, source, expected) in cases {
+            let mut document = Document::from(source);
+            let mut syntax = Syntax::new(language, &document);
+            syntax.parse_budget = Duration::from_secs(10);
+            syntax.query_budget = Duration::from_secs(10);
+            let spans = all(&mut syntax, &document);
+            assert!(
+                !syntax.tree.as_ref().unwrap().root_node().has_error(),
+                "{language:?}"
+            );
+            for &(token, highlight) in expected {
+                assert_eq!(
+                    at(&spans, source.find(token).unwrap()),
+                    Some(highlight),
+                    "{language:?}: {token}"
+                );
+            }
+            let mut selections = SelectionSet::single(Selection::cursor(CharOffset(0)));
+            let transaction = document.replace_selections(&selections, "\n").unwrap();
+            document.apply(transaction, &mut selections).unwrap();
+            let updated = all(&mut syntax, &document);
+            let mut fresh = Syntax::new(language, &document);
+            fresh.parse_budget = Duration::from_secs(10);
+            fresh.query_budget = Duration::from_secs(10);
+            assert_eq!(updated, all(&mut fresh, &document), "{language:?}");
+            assert_eq!(syntax.incremental_parses, 1);
+        }
+    }
+
+    #[test]
+    fn markdown_inline_regions_are_isolated_and_viewport_clipped() {
+        let source = "*open\n\nclose*\n\n**bold**\n";
+        let document = Document::from(source);
+        let mut syntax = Syntax::new(Language::Markdown, &document);
+        syntax.parse_budget = Duration::from_secs(10);
+        syntax.query_budget = Duration::from_secs(10);
+        let spans = all(&mut syntax, &document);
+        assert_eq!(at(&spans, source.find("open").unwrap()), None);
+        assert_eq!(at(&spans, source.find("close").unwrap()), None);
+        let start = source.find("bold").unwrap();
+        let clipped = syntax.highlights(&document, ByteOffset(start)..ByteOffset(start + 2));
+        assert_eq!(
+            &*clipped,
+            &[HighlightSpan {
+                range: ByteOffset(start)..ByteOffset(start + 2),
+                highlight: Highlight::Strong
+            }]
+        );
     }
 
     fn assert_matches_fresh_parse(syntax: &mut Syntax, document: &Document) {

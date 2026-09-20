@@ -51,10 +51,10 @@ own title showing the selected path and uses its full interior height. Narrow
 terminals show only the file list; margins shrink on small terminals, and
 terminals too small for results show a resize message.
 
-Rust previews reuse the editor's Tree-sitter
-grammar, highlight query, and syntax colors. Reading, parsing, and querying all
+Previews reuse the editor's language registry, Tree-sitter grammars, highlight
+queries, and syntax colors for all bundled languages. Reading, parsing, and querying all
 run on the preview worker; the UI receives text and semantic spans together.
-Other file types remain plain text. Preview reads are limited to 64 KiB and 200
+Unrecognized file types remain plain text. Preview reads are limited to 64 KiB and 200
 lines; binary/non-UTF-8 files show a message. Parsing uses the displayed prefix
 and the existing syntax time/capture limits, falling back to plain text if a
 limit is reached. Tabs use four-column stops, and Unicode graphemes are clipped

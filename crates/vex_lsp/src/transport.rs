@@ -101,6 +101,7 @@ pub(crate) struct Transport {
 impl Transport {
     pub fn start(
         program: &Path,
+        arguments: &[&str],
         root: &Path,
         notify: impl Fn(Value) + Send + Sync + 'static,
     ) -> io::Result<Self> {
@@ -111,6 +112,7 @@ impl Transport {
             command.process_group(0);
         }
         let child = command
+            .args(arguments)
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -174,7 +176,7 @@ impl Transport {
                             if let Some(waker) = slot.waker.take() { waker.wake(); }
                     }
                 }
-                Err(io::Error::other("rust-analyzer disconnected"))
+                Err(io::Error::other("language server disconnected"))
             })();
             if let Err(error) = result {
                 pending.lock().unwrap().fail(error.to_string());

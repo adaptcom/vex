@@ -88,8 +88,8 @@ and both wrap and accept counts. See [search semantics and limits](search.md).
 | `:quit!`, `:q!` | Discard unsaved changes and quit |
 | `:write-quit [PATH]`, `:wq [PATH]`, `:x [PATH]` | Save, then quit only if saving succeeds |
 | `:help [COMMAND]`, `:h [COMMAND]` | Show help or a command's documentation |
-| `:language [rust/text/auto]`, `:lang [...]` | Show or set the language |
-| `:lsp-restart` | Restart rust-analyzer for the current Rust file |
+| `:language [NAME/text/auto]`, `:lang [...]` | Show or set the language |
+| `:lsp-restart` | Restart the configured language server for the current file |
 | `:file_picker` | Open the fuzzy project file picker |
 | `:move_word_forward`, etc. | Invoke an editing command by its registered name |
 
@@ -102,14 +102,14 @@ File commands are also ordinary documented functions. A declaration macro uses
 each function's Rustdoc for the runtime registry, so `:help write` shares its
 documentation with `app::write_file`.
 
-Rust files (`.rs`) enable Tree-sitter syntax highlighting automatically; other
-files start as plain text. Detection follows successful Save As operations.
-`:language rust` enables highlighting in scratch buffers; an explicit language
+Rust, Markdown, Bash/shell, TypeScript/TSX, and JavaScript/JSX enable Tree-sitter
+highlighting automatically. Detection uses filenames and shebangs and follows
+successful Save As operations. `:language NAME` also works in scratch buffers; an explicit language
 choice persists across saves until `:language auto`. Selections and cursor styles
 take precedence over syntax colors. See [syntax architecture and limits](syntax.md).
 
-Named Rust files start rust-analyzer when it is installed on `PATH` (or selected
-by `VEX_RUST_ANALYZER`). Diagnostics appear in the gutter and status line; `K`
+Named files start their configured server when it is installed on `PATH` (or
+selected by its executable override). Diagnostics appear in the gutter and status line; `K`
 opens a hover panel. Definition jumps can open another file after saving pending
 changes, and Ctrl-o returns to the origin. See [language services](lsp.md) for
 setup, single-buffer navigation limits, and failure handling.
@@ -214,9 +214,9 @@ concurrent writers, and the parent directory is not synced for crash durability.
 This version has one buffer and view. File I/O is synchronous. Rendering stops
 at the right edge. Cached display columns avoid repeatedly scanning hidden line
 prefixes; cold queries and reindexing after an early edit can still be expensive.
-Syntax currently supports Rust, with size and work budgets on a background worker.
-Rust language services include diagnostics, hover, and definition navigation.
-Clipboard integration, mouse input, completion, and workspace edits are not implemented.
+Bundled syntax languages share size and work budgets on a background worker.
+Language services include diagnostics, hover, definition navigation, and completion.
+Clipboard integration, mouse input, and workspace edits are not implemented.
 
 ## Layout cache
 
@@ -265,6 +265,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo build --release -p vex_term --locked
 python3 tools/terminal_smoke.py
 python3 tools/lsp_smoke.py # Requires rust-analyzer and a Rust toolchain.
+python3 tools/languages_smoke.py # Requires typescript-language-server and TypeScript.
 cargo bench -p vex_term --bench rendering --locked -- --noplot
 cargo run --release -p vex_term --example long_lines --locked -- 10 100
 ```

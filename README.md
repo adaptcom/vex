@@ -6,7 +6,7 @@ A terminal text editor in Rust, inspired by Helix's selection-first editing mode
 atomic transactions, revision-checked snapshots, undo/redo, and grapheme-aware
 movement and streaming literal search. `vex_editor` adds normal/select/insert modes, documented command
 functions, configurable keybindings, and repeat counts. `vex_syntax` adds
-Tree-sitter parsing and Rust syntax highlighting. `vex_lsp` adds rust-analyzer
+Tree-sitter parsing and a shared language registry. `vex_lsp` adds language-server
 integration over stdio with a small futures executor. These crates work without a
 terminal. `vex_term` provides the interactive application, using Crossterm for
 terminal I/O and our own viewport, cell grid, and incremental drawing.
@@ -28,10 +28,11 @@ wide characters, tabs, bracketed paste, and terminal resizing are supported.
 Use `/` or `?` for incremental literal search, Enter to accept, Escape to restore
 your selections and scroll position, and `n` / `N` to repeat. See [search behavior](docs/search.md).
 Interactive search runs on a worker, with cancellation and revision checks.
-Rust files (`.rs`) use syntax colors automatically. Use `:language rust` for a
-scratch buffer, `:language text` to disable Rust language support, or `:language auto` to restore
-file-extension detection. See [syntax support and limits](docs/syntax.md).
-With `rust-analyzer` on `PATH`, named Rust files also get diagnostics, `K` for
+Rust, Markdown, Bash/shell, TypeScript/TSX, and JavaScript/JSX use syntax colors
+automatically, including in file previews. Use `:language NAME` to override
+detection, `:language text` for plain text, or `:language auto` to restore
+filename/shebang detection. See [syntax support and adding languages](docs/syntax.md).
+With the configured server on `PATH`, named files also get diagnostics, `K` for
 hover, `gd` for definitions, `Ctrl-o` to jump back, and `]d` / `[d` to navigate
 diagnostics. See [language services and setup](docs/lsp.md).
 See [terminal usage and architecture](docs/terminal.md).
@@ -56,6 +57,7 @@ cargo build --release -p vex_term --locked
 python3 tools/terminal_smoke.py
 python3 tools/picker_smoke.py
 python3 tools/lsp_smoke.py # Requires rust-analyzer and a Rust toolchain.
+python3 tools/languages_smoke.py # Requires typescript-language-server and TypeScript.
 python3 tools/background_search_benchmark.py
 ```
 
@@ -209,12 +211,12 @@ Soft wrapping is not implemented yet.
 ## Next milestone
 
 The interactive loop can open, search, select, edit, undo groups, and save.
-Search, syntax, file picking, and Rust language services run through a shared event
-queue. Rust completion opens automatically after two identifier characters and
+Search, syntax, file picking, and language services run through a shared event
+queue. Completion opens automatically after two identifier characters and
 a 100 ms pause, or immediately on server trigger characters and `Ctrl-x`.
 The menu and documentation panel sit next to the cursor; see
 [language services](docs/lsp.md#completion) for controls and session settings.
-Multiple buffers, registers, more picker providers, and more syntax languages
+Multiple buffers, registers, more picker providers, and language configuration files
 remain upcoming milestones. Further layout
 work can address cold indexing and updates near the beginning of a huge line.
 

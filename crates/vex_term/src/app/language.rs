@@ -85,7 +85,7 @@ impl App {
         self.language.completion = None;
         self.language.force = true;
         self.language.diagnostics.clear();
-        self.message = "restarting rust-analyzer".into();
+        self.message = "restarting language server".into();
     }
 
     /// Called after dispatch and drawing. Only shared snapshots and small
@@ -108,12 +108,14 @@ impl App {
         }) {
             self.language.cancel();
         }
-        let path = (self.editor.language() == Some(Language::Rust))
-            .then(|| self.files.target())
-            .flatten();
+        let language = self.editor.language();
+        let server = language.and_then(Language::server);
+        let path = server.is_some().then(|| self.files.target()).flatten();
         let identity_changed = match (&self.language.document, path) {
             (Some(old), Some(path)) => {
-                old.path != path || old.snapshot.id() != self.editor.document().id()
+                old.path != path
+                    || old.snapshot.id() != self.editor.document().id()
+                    || Some(old.language) != language
             }
             (None, None) => false,
             _ => true,
@@ -135,6 +137,7 @@ impl App {
             });
         let document = path.map(|path| vex_lsp::Document {
             epoch: self.language.epoch,
+            language: language.unwrap(),
             path: path.into(),
             snapshot: self.editor.document().snapshot(),
             saved: self.language.saved,
@@ -166,11 +169,12 @@ impl App {
                 self.dismiss_language_help();
             } else if document.is_none() {
                 self.fail_completion(
-                    "language services require a named Rust file; save with :w PATH.rs".into(),
+                    "language services require a named file with a configured language server"
+                        .into(),
                 );
             } else if self.language.status == "unavailable" {
                 self.fail_completion(
-                    "rust-analyzer is unavailable; use :lsp-restart to retry".into(),
+                    "language server is unavailable; use :lsp-restart to retry".into(),
                 );
             } else if self.editor.document().text().len_bytes() > vex_lsp::MAX_DOCUMENT_BYTES {
                 self.fail_completion("document exceeds the initial 8 MiB LSP limit".into());
@@ -196,7 +200,7 @@ impl App {
                     cancellation,
                 });
                 if !automatic {
-                    self.message = "waiting for rust-analyzer...".into();
+                    self.message = format!("waiting for {}...", server.unwrap().command);
                 }
             }
         }
@@ -304,10 +308,11 @@ impl App {
     pub(super) fn completion_options(&self) -> Option<&CompletionOptions> {
         if !self.language.enabled
             || self.language.status != "ready"
-            || self.editor.language() != Some(Language::Rust)
+            || self.editor.language().and_then(Language::server).is_none()
             || self.editor.document().text().len_bytes() > vex_lsp::MAX_DOCUMENT_BYTES
             || !self.language.document.as_ref().is_some_and(|document| {
                 document.snapshot.id() == self.editor.document().id()
+                    && Some(document.language) == self.editor.language()
                     && self.files.target() == Some(document.path.as_path())
             })
         {
@@ -319,11 +324,10 @@ impl App {
     fn current_language_revision(&self, epoch: u64, revision: Revision) -> bool {
         epoch == self.language.epoch
             && revision == self.editor.document().revision()
-            && self
-                .language
-                .document
-                .as_ref()
-                .is_some_and(|doc| doc.snapshot.id() == self.editor.document().id())
+            && self.language.document.as_ref().is_some_and(|doc| {
+                doc.snapshot.id() == self.editor.document().id()
+                    && Some(doc.language) == self.editor.language()
+            })
     }
 
     fn language_cursor(&self) -> CharOffset {
@@ -370,7 +374,7 @@ impl App {
             let offset = vex_lsp::offset(document.text(), location.position)
                 .ok_or_else(|| io::Error::other("invalid definition position"))?;
             let mut editor = Editor::new(document);
-            editor.set_language(files.path().and_then(Language::from_path));
+            editor.set_language(Language::detect(files.path(), editor.document().text()));
             editor.set_background_search(true);
             editor.set_background_syntax(true);
             self.editor = editor;
@@ -405,7 +409,7 @@ impl App {
             }
             let (document, files) = FileState::load(Some(&path))?;
             let mut editor = Editor::new(document);
-            editor.set_language(files.path().and_then(Language::from_path));
+            editor.set_language(Language::detect(files.path(), editor.document().text()));
             editor.set_background_search(true);
             editor.set_background_syntax(true);
             self.editor = editor;
@@ -486,7 +490,12 @@ impl App {
             .iter()
             .filter(|d| d.severity == 2)
             .count();
-        format!(" RA:{} {errors}E {warnings}W", self.language.status)
+        let label = self
+            .editor
+            .language()
+            .and_then(Language::server)
+            .map_or("LSP", |server| server.label);
+        format!(" {label}:{} {errors}E {warnings}W", self.language.status)
     }
 
     pub(super) fn paint_language(&self, frame: &mut Frame) {
@@ -563,6 +572,53 @@ mod tests {
     fn press(app: &mut App, code: KeyCode) {
         app.handle(TerminalEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
         app.take_lsp_update();
+    }
+
+    #[test]
+    fn changing_language_restarts_the_session_and_invalidates_server_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = app(directory.path());
+        let mut previous_epoch = app.language.epoch;
+        for language in [
+            "markdown",
+            "shell",
+            "typescript",
+            "tsx",
+            "javascript",
+            "jsx",
+            "rust",
+        ] {
+            app.execute(&format!("language {language}")).unwrap();
+            let document = app.take_lsp_update().unwrap().document.unwrap();
+            assert!(document.epoch > previous_epoch);
+            assert_eq!(document.language, Language::from_name(language).unwrap());
+            assert!(app.completion_options().is_none());
+            assert!(!app.handle_lsp_event(Event::Capabilities {
+                epoch: previous_epoch,
+                completion: Some(CompletionOptions::default())
+            }));
+            app.handle_lsp_event(Event::Capabilities {
+                epoch: document.epoch,
+                completion: Some(CompletionOptions {
+                    trigger_characters: vec!['.'],
+                }),
+            });
+            app.handle_lsp_event(Event::Status {
+                epoch: document.epoch,
+                message: "server ready".into(),
+                failed: false,
+            });
+            assert!(
+                app.language_status()
+                    .contains(document.language.server().unwrap().label)
+            );
+            assert!(app.completion_options().is_some());
+            previous_epoch = document.epoch;
+        }
+        app.execute("language text").unwrap();
+        assert!(app.take_lsp_update().unwrap().document.is_none());
+        assert!(app.completion_options().is_none());
+        assert_eq!(app.language_status(), "");
     }
 
     #[test]

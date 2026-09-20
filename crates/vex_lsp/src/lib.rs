@@ -1,4 +1,4 @@
-//! Rust-analyzer over stdio, with a small futures executor and immutable editor
+//! Language servers over stdio, with a small futures executor and immutable editor
 //! snapshots. The UI submits coalesced state and receives typed, ordered events.
 
 mod completion;
@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 use vex_core::{CharOffset, Revision, Snapshot};
-use vex_editor::background::Cancellation;
+use vex_editor::{Language, background::Cancellation};
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 << 20;
 
@@ -68,6 +68,7 @@ impl CompletionOptions {
 #[derive(Clone, Debug)]
 pub struct Document {
     pub epoch: u64,
+    pub language: Language,
     pub path: PathBuf,
     pub snapshot: Snapshot,
     /// Monotonic save sequence; distinguishes repeated saves of the same revision.
@@ -237,7 +238,7 @@ enum Input {
 }
 
 /// Owns the service and all its child-process threads. Updates never block on
-/// pipe I/O or wait for rust-analyzer. Missing servers fail once per epoch;
+/// pipe I/O or wait for a language server. Missing servers fail once per epoch;
 /// explicit restart or changing files permits another attempt.
 pub struct Service {
     inbox: Inbox,
@@ -246,14 +247,19 @@ pub struct Service {
 
 impl Service {
     pub fn start(emit: impl Fn(Event) + Send + 'static) -> io::Result<Self> {
-        let program = std::env::var_os("VEX_RUST_ANALYZER")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| "rust-analyzer".into());
-        Self::with_program(program, emit)
+        Self::with_override(None, emit)
     }
 
+    /// Override the executable for integration tests, retaining registry arguments.
     pub fn with_program(
         program: PathBuf,
+        emit: impl Fn(Event) + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::with_override(Some(program), emit)
+    }
+
+    fn with_override(
+        program: Option<PathBuf>,
         emit: impl Fn(Event) + Send + 'static,
     ) -> io::Result<Self> {
         let inbox = Inbox::default();
@@ -262,7 +268,7 @@ impl Service {
             .name("vex-lsp".into())
             .spawn(move || {
                 let executor = Executor::default();
-                executor.run(serve(&program, &shared, &executor, &emit));
+                executor.run(serve(program.as_deref(), &shared, &executor, &emit));
             })?;
         Ok(Self {
             inbox,
@@ -287,21 +293,37 @@ impl Drop for Service {
     }
 }
 
-fn root(path: &Path) -> PathBuf {
+fn root(path: &Path, language: Language) -> PathBuf {
     let parent = path.parent().unwrap_or(path);
-    let mut root = parent.to_path_buf();
+    let Some(server) = language.server() else {
+        return parent.into();
+    };
+    let mut root = None;
     for ancestor in parent.ancestors() {
-        if ancestor.join("Cargo.toml").is_file() {
-            root = ancestor.into();
+        if server
+            .root_markers
+            .iter()
+            .any(|marker| ancestor.join(marker).is_file())
+        {
+            root = Some(ancestor.to_path_buf());
+            if !server.outermost_root {
+                break;
+            }
         }
         if ancestor.join(".git").exists() {
+            root.get_or_insert_with(|| ancestor.into());
             break;
         }
     }
-    root
+    root.unwrap_or_else(|| parent.into())
 }
 
-async fn serve(program: &Path, inbox: &Inbox, executor: &Executor, emit: &impl Fn(Event)) {
+async fn serve(
+    program_override: Option<&Path>,
+    inbox: &Inbox,
+    executor: &Executor,
+    emit: &impl Fn(Event),
+) {
     let mut next = None;
     let mut failed_epoch = None;
     loop {
@@ -320,19 +342,26 @@ async fn serve(program: &Path, inbox: &Inbox, executor: &Executor, emit: &impl F
         if failed_epoch == Some(epoch) {
             continue;
         }
+        let Some(server) = document.language.server() else {
+            continue;
+        };
+        let program = program_override
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os(server.environment).map(PathBuf::from))
+            .unwrap_or_else(|| server.command.into());
         emit(Event::Status {
             epoch,
-            message: "rust-analyzer starting".into(),
+            message: format!("{} starting", server.command),
             failed: false,
         });
-        let result = session(program, inbox, executor, document, update.request, emit).await;
+        let result = session(&program, inbox, executor, document, update.request, emit).await;
         match result {
             Ok(update) => next = update,
             Err(message) => {
                 failed_epoch = Some(epoch);
                 emit(Event::Status {
                     epoch,
-                    message: format!("rust-analyzer: {message}"),
+                    message: format!("{}: {message}", server.command),
                     failed: true,
                 });
             }
@@ -351,13 +380,19 @@ async fn session(
 ) -> Result<Option<Update>, String> {
     check_size(&document)?;
     let epoch = document.epoch;
-    let root = root(&document.path);
+    let server = document
+        .language
+        .server()
+        .ok_or("no language server configured")?;
+    let root = root(&document.path, document.language);
     let root_uri = file_uri(&root).map_err(|e| e.to_string())?;
     let uri = file_uri(&document.path).map_err(|e| e.to_string())?;
     let notifications = inbox.clone();
     let mut transport =
-        transport::Transport::start(program, &root, move |value| notifications.wire(value))
-            .map_err(|e| e.to_string())?;
+        transport::Transport::start(program, server.arguments, &root, move |value| {
+            notifications.wire(value)
+        })
+        .map_err(|e| e.to_string())?;
     let mut initialize = transport.request(executor, "initialize", json!({
         "processId":std::process::id(), "clientInfo":{"name":"vex","version":env!("CARGO_PKG_VERSION")},
         "rootUri":root_uri, "workspaceFolders":[{"uri":root_uri,"name":root.file_name().unwrap_or_default().to_string_lossy()}],
@@ -430,12 +465,12 @@ async fn session(
         }
         check_size(&document)?;
         transport.notify("textDocument/didOpen", json!({"textDocument":{
-            "uri":uri,"languageId":"rust","version":version,"text":document.snapshot.text().to_string()
+            "uri":uri,"languageId":document.language.language_id(),"version":version,"text":document.snapshot.text().to_string()
         }}))?;
         opened = true;
         let mut positions = protocol::Positions::new(document.snapshot.text());
         emit(Event::Capabilities { epoch, completion: CompletionOptions::from_capabilities(&capabilities) });
-        emit(Event::Status { epoch, message: "rust-analyzer ready".into(), failed: false });
+        emit(Event::Status { epoch, message: format!("{} ready", server.command), failed: false });
         if let Some(request) = initial_request.take() {
             start_request(&mut transport, executor, &capabilities, &uri, &document, request, &mut pending, emit);
         }
@@ -494,9 +529,10 @@ async fn session(
                     if value["method"] == "textDocument/publishDiagnostics" {
                         let params = &value["params"];
                         if params["uri"] != uri { continue }
-                        // Unversioned workspace diagnostics cannot safely follow
-                        // an unsaved edit. Rust-analyzer supplies buffer versions.
-                        if params["version"].as_i64().map_or(version != 0, |v| v != i64::from(version)) { continue }
+                        // Reject provably stale versions. Some servers (including
+                        // TypeScript) omit versions; those diagnostics refer to
+                        // our latest synchronized snapshot on a best-effort basis.
+                        if params["version"].as_i64().is_some_and(|v| v != i64::from(version)) { continue }
                         let diagnostics = params["diagnostics"].as_array().into_iter().flatten().take(512)
                             .filter_map(|value| serde_json::from_value::<protocol::Diagnostic>(value.clone()).ok())
                             .filter_map(|diagnostic| {
@@ -611,6 +647,7 @@ mod tests {
     fn document(path: PathBuf, text: &TextDocument) -> Document {
         Document {
             epoch: 1,
+            language: Language::Rust,
             path,
             snapshot: text.snapshot(),
             saved: 0,
@@ -643,11 +680,22 @@ mod tests {
 
     #[cfg(unix)]
     fn mock(directory: &Path, hang_initialize: bool) -> PathBuf {
+        mock_with_versions(directory, hang_initialize, true)
+    }
+
+    #[cfg(unix)]
+    fn mock_with_versions(
+        directory: &Path,
+        hang_initialize: bool,
+        diagnostic_versions: bool,
+    ) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let program = directory.join("server.py");
         let script = r##"#!/usr/bin/env python3
 import sys, json, os
 log = open(os.path.join(os.path.dirname(__file__), 'messages.jsonl'), 'a', buffering=1)
+with open(os.path.join(os.path.dirname(__file__), 'launches.jsonl'), 'a') as launches:
+    launches.write(json.dumps({'arguments':sys.argv[1:],'cwd':os.getcwd()}) + '\n')
 uri = None
 version = 0
 def send(value):
@@ -658,7 +706,9 @@ def send(value):
         sys.stdout.buffer.write(part)
         sys.stdout.buffer.flush()
 def diagnostics(v, text):
-    send({'method':'textDocument/publishDiagnostics','params':{'uri':uri,'version':v,'diagnostics':[{'range':{'start':{'line':0,'character':3},'end':{'line':0,'character':4}},'severity':1,'message':text}]}})
+    params = {'uri':uri,'diagnostics':[{'range':{'start':{'line':0,'character':3},'end':{'line':0,'character':4}},'severity':1,'message':text}]}
+    if DIAGNOSTIC_VERSIONS: params['version'] = v
+    send({'method':'textDocument/publishDiagnostics','params':params})
 while True:
     length = None
     while True:
@@ -679,7 +729,7 @@ while True:
         diagnostics(version, 'initial')
     elif method == 'textDocument/didChange':
         version = params['textDocument']['version']
-        diagnostics(version - 1, 'stale')
+        if DIAGNOSTIC_VERSIONS: diagnostics(version - 1, 'stale')
         diagnostics(version, 'fresh')
     elif method == 'textDocument/hover':
         if params['position']['character'] == 0: continue
@@ -695,10 +745,142 @@ while True:
         send({'id':value['id'],'result':params})
     elif method == 'shutdown': send({'id':value['id'],'result':None})
     elif method == 'exit': break
-"##.replace("HANG_INITIALIZE", if hang_initialize { "True" } else { "False" });
+"##.replace("HANG_INITIALIZE", if hang_initialize { "True" } else { "False" })
+   .replace("DIAGNOSTIC_VERSIONS", if diagnostic_versions { "True" } else { "False" });
         fs::write(&program, script).unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
         program
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unversioned_diagnostics_remain_available_after_edits() {
+        let directory = tempfile::tempdir().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let service = Service::with_program(
+            mock_with_versions(directory.path(), false, false),
+            move |event| {
+                let _ = sender.send(event);
+            },
+        )
+        .unwrap();
+        let mut text = TextDocument::from("const x = 1;");
+        let mut doc = document(directory.path().join("main.ts"), &text);
+        doc.language = Language::TypeScript;
+        service.update(Update {
+            document: Some(doc.clone()),
+            request: None,
+        });
+        until(&receiver, |event| {
+            matches!(event, Event::Diagnostics { .. })
+        });
+        let mut selections = SelectionSet::default();
+        let edit = text.replace_selections(&selections, " ").unwrap();
+        text.apply(edit, &mut selections).unwrap();
+        doc.snapshot = text.snapshot();
+        service.update(Update {
+            document: Some(doc.clone()),
+            request: None,
+        });
+        let Event::Diagnostics {
+            revision,
+            diagnostics,
+            ..
+        } = until(&receiver, |event| {
+            matches!(event, Event::Diagnostics { .. })
+        })
+        else {
+            unreachable!()
+        };
+        assert_eq!(revision, doc.snapshot.revision());
+        assert_eq!(diagnostics[0].message, "fresh");
+        assert_eq!(diagnostics[0].start, CharOffset(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_servers_use_their_arguments_ids_and_restart_on_language_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let service = Service::with_program(mock(directory.path(), false), move |event| {
+            let _ = sender.send(event);
+        })
+        .unwrap();
+        let text = TextDocument::from("example");
+        let mut doc = document(directory.path().join("same-file"), &text);
+        let cases = [
+            (Language::Rust, "rust", vec![]),
+            (Language::Markdown, "markdown", vec!["server"]),
+            (Language::Bash, "shellscript", vec!["start"]),
+            (Language::TypeScript, "typescript", vec!["--stdio"]),
+            (Language::Tsx, "typescriptreact", vec!["--stdio"]),
+            (Language::JavaScript, "javascript", vec!["--stdio"]),
+            (Language::Jsx, "javascriptreact", vec!["--stdio"]),
+        ];
+        for (index, (language, _, _)) in cases.iter().enumerate() {
+            doc.epoch = index as u64 + 1;
+            doc.language = *language;
+            service.update(Update {
+                document: Some(doc.clone()),
+                request: Some(request(doc.epoch, RequestKind::Hover, 1)),
+            });
+            until(
+                &receiver,
+                |event| matches!(event, Event::Answer { epoch, result: Ok(Answer::Hover(_)), .. } if *epoch == doc.epoch),
+            );
+        }
+        drop(service);
+        let messages: Vec<Value> = fs::read_to_string(directory.path().join("messages.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let opens: Vec<_> = messages
+            .iter()
+            .filter(|message| message["method"] == "textDocument/didOpen")
+            .collect();
+        let launches: Vec<Value> = fs::read_to_string(directory.path().join("launches.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(opens.len(), cases.len());
+        assert_eq!(launches.len(), cases.len());
+        for (index, (_, id, arguments)) in cases.iter().enumerate() {
+            assert_eq!(opens[index]["params"]["textDocument"]["languageId"], *id);
+            assert_eq!(launches[index]["arguments"], json!(arguments));
+        }
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message["method"] == "shutdown")
+                .count(),
+            cases.len()
+        );
+    }
+
+    #[test]
+    fn project_roots_follow_language_markers_and_repository_boundaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        let package = workspace.join("packages/app");
+        let source = package.join("src");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir(workspace.join(".git")).unwrap();
+        fs::write(workspace.join("Cargo.toml"), "[workspace]").unwrap();
+        fs::write(package.join("Cargo.toml"), "[package]").unwrap();
+        fs::write(package.join("tsconfig.json"), "{}").unwrap();
+        fs::write(workspace.join(".marksman.toml"), "").unwrap();
+        let file = source.join("file");
+        assert_eq!(root(&file, Language::Rust), workspace);
+        assert_eq!(root(&file, Language::TypeScript), package);
+        assert_eq!(root(&file, Language::Markdown), workspace);
+        assert_eq!(root(&file, Language::Bash), workspace);
+        fs::write(package.join(".shellcheckrc"), "").unwrap();
+        assert_eq!(root(&file, Language::Bash), package);
+        fs::create_dir(source.join(".git")).unwrap();
+        assert_eq!(root(&file, Language::Rust), source);
+        assert_eq!(root(&file, Language::TypeScript), source);
     }
 
     #[cfg(unix)]

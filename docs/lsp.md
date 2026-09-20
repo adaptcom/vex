@@ -1,12 +1,31 @@
-# Rust language services
+# Language services
 
-Opening a named Rust file starts `rust-analyzer` from `PATH`. Install the server
-and a Rust toolchain separately; Vex does not download them. To use a different
-executable, set `VEX_RUST_ANALYZER` to its absolute path before starting Vex.
-Scratch buffers gain language services after saving to a `.rs` path. Manual
-`:language rust` also enables them for named files; `:language text` stops them.
+Opening a named file with a configured language starts its server from `PATH`.
+Install language servers and their toolchains separately; Vex does not download
+them. Syntax highlighting works without a language server.
 
-The status line shows `RA:starting`, `RA:ready`, or `RA:unavailable`, followed by
+| Language | Command | Executable override | Status label |
+|---|---|---|---|
+| Rust | `rust-analyzer` | `VEX_RUST_ANALYZER` | `RA` |
+| Markdown | `marksman server` | `VEX_MARKSMAN` | `Marksman` |
+| Bash / POSIX shell | `bash-language-server start` | `VEX_BASH_LANGUAGE_SERVER` | `Bash` |
+| TypeScript, TSX, JavaScript, JSX | `typescript-language-server --stdio` | `VEX_TYPESCRIPT_LANGUAGE_SERVER` | `TS` |
+
+Overrides specify an executable path, with the listed arguments supplied
+separately; they are not shell command strings. The server commands follow the
+[Marksman](https://github.com/artempyanykh/marksman),
+[Bash language server](https://github.com/bash-lsp/bash-language-server), and
+[TypeScript language server](https://github.com/typescript-language-server/typescript-language-server)
+documentation. TypeScript language server also needs TypeScript/tsserver installed;
+Bash diagnostics may require ShellCheck.
+
+Scratch buffers gain language services after saving to a recognized path or
+saving with a manually selected language. `:language NAME` changes both syntax
+and server selection; `:language text` stops language services. Changing language
+on the same file also starts a fresh server session and discards old capabilities,
+completion requests, and diagnostics.
+
+The status line shows the server label with `starting`, `ready`, or `unavailable`, followed by
 error and warning counts. Ready means the initialization handshake finished;
 workspace loading and diagnostics may still be in progress. Missing servers,
 protocol failures, and request errors leave editing and saving available.
@@ -37,13 +56,19 @@ retains up to 32 paths and cursor positions, and returning reloads that file fro
 disk. File switching creates a fresh editor/history; it does not preserve hidden
 buffers. Multiple definition results currently choose the first result.
 
+Project discovery uses the nearest configured marker (`.marksman.toml`,
+`.shellcheckrc`, or a TypeScript/JavaScript project manifest), falling back to the
+repository root and then the file's directory. Rust retains the outermost
+`Cargo.toml` within the repository to include workspace members. Discovery never
+crosses a `.git` boundary.
+
 ## Completion
 
 In insert mode, completion opens automatically after typing at least two
 identifier characters and pausing for 100 ms. Characters advertised by the server
 (such as `.` and `:` with rust-analyzer) request completion immediately, even with
 an empty prefix. `Ctrl-x` invokes the documented `completion` command immediately
-at any prefix length. Completion supports a single caret in a named Rust file.
+at any prefix length. Completion supports a single caret in a named file with a completion-capable server.
 Suggestions appear in a
 bordered menu next to the cursor, above it when there is more room there. A
 separate documentation box appears beside the menu when space permits. Selected
@@ -129,10 +154,8 @@ unchanged and reports the error.
 synchronization, requests, diagnostics, and shutdown independently of terminal
 drawing. It implements the relevant parts of
 [LSP 3.17](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/).
-Rust-analyzer receives its default configuration, including its usual workspace
-loading and Cargo checks. The workspace root is the outermost ancestor containing
-`Cargo.toml` before the repository boundary, or the file's parent for standalone
-files. Settings and workspace-edit requests receive explicit responses; workspace
+Servers receive their default configuration. Rust-analyzer includes its usual workspace
+loading and Cargo checks. Project roots use the registry rules described above. Settings and workspace-edit requests receive explicit responses; workspace
 edits and dynamic capability registration are not supported.
 
 A small, safe `Future` executor runs one service future on a dedicated thread.
@@ -184,10 +207,12 @@ LSP events to 128 each, diagnostics to 512, and retained stderr to 8 KiB. An
 overloaded transport reports an error and can be restarted.
 
 Only diagnostics for the active file are displayed. Versioned diagnostics must
-match the current synchronized version. Unversioned diagnostics are accepted
-before the first change and ignored afterward, since their freshness cannot be
-established. Rust-analyzer supplies versions for open buffers. Full document
-sync, full line-index rebuilds, and JSON encoding still cost work proportional to
+match the current synchronized version. Some servers omit diagnostic versions.
+Their diagnostics are mapped to the
+latest synchronized snapshot on a best-effort basis; freshness cannot be proven
+without a version. Any subsequent edit clears them. Versioned stale results are
+still rejected, and results from old language sessions are always discarded.
+Full document sync, full line-index rebuilds, and JSON encoding still cost work proportional to
 document size on the service thread. File loading, including definition jumps,
 remains synchronous.
 
@@ -201,6 +226,8 @@ cargo test --workspace --locked
 cargo test -p vex_lsp --locked real_rust_analyzer_hover_definition_and_diagnostics -- --ignored
 cargo build --release -p vex_term --locked
 python3 tools/lsp_smoke.py
+# Requires typescript-language-server and TypeScript/tsserver:
+python3 tools/languages_smoke.py
 ```
 
 Unit tests live with the source, including a controlled stdio server for protocol
@@ -210,3 +237,8 @@ the PTY script also checks completion, documentation resolution, early acceptanc
 undo, cross-file navigation, return jumps, missing-server behavior, and terminal
 restoration. Source tests cover completion import edits, stale replies, invalid
 coordinates, cancellation, popup clipping, and protocol ordering.
+
+The language PTY script checks Markdown/shell/TSX rendering and actual TypeScript
+diagnostics, hover, automatic completion, acceptance, saving, and shutdown.
+Registry-driven stdio tests cover every server argument list and language ID,
+including Markdown and Bash when their servers are not locally installed.

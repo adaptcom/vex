@@ -36,15 +36,19 @@ impl Style {
             Self::Text => (Reset, Reset),
             Self::Syntax(highlight) => (
                 match highlight {
-                    Highlight::Keyword => Magenta,
+                    Highlight::Keyword | Highlight::Heading => Magenta,
                     Highlight::Type | Highlight::Property => Cyan,
                     Highlight::Function => Blue,
-                    Highlight::Constant | Highlight::Attribute | Highlight::Escape => Yellow,
+                    Highlight::Constant
+                    | Highlight::Attribute
+                    | Highlight::Escape
+                    | Highlight::Strong => Yellow,
                     Highlight::String => Green,
                     Highlight::Comment => DarkGrey,
                     Highlight::Operator => Red,
                     Highlight::Punctuation | Highlight::Variable => Reset,
-                    Highlight::Label => DarkCyan,
+                    Highlight::Label | Highlight::Link => DarkCyan,
+                    Highlight::Emphasis => Cyan,
                 },
                 Reset,
             ),

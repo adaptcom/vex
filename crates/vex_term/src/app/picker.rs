@@ -271,7 +271,7 @@ impl App {
         let (document, files) = FileState::load(Some(&path))?;
         self.record_jump();
         let mut editor = Editor::new(document);
-        editor.set_language(files.path().and_then(Language::from_path));
+        editor.set_language(Language::detect(files.path(), editor.document().text()));
         editor.set_background_search(true);
         editor.set_background_syntax(true);
         self.editor = editor;

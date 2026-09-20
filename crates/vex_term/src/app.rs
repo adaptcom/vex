@@ -77,7 +77,7 @@ impl App {
 
     fn new(document: Document, files: FileState, size: (u16, u16)) -> Self {
         let mut editor = Editor::new(document);
-        editor.set_language(files.path().and_then(Language::from_path));
+        editor.set_language(Language::detect(files.path(), editor.document().text()));
         Self {
             editor,
             files,
@@ -464,7 +464,7 @@ commands! {
         app.configure_completion(argument)
     }
 
-    /// Restart rust-analyzer for the current Rust file after an error or configuration change.
+    /// Restart the configured language server for the current file after an error or configuration change.
     fn restart_lsp(app, argument, force) ["lsp-restart"] {
         if !argument.is_empty() || force { return Err(io::Error::other("lsp-restart takes no arguments")); }
         app.restart_language_server();
@@ -476,7 +476,7 @@ commands! {
         app.editor.finish_undo_group();
         let bytes = app.files.save(app.editor.document(), if argument.is_empty() { None } else { Some(Path::new(argument)) }, force)?;
         if app.automatic_language {
-            let language = app.files.path().and_then(Language::from_path);
+            let language = Language::detect(app.files.path(), app.editor.document().text());
             if language != app.editor.language() { app.editor.set_language(language); }
         }
         app.message = format!("wrote {bytes} bytes");
@@ -499,15 +499,14 @@ commands! {
         quit(app, "", false)
     }
 
-    /// Show or set syntax language: rust, text, or auto (detect from the file extension).
+    /// Show or set the language by its registry name or alias; text disables language support, and auto detects the filename or shebang.
     fn set_language(app, argument, force) ["language", "lang"] {
         if force { return Err(io::Error::other("language does not accept !")); }
         if !argument.is_empty() {
             let language = match argument {
-                "rust" => Some(Language::Rust),
                 "text" => None,
-                "auto" => app.files.path().and_then(Language::from_path),
-                _ => return Err(io::Error::other("supported languages: rust, text, auto")),
+                "auto" => Language::detect(app.files.path(), app.editor.document().text()),
+                _ => Some(Language::from_name(argument).ok_or_else(|| io::Error::other(format!("supported languages: {}, text, auto", Language::ALL.iter().map(|language| language.name()).collect::<Vec<_>>().join(", "))))?),
             };
             app.automatic_language = argument == "auto";
             app.editor.set_language(language);
@@ -865,6 +864,33 @@ mod tests {
     }
 
     #[test]
+    fn language_registry_controls_open_shebangs_and_manual_aliases() {
+        let directory = tempfile::tempdir().unwrap();
+        for (name, source, expected) in [
+            ("README.md", "# Title", Language::Markdown),
+            (".bashrc", "echo hello", Language::Bash),
+            ("script", "#!/usr/bin/env bash\necho hello", Language::Bash),
+            ("main.ts", "const n: number = 1;", Language::TypeScript),
+            ("view.tsx", "const view = <div />;", Language::Tsx),
+        ] {
+            let path = directory.path().join(name);
+            std::fs::write(&path, source).unwrap();
+            let mut app = App::open(Some(&path), (80, 24)).unwrap();
+            assert_eq!(app.editor.language(), Some(expected));
+            let revision = app.editor.document().revision();
+            app.execute("language text").unwrap();
+            app.execute("language auto").unwrap();
+            assert_eq!(app.editor.language(), Some(expected));
+            app.execute("language shell").unwrap();
+            assert_eq!(app.editor.language(), Some(Language::Bash));
+            app.execute("language ts").unwrap();
+            assert_eq!(app.editor.language(), Some(Language::TypeScript));
+            assert_eq!(app.editor.document().revision(), revision);
+            assert!(!app.is_dirty());
+        }
+    }
+
+    #[test]
     fn language_detection_follows_save_as_and_respects_manual_overrides() {
         let directory = tempfile::tempdir().unwrap();
         let rust = directory.path().join("file.rs");
@@ -894,7 +920,7 @@ mod tests {
         scratch.execute("language text").unwrap();
         assert_eq!(scratch.editor.language(), None);
         scratch.execute("help language").unwrap();
-        assert!(scratch.message.contains("rust, text, or auto"));
+        assert!(scratch.message.contains("registry name or alias"));
     }
 
     #[test]

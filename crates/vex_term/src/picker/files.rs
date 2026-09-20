@@ -398,12 +398,12 @@ fn preview(path: &Path, cancellation: &Cancellation) -> io::Result<Preview> {
     };
     let mut lines = text.lines();
     let mut preview = Preview::plain(lines.by_ref().take(200).collect::<Vec<_>>().join("\n"));
+    let document = Document::from(preview.text.as_str());
     if !cancellation.is_cancelled()
-        && let Some(language) = Language::from_path(path)
+        && let Some(language) = Language::detect(Some(path), document.text())
     {
         // Parse exactly the displayed prefix, before appending any UI notices.
         // The existing parser/query budgets fall back to plain text on timeout.
-        let document = Document::from(preview.text.as_str());
         let mut syntax = Syntax::new(language, &document);
         preview.highlights = syntax
             .highlights_current(ByteOffset(0)..ByteOffset(preview.text.len()), || {
@@ -526,6 +526,47 @@ mod tests {
                 .ends_with("preview truncated")
         );
         assert!(preview(directory.path(), &cancel).is_err());
+    }
+
+    #[test]
+    fn previews_use_shared_detection_for_new_languages_and_shell_shebangs() {
+        use vex_syntax::Highlight;
+        let directory = tempfile::tempdir().unwrap();
+        for (name, source, token, highlight) in [
+            (
+                "README.md",
+                "# Heading\n\n**bold**",
+                "bold",
+                Highlight::Strong,
+            ),
+            (
+                "script",
+                "#!/bin/bash\necho hello",
+                "echo",
+                Highlight::Function,
+            ),
+            (
+                "types.ts",
+                "interface User { name: string }",
+                "User",
+                Highlight::Type,
+            ),
+            ("view.tsx", "const view = <div />", "div", Highlight::Type),
+        ] {
+            let path = directory.path().join(name);
+            fs::write(&path, source).unwrap();
+            let result = preview(&path, &Cancellation::default()).unwrap();
+            let byte = result.text.find(token).unwrap();
+            assert!(
+                result
+                    .highlights
+                    .iter()
+                    .any(|span| span.highlight == highlight
+                        && span.range.contains(&ByteOffset(byte))),
+                "{name}: {:?}",
+                result.highlights
+            );
+        }
     }
 
     #[test]

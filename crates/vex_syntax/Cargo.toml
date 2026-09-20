@@ -9,6 +9,10 @@ repository.workspace = true
 vex_core.workspace = true
 tree-sitter.workspace = true
 tree-sitter-rust.workspace = true
+tree-sitter-md.workspace = true
+tree-sitter-bash.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-typescript.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
