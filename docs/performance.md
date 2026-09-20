@@ -122,6 +122,27 @@ They exclude rendering, terminal latency, and repeated edits accumulating histor
 The whole-buffer case changes only its two boundaries; it is not a measurement
 of replacing all selected text.
 
+Surround deletion and replacement use the selection worker for pair resolution
+and transaction preparation. Only delimiter positions and short shared strings
+are retained; replacement previews do not copy selected text. Collision detection
+uses an ordered set, avoiding quadratic comparisons between cursors. Explicit
+asymmetric pairs such as `md(` do not initialize or query syntax.
+
+`cargo bench -p vex_editor --bench commands --locked -- surround_edit_undo --noplot`
+measured the following on the same machine/profile:
+
+| Buffer | Delete + undo, one cursor | Replace + undo, one cursor | Delete + undo, 1,000 cursors | Replace + undo, 1,000 cursors |
+|---|---:|---:|---:|---:|
+| 1 MiB | 1.08 µs | 1.47 µs | 0.742 ms | 1.13 ms |
+| 100 MiB | 1.33 µs | 1.77 µs | 0.870 ms | 1.30 ms |
+
+These synchronous command runs include local delimiter searches, replacement
+preview construction, validation, rope edits, selection normalization, and undo.
+Cursors occupy the first 1,000 short `(word)` lines; these are local edits, not
+whole-file scans. They exclude rendering, terminal input dispatch, worker wakeup,
+and accumulating undo history. Scans and edit construction check cancellation;
+transaction sorting and final selection normalization are not preemptible.
+
 ## Command and movement baseline
 
 Recorded on the same development machine on 2026-09-19 with the same Criterion

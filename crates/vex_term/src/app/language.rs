@@ -386,7 +386,7 @@ impl App {
         self.editor
             .set_selections(SelectionSet::single(selection))
             .map_err(io::Error::other)?;
-        self.keys.cancel();
+        self.keys.cancel(&mut self.editor);
         Ok(())
     }
 

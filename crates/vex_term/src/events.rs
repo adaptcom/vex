@@ -1050,6 +1050,31 @@ mod tests {
     }
 
     #[test]
+    fn surround_replacement_defers_each_input_until_its_worker_stage_completes() {
+        let mut app = App::from_document(Document::from("(abc)"), (50, 12));
+        app.editor.set_background_search(true);
+        press(&mut app, "lmr(");
+        let prepare = app.editor.take_search_job().unwrap();
+        let events = EventQueue::default();
+        events.terminal(key(KeyCode::Char(']')));
+        events.terminal(key(KeyCode::Char('d')));
+        assert!(events.next(Duration::ZERO, app.input_waiting()).is_none());
+        events.background(BackgroundEvent::Search(prepare.run().unwrap()));
+        deliver(&mut app, events.next(Duration::ZERO, true).unwrap());
+        deliver(&mut app, events.next(Duration::ZERO, false).unwrap());
+        assert!(app.input_waiting());
+        assert_eq!(app.editor.document().text(), "(abc)");
+        assert!(events.next(Duration::ZERO, true).is_none());
+        let edit = app.editor.take_search_job().unwrap();
+        events.background(BackgroundEvent::Search(edit.run().unwrap()));
+        while let Some(event) = events.next(Duration::ZERO, app.input_waiting()) {
+            deliver(&mut app, event);
+        }
+        assert_eq!(app.editor.document().text(), "[bc]");
+        assert_eq!(app.editor.document().undo_depth(), 2);
+    }
+
+    #[test]
     fn early_enter_defers_edits_preserves_escape_order_and_allows_resize() {
         let mut app = App::from_document(Document::from("x cat"), (40, 8));
         app.editor.set_background_search(true);

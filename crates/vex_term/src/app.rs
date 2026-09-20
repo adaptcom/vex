@@ -117,6 +117,7 @@ impl App {
     /// Deliver a worker completion on the same thread that handles input.
     /// Stale results neither move selections nor replace newer messages.
     pub fn handle_search_result(&mut self, result: SearchResult) -> bool {
+        self.observe_buffer_revision();
         match self.editor.apply_search_result(result) {
             Ok(SearchCompletion::Ignored) => {
                 if self.editor.search_prompt().is_none()
@@ -142,6 +143,7 @@ impl App {
             }
             Ok(SearchCompletion::Navigation) => self.clear_message(),
             Err(error) => {
+                self.keys.cancel(&mut self.editor);
                 if self.editor.search_prompt().is_none() {
                     self.prompt = None;
                 } else if let Some(ActivePrompt {
@@ -154,6 +156,7 @@ impl App {
                 self.fail(error);
             }
         }
+        self.observe_buffer_revision();
         true
     }
 
@@ -209,7 +212,7 @@ impl App {
             Event::FocusGained => true,
             Event::Paste(text) => {
                 self.clear_message();
-                self.keys.cancel();
+                self.keys.cancel(&mut self.editor);
                 if let Some(mut prompt) = self.prompt.take() {
                     prompt.input.insert(&text);
                     self.preview_search(&prompt);
@@ -230,7 +233,7 @@ impl App {
                     && matches!(event.code, KeyCode::PageUp | KeyCode::PageDown)
                 {
                     self.clear_message();
-                    self.keys.cancel();
+                    self.keys.cancel(&mut self.editor);
                     let count = usize::from(self.active_size().1).saturating_sub(2).max(1);
                     if let Err(error) = self.editor.execute(
                         if event.code == KeyCode::PageDown {
@@ -256,12 +259,13 @@ impl App {
                             // A pending scan is cancellable before subsequent
                             // editing keys. Do not dispatch normal-mode comments.
                             self.editor.finish_undo_group();
+                            self.keys.cancel(&mut self.editor);
                         }
                         Key::Char(':')
                             if self.editor.mode() != Mode::Insert
                                 && self.keys.pending_keys().is_empty() =>
                         {
-                            self.keys.cancel();
+                            self.keys.cancel(&mut self.editor);
                             self.prompt = Some(ActivePrompt {
                                 input: Prompt::default(),
                                 kind: PromptKind::Command,
@@ -530,7 +534,7 @@ impl App {
         if self.prompt.is_none()
             && let Some(operation) = self.editor.search_prompt()
         {
-            self.keys.cancel();
+            self.keys.cancel(&mut self.editor);
             self.prompt = Some(ActivePrompt {
                 input: Prompt::default(),
                 kind: PromptKind::Search {
@@ -558,7 +562,7 @@ impl App {
         let mut prompt = self.prompt.take().unwrap();
         match key {
             Key::Escape | Key::Ctrl('c') => {
-                self.keys.cancel();
+                self.keys.cancel(&mut self.editor);
                 if let PromptKind::Search { viewport, .. } = prompt.kind {
                     match self.editor.execute("search_cancel", 1) {
                         Ok(()) => self.viewport = viewport,
@@ -928,6 +932,62 @@ mod tests {
         draw(&mut app);
         app.execute("help page_cursor_half_down").unwrap();
         assert!(app.message.contains("half the visible text height"));
+    }
+
+    #[test]
+    fn background_surround_replacement_previews_accepts_literal_colons_and_clears_failed_input() {
+        let mut app = App::from_document(Document::from("(abc)"), (60, 16));
+        app.editor.set_background_search(true);
+        press(&mut app, "lvmr(");
+        let result = app.editor.take_search_job().unwrap().run().unwrap();
+        app.handle_search_result(result);
+        assert_eq!(app.keys.hints().unwrap().title, "Replace with a pair of");
+        assert_eq!(app.editor.selections().ranges().len(), 2);
+        draw(&mut app);
+        press(&mut app, ":");
+        assert!(app.prompt.is_none());
+        assert_eq!(app.editor.document().text(), "(abc)");
+        let result = app.editor.take_search_job().unwrap().run().unwrap();
+        app.handle_search_result(result);
+        assert_eq!(app.editor.document().text(), ":abc:");
+        assert_eq!(app.editor.mode(), Mode::Normal);
+        assert!(app.is_dirty());
+        press(&mut app, "mr(");
+        let result = app.editor.take_search_job().unwrap().run().unwrap();
+        app.handle_search_result(result);
+        assert!(app.keys.hints().is_none());
+        assert!(app.message.contains("surround pair not found"));
+        press(&mut app, ":");
+        assert!(app.prompt.is_some());
+    }
+
+    #[test]
+    fn pending_surround_scans_and_previews_cancel_without_leaving_select_mode() {
+        for completed in [false, true] {
+            let mut app = App::from_document(Document::from("(abc)"), (60, 16));
+            app.editor.set_background_search(true);
+            press(&mut app, "lv");
+            let before = app.editor.selections().clone();
+            press(&mut app, "mr(");
+            let result = app.editor.take_search_job().unwrap().run().unwrap();
+            let late = if completed {
+                app.handle_search_result(result);
+                None
+            } else {
+                Some(result)
+            };
+            app.handle(Event::Key(KeyEvent::new(
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+            )));
+            if let Some(result) = late {
+                assert!(!app.handle_search_result(result));
+            }
+            assert_eq!(app.editor.mode(), Mode::Select);
+            assert_eq!(app.editor.selections(), &before);
+            assert!(app.keys.hints().is_none());
+            assert_eq!(app.editor.document().text(), "(abc)");
+        }
     }
 
     #[test]

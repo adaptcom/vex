@@ -62,4 +62,27 @@ registers unchanged, and makes one undo step. Adjacent selections and empty
 cursors receive separate pairs. Only the inserted delimiters enter edit strings;
 selected contents remain in rope storage, even for a whole-buffer selection.
 
-Surround replacement/deletion remain tracked in [TODO.md](../TODO.md).
+## Replacing and deleting surrounds
+
+The bindings follow [Helix surround commands](https://docs.helix-editor.com/surround.html).
+
+`mr<from><to>` replaces surrounding delimiters. For example, `mr)]` changes
+parentheses to square brackets, and `mrm"` changes the nearest pair to quotes.
+After the first character, Vex previews the delimiters and waits for the second.
+Escape, Ctrl-c, or another non-character key cancels and restores the original
+selections and mode. Enter and Tab cancel; spaces and digits are literal
+characters. A replacement `m` is also literal.
+
+`md<char>` deletes the surrounding pair, and `mdm` deletes the nearest pair.
+Put counts before the prefix: `2md(` targets outer parentheses. Counts and
+syntax lookup use the same rules as delimiter textobjects. Each selection must
+have a pair, and two selections cannot target the same delimiter; otherwise the
+whole operation fails without changing text. Distinct nested pairs are allowed.
+
+Both commands leave registers untouched, return to normal mode after editing,
+and make one undo step. Replacement preserves original scalar coordinates;
+deletion maps the original selections through the removed delimiters. Unicode
+grapheme boundaries are normalized after editing. The selection worker resolves
+pairs and prepares transactions using only delimiter positions and short shared
+replacement strings. Selected contents remain in rope storage. Later input waits
+for each worker stage, and revision/view checks reject obsolete results.

@@ -207,6 +207,8 @@ impl Default for Keymap {
                 (vec![Char('N')], "search_previous"),
                 (vec![Char('C')], "copy_selection_on_next_line"),
                 (vec![Char('m'), Char('m')], "match_brackets"),
+                (vec![Char('m'), Char('d')], "surround_delete"),
+                (vec![Char('m'), Char('r')], "surround_replace"),
                 (vec![Char(' '), Char('f')], "file_picker"),
                 (vec![Char(' '), Char('b')], "buffer_picker"),
                 (vec![Char(' '), Char('g')], "git_status"),
@@ -375,6 +377,35 @@ impl KeyHandler {
     }
 
     pub fn hints(&self) -> Option<KeyHints<'_>> {
+        if let Some(command) = self.character_command
+            && matches!(
+                command.input,
+                crate::CommandInput::SurroundDelete
+                    | crate::CommandInput::SurroundReplace
+                    | crate::CommandInput::SurroundReplacement
+            )
+        {
+            let replacement = command.input == crate::CommandInput::SurroundReplacement;
+            let mut entries = vec![
+                (Key::Char('('), "Parentheses (either bracket)"),
+                (Key::Char('['), "Square brackets"),
+                (Key::Char('{'), "Braces"),
+                (Key::Char('<'), "Angle brackets"),
+                (Key::Char('"'), "Quotes or any character"),
+                (Key::Escape, "Cancel"),
+            ];
+            if !replacement {
+                entries.insert(0, (Key::Char('m'), "Nearest matching pair"));
+            }
+            return Some(KeyHints {
+                title: match command.input {
+                    crate::CommandInput::SurroundDelete => "Delete surrounding pair of",
+                    crate::CommandInput::SurroundReplace => "Replace surrounding pair of",
+                    _ => "Replace with a pair of",
+                },
+                entries,
+            });
+        }
         if self
             .character_command
             .is_some_and(|command| command.input == crate::CommandInput::SurroundAdd)
@@ -428,23 +459,36 @@ impl KeyHandler {
         self.keymap.hints(self.mode?, &self.pending)
     }
 
-    pub fn cancel(&mut self) {
+    /// Cancel input and restore any active surround preview.
+    pub fn cancel(&mut self, editor: &mut Editor) {
+        editor.cancel_surround();
+        self.reset();
+    }
+
+    fn reset(&mut self) {
         self.pending.clear();
         self.count = None;
         self.character_command = None;
     }
 
     pub fn handle(&mut self, editor: &mut Editor, key: Key) -> Result<Dispatch, Error> {
+        if self
+            .character_command
+            .is_some_and(|command| command.input == crate::CommandInput::SurroundReplacement)
+            && !editor.replacing_surround()
+        {
+            self.reset();
+        }
         if self.mode != Some(editor.mode()) {
-            self.cancel();
+            self.cancel(editor);
         }
         self.mode = Some(editor.mode());
         if key == Key::Escape || (key == Key::Ctrl('c') && !self.pending.is_empty()) {
             if !self.pending.is_empty() || self.count.is_some() {
-                self.cancel();
+                self.cancel(editor);
                 return Ok(Dispatch::Ignored);
             }
-            self.cancel();
+            self.cancel(editor);
             editor.execute("normal_mode", 1)?;
             self.mode = Some(editor.mode());
             return Ok(Dispatch::Executed("normal_mode"));
@@ -462,7 +506,7 @@ impl KeyHandler {
                 }
                 Key::Tab if command.input == crate::CommandInput::Character => '\t',
                 _ => {
-                    self.cancel();
+                    self.cancel(editor);
                     return Ok(Dispatch::Ignored);
                 }
             };
@@ -479,7 +523,7 @@ impl KeyHandler {
                 .checked_mul(10)
                 .and_then(|n| n.checked_add(ch as usize - '0' as usize));
             if next.is_none() {
-                self.cancel();
+                self.cancel(editor);
                 return Err(Error::CountOverflow);
             }
             self.count = next;
@@ -507,7 +551,7 @@ impl KeyHandler {
             return Ok(Dispatch::Pending);
         }
         let single = self.pending.len() == 1;
-        self.cancel();
+        self.cancel(editor);
         if editor.mode() == Mode::Insert && single {
             let mut buffer = [0; 4];
             let text = match key {
@@ -528,12 +572,19 @@ impl KeyHandler {
         character: Option<char>,
     ) -> Result<Dispatch, Error> {
         let count = self.count;
-        self.cancel();
+        let continuation = (command.input == crate::CommandInput::SurroundReplace)
+            .then(|| std::mem::take(&mut self.pending));
+        self.reset();
         let mut context = crate::CommandContext::new(editor);
         context.count = std::num::NonZeroUsize::new(count.unwrap_or(1)).unwrap();
         context.count_given = count.is_some();
         context.character = character;
         (command.run)(&mut context)?;
+        if let Some(mut pending) = continuation {
+            pending.push(Key::Char(character.expect("collected surround character")));
+            self.pending = pending;
+            self.character_command = commands::find("surround_replace_finish");
+        }
         self.mode = Some(editor.mode());
         Ok(Dispatch::Executed(command.name))
     }

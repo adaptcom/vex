@@ -33,7 +33,7 @@ impl App {
     pub(in crate::app) fn open_symbol_picker(&mut self, workspace: bool) {
         self.close_picker();
         self.dismiss_language_help();
-        self.keys.cancel();
+        self.keys.cancel(&mut self.editor);
         self.prompt = None;
         if self.editor.search_prompt().is_some() {
             let _ = self.editor.execute("search_cancel", 1);

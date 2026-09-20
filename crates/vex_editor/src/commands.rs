@@ -35,6 +35,9 @@ pub enum CommandInput {
     TextobjectInner,
     TextobjectAround,
     SurroundAdd,
+    SurroundDelete,
+    SurroundReplace,
+    SurroundReplacement,
 }
 
 #[derive(Debug)]
@@ -453,6 +456,15 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
 commands! {
     /// Surround each selection with a character or bracket pair, selecting the result and returning to normal mode. Either bracket chooses its matching pair; other characters repeat on both sides. Enter uses the buffer's line ending. Ignores counts, leaves registers unchanged, and records one undo step.
     fn surround_add(ctx) [SurroundAdd] { crate::surround::add(ctx) }
+
+    /// Delete a surrounding pair at every cursor. Either bracket chooses its pair; m chooses the nearest pair. Counts seek outer pairs. Missing or overlapping pairs cancel all edits. Returns to normal mode with one undo step and leaves registers unchanged.
+    fn surround_delete(ctx) [SurroundDelete] { crate::search::surround(ctx, false) }
+
+    /// Find and preview surrounding delimiters before replacing them. Supply the old delimiter (or m for nearest); counts seek outer pairs. Then supply the replacement character with surround_replace_finish. Cancellation restores the original selections.
+    fn surround_replace(ctx) [SurroundReplace] { crate::search::surround(ctx, true) }
+
+    /// Replace the previewed surrounding pairs with a character or bracket pair, restoring the original selections before mapping them through one undoable edit. Returns to normal mode and leaves registers unchanged. Used as the second input step of mr.
+    fn surround_replace_finish(ctx) [SurroundReplacement] { crate::surround::finish(ctx) }
 
     /// Move to the matching bracket, extending in select mode. Syntax also finds the enclosing scope from inside it. Counts are ignored.
     fn match_brackets(ctx) { crate::search::match_brackets(ctx) }

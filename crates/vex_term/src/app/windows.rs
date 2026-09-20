@@ -443,7 +443,7 @@ impl App {
         self.viewport = viewport;
         self.windows.layout.active = id;
         self.record_buffer_access();
-        self.keys.cancel();
+        self.keys.cancel(&mut self.editor);
         self.git_write.prefix = None;
         self.git_write.status_prefix = None;
         self.prompt = None;
@@ -535,7 +535,7 @@ impl App {
         pane.viewport = viewport;
         pane.last_accessed = Some(old_id);
         self.record_buffer_access();
-        self.keys.cancel();
+        self.keys.cancel(&mut self.editor);
         self.prompt = None;
         Ok(())
     }

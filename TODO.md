@@ -27,10 +27,11 @@ selections, and measure operations that could affect input latency.
    `<space>b`, `ga`, `gn`/`gp`, and `gm`. Add `gf` to open selected paths in the
    current pane. Preserve unsaved text, undo history, and per-view selections
    when switching files.
-7. [ ] Match mode: `mm`, `mi`/`ma` textobjects for words, paragraphs, and paired
+7. [x] Match mode: `mm`, `mi`/`ma` textobjects for words, paragraphs, and paired
    delimiters, followed by `ms`/`mr`/`md` surrounds.
    Textobjects and bracket matching now run through the cancellable selection
-   worker with shared syntax trees. `ms` adds surrounds; `mr`/`md` remain.
+   worker with shared syntax trees. `ms`/`mr`/`md` add, replace, and remove
+   surrounds; replacement previews delimiters before collecting its second input.
 8. [ ] Repeat the last insert with `.`. Record logical editing actions, including
    counted commands and completion, so replay stays independent of terminal input.
 

@@ -52,7 +52,9 @@ See [terminal usage and architecture](docs/terminal.md).
 Use `miw`/`miW` to select words/WORDs and `mip` to select paragraphs; `ma` includes
 adjacent whitespace. `mi(`/`ma(` select inside/around delimiters, `mim`/`mam`
 choose the closest pair, and `mm` moves to the matching bracket. `ms<char>`
-surrounds the selections. See [match mode](docs/match.md).
+surrounds the selections, `mr<from><to>` replaces surrounds, and `md<char>`
+removes them. Use `m` as the old delimiter to target the nearest pair.
+See [match mode](docs/match.md).
 
 Press Space-f for the fuzzy project file picker. Named key groups (`g`, `m`, Space,
 `[`, `]`, Ctrl-w) show available bindings. Discovery, matching, and previews run in the

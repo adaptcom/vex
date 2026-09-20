@@ -70,7 +70,7 @@ impl App {
         };
         self.close_picker();
         self.dismiss_language_help();
-        self.keys.cancel();
+        self.keys.cancel(&mut self.editor);
         self.prompt = None;
         if self.editor.search_prompt().is_some() {
             let _ = self.editor.execute("search_cancel", 1);
@@ -93,7 +93,7 @@ impl App {
     pub(super) fn open_buffer_picker(&mut self) {
         self.close_picker();
         self.dismiss_language_help();
-        self.keys.cancel();
+        self.keys.cancel(&mut self.editor);
         self.prompt = None;
         if self.editor.search_prompt().is_some() {
             let _ = self.editor.execute("search_cancel", 1);

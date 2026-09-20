@@ -109,6 +109,7 @@ impl Editor {
     /// query on the syntax worker (or at first draw for synchronous integrations).
     /// Selecting the same language again also invalidates pending results.
     pub fn set_language(&mut self, language: Option<Language>) {
+        self.cancel_surround();
         self.search.invalidate_syntax();
         if self.language() != language {
             self.set_indentation(language.map(Language::indentation).unwrap_or_default());

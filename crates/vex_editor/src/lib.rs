@@ -125,6 +125,7 @@ pub struct Editor {
     layout: RefCell<LayoutCache>,
     syntax: RefCell<syntax::Highlighting>,
     search: search::Search,
+    replacement: Option<surround::Replacement>,
     language_action: Option<LanguageAction>,
     application_action: Option<ApplicationAction>,
     views: views::Views,
@@ -155,6 +156,7 @@ impl Editor {
             layout: RefCell::default(),
             syntax: RefCell::default(),
             search: search::Search::default(),
+            replacement: None,
             language_action: None,
             application_action: None,
             views,
@@ -306,6 +308,7 @@ impl Editor {
     }
 
     fn synchronize_caches(&mut self) {
+        self.replacement = None;
         self.synchronize_views();
         self.search.invalidate();
         self.layout.get_mut().synchronize(&self.document);
@@ -329,6 +332,7 @@ impl Editor {
     /// call this at savepoints so undo can return to the saved text. Movements,
     /// mode/selection changes, explicit edits, paste, and undo/redo do so already.
     pub fn finish_undo_group(&mut self) {
+        surround::cancel(self);
         self.search.invalidate();
         self.document.finish_undo_group();
     }
@@ -410,10 +414,24 @@ impl Editor {
     /// A zero count is omitted and uses the command's default, usually one.
     pub fn execute(&mut self, name: &str, count: usize) -> Result<(), Error> {
         let command = commands::find(name).ok_or_else(|| Error::UnknownCommand(name.into()))?;
+        if command.input != CommandInput::SurroundReplacement {
+            self.cancel_surround();
+        }
         let mut context = CommandContext::new(self);
         context.count = NonZeroUsize::new(count).unwrap_or(NonZeroUsize::MIN);
         context.count_given = count != 0;
         (command.run)(&mut context)
+    }
+
+    /// Cancel a staged surround operation and restore its original selections.
+    /// Other text-search work is unaffected.
+    pub fn cancel_surround(&mut self) {
+        surround::cancel(self);
+        self.search.invalidate_surround();
+    }
+
+    pub(crate) fn replacing_surround(&self) -> bool {
+        self.replacement.is_some() || self.search.preparing_surround()
     }
 
     /// Insert a text event at every insert caret, continuing the current typing

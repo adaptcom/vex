@@ -117,7 +117,7 @@ impl App {
         if id == self.editor.document().id() {
             self.dismiss_language_help();
             self.invalidate_completion();
-            self.keys.cancel();
+            self.keys.cancel(&mut self.editor);
             self.open_search_prompt();
         }
         self.refresh_git();

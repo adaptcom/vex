@@ -80,7 +80,7 @@ impl App {
         self.dismiss_language_help();
         self.editor.finish_undo_group();
         let _ = self.editor.execute("search_cancel", 1);
-        self.keys.cancel();
+        self.keys.cancel(&mut self.editor);
         self.git_write.status_prefix = None;
         self.prompt = None;
         self.clear_message();
@@ -95,7 +95,7 @@ impl App {
             self.status.views.get_mut(&key).unwrap().help = false;
         }
         self.set_git_view(None);
-        self.keys.cancel();
+        self.keys.cancel(&mut self.editor);
         self.prompt = None;
         self.clear_message();
     }
@@ -268,7 +268,7 @@ impl App {
         self.editor
             .set_selections(SelectionSet::single(Selection::cursor(offset)))
             .map_err(io::Error::other)?;
-        self.keys.cancel();
+        self.keys.cancel(&mut self.editor);
         self.prompt = None;
         self.clear_message();
         Ok(())
@@ -298,12 +298,12 @@ impl App {
                 if !pending.is_empty() || matches!(pressed, Key::Char(' ') | Key::Ctrl('w')) {
                     let space = pending == [Key::Char(' ')];
                     if space && pressed == Key::Char('g') {
-                        self.keys.cancel();
+                        self.keys.cancel(&mut self.editor);
                         self.refresh_status();
                     } else if (space && !matches!(pressed, Key::Char('w') | Key::Escape))
                         || (!pending.is_empty() && matches!(pressed, Key::Char('f' | 'F')))
                     {
-                        self.keys.cancel();
+                        self.keys.cancel(&mut self.editor);
                     } else {
                         if let Err(error) = self.keys.handle(&mut self.editor, pressed) {
                             self.fail(error);

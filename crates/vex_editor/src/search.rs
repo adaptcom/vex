@@ -58,6 +58,15 @@ enum Pattern {
 
 #[derive(Debug)]
 enum Work {
+    Surround {
+        character: Option<char>,
+        count: usize,
+        replace: bool,
+    },
+    ReplaceSurround {
+        pairs: Arc<[vex_core::pairs::Delimiters]>,
+        replacement: char,
+    },
     MatchBrackets {
         extend: bool,
     },
@@ -86,6 +95,8 @@ enum Work {
 
 #[derive(Debug)]
 enum Outcome {
+    SurroundPreview(crate::surround::Resolved),
+    Edit(vex_core::Transaction),
     Search(Arc<Regex>, Option<SelectionSet>),
     Selections(SelectionSet),
     Remember(Arc<Regex>),
@@ -142,6 +153,41 @@ impl SearchJob {
             );
         }
         let outcome = (|| match self.work {
+            Work::Surround {
+                character,
+                count,
+                replace,
+            } => {
+                let resolved = crate::surround::resolve(
+                    &self.snapshot,
+                    self.syntax.as_ref(),
+                    &self.origins,
+                    character,
+                    count,
+                    &cancelled,
+                )?;
+                if replace {
+                    crate::surround::prepare(&self.snapshot, &self.origins, resolved, &cancelled)
+                        .map(Outcome::SurroundPreview)
+                } else {
+                    crate::surround::transaction(
+                        &self.snapshot,
+                        &self.origins,
+                        &resolved,
+                        None,
+                        &cancelled,
+                    )
+                    .map(Outcome::Edit)
+                }
+            }
+            Work::ReplaceSurround { pairs, replacement } => crate::surround::transaction(
+                &self.snapshot,
+                &self.origins,
+                &pairs,
+                Some(replacement),
+                &cancelled,
+            )
+            .map(Outcome::Edit),
             Work::MatchBrackets { extend } => crate::textobject::match_brackets(
                 self.snapshot.text(),
                 self.syntax.as_ref(),
@@ -221,6 +267,8 @@ impl SearchJob {
 
 #[derive(Clone, Copy, Debug)]
 enum Kind {
+    SurroundPrepare,
+    SurroundEdit,
     Preview { accept: bool },
     Repeat,
     CopyLines,
@@ -257,6 +305,8 @@ impl Search {
             matches!(
                 p.kind,
                 Kind::Repeat
+                    | Kind::SurroundPrepare
+                    | Kind::SurroundEdit
                     | Kind::CopyLines
                     | Kind::Textobject
                     | Kind::Remember
@@ -266,6 +316,7 @@ impl Search {
     }
     pub fn progress(&self) -> Option<&'static str> {
         self.pending.as_ref().map(|pending| match pending.kind {
+            Kind::SurroundPrepare | Kind::SurroundEdit => "matching surrounds...",
             Kind::CopyLines | Kind::Textobject => "selecting...",
             _ => "searching...",
         })
@@ -285,6 +336,18 @@ impl Search {
             .as_ref()
             .is_some_and(|pending| pending.structural)
         {
+            self.cancel_jobs();
+        }
+    }
+    pub fn preparing_surround(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|pending| matches!(pending.kind, Kind::SurroundPrepare))
+    }
+    pub fn invalidate_surround(&mut self) {
+        if self.pending.as_ref().is_some_and(|pending| {
+            matches!(pending.kind, Kind::SurroundPrepare | Kind::SurroundEdit)
+        }) {
             self.cancel_jobs();
         }
     }
@@ -465,17 +528,56 @@ pub(crate) fn match_brackets(ctx: &mut CommandContext<'_>) -> Result<(), Error> 
     )
 }
 
+pub(crate) fn surround(ctx: &mut CommandContext<'_>, replace: bool) -> Result<(), Error> {
+    let character = ctx.character.ok_or(Error::MissingCharacter)?;
+    require_normal_or_select(ctx.editor)?;
+    ctx.editor.finish_undo_group();
+    dispatch(
+        ctx.editor,
+        Work::Surround {
+            character: (character != 'm').then_some(character),
+            count: ctx.count.get(),
+            replace,
+        },
+        if replace {
+            Kind::SurroundPrepare
+        } else {
+            Kind::SurroundEdit
+        },
+    )
+}
+
+pub(crate) fn replace_surround(
+    editor: &mut Editor,
+    pairs: Arc<[vex_core::pairs::Delimiters]>,
+    replacement: char,
+) -> Result<(), Error> {
+    require_normal_or_select(editor)?;
+    editor.finish_undo_group();
+    dispatch(
+        editor,
+        Work::ReplaceSurround { pairs, replacement },
+        Kind::SurroundEdit,
+    )
+}
+
 fn dispatch(editor: &mut Editor, work: Work, kind: Kind) -> Result<(), Error> {
     let cancellation = SearchCancellation::default();
     let snapshot = editor.document.snapshot();
-    let structural = matches!(
-        work,
-        Work::MatchBrackets { .. }
-            | Work::Textobject {
-                object: crate::textobject::Object::Pair(_),
-                ..
-            }
-    );
+    // Explicit asymmetric delimiters balance their own kind without syntax.
+    // Avoid initializing a grammar or parsing a cold file for md( / mi[, etc.
+    let structural = match &work {
+        Work::MatchBrackets { .. } => true,
+        Work::Surround { character, .. }
+        | Work::Textobject {
+            object: crate::textobject::Object::Pair(character),
+            ..
+        } => character.is_none_or(|ch| {
+            let (open, close) = vex_core::pairs::pair(ch);
+            open == close
+        }),
+        _ => false,
+    };
     editor.search.pending = Some(Pending {
         cancellation: cancellation.clone(),
         document: snapshot.id(),
@@ -537,6 +639,14 @@ pub(crate) fn apply_result(
         editor.cache_parsed_syntax(syntax);
     }
     let (pattern, selections) = match result.outcome {
+        Ok(Outcome::SurroundPreview(resolved)) => {
+            crate::surround::preview(editor, resolved);
+            return Ok(SearchCompletion::Navigation);
+        }
+        Ok(Outcome::Edit(transaction)) => {
+            crate::surround::apply(editor, transaction)?;
+            return Ok(SearchCompletion::Navigation);
+        }
         Ok(Outcome::Search(pattern, selections)) => (pattern, selections),
         Ok(Outcome::Remember(pattern)) => {
             editor.search.accepted = Some(pattern);
@@ -585,7 +695,11 @@ pub(crate) fn apply_result(
             editor.preferred_columns = None;
             Ok(SearchCompletion::Navigation)
         }
-        Kind::CopyLines | Kind::Textobject | Kind::Remember => unreachable!("handled above"),
+        Kind::CopyLines
+        | Kind::Textobject
+        | Kind::Remember
+        | Kind::SurroundPrepare
+        | Kind::SurroundEdit => unreachable!("handled above"),
     }
 }
 

@@ -1,8 +1,185 @@
 //! Atomic surround edits. Delimiters insert at selection boundaries; selected
 //! document contents remain in the rope and never get copied into edit strings.
 
-use crate::{CommandContext, Error, Mode};
-use vex_core::{CharOffset, Edit, Selection, SelectionSet, pairs};
+use crate::{CommandContext, Editor, Error, Mode, ViewId};
+use std::{collections::BTreeSet, sync::Arc};
+use vex_core::{
+    CharOffset, DocumentId, Edit, Revision, Selection, SelectionSet, Snapshot, Transaction, motion,
+    pairs,
+};
+
+/// The first replacement step previews delimiters but never changes the document
+/// or undo history. Keep the original view state until the next input arrives.
+#[derive(Debug)]
+pub(crate) struct Replacement {
+    document: DocumentId,
+    revision: Revision,
+    view: ViewId,
+    mode: Mode,
+    origins: SelectionSet,
+    columns: Option<Vec<usize>>,
+    preview: SelectionSet,
+    pairs: Arc<[pairs::Delimiters]>,
+}
+
+impl Replacement {
+    fn valid(&self, editor: &Editor) -> bool {
+        self.document == editor.document.id()
+            && self.revision == editor.document.revision()
+            && self.view == editor.active_view()
+            && self.mode == editor.mode
+            && self.preview == editor.selections
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Resolved {
+    pairs: Arc<[pairs::Delimiters]>,
+    preview: SelectionSet,
+}
+
+/// Resolve every selection before preparing any edit. Duplicate delimiters are
+/// errors, while nested pairs with distinct endpoints are allowed. The ordered
+/// set keeps collision checks O(S log S) for S selections.
+pub(crate) fn resolve(
+    snapshot: &Snapshot,
+    syntax: Option<&vex_syntax::ParsedSyntax>,
+    origins: &SelectionSet,
+    character: Option<char>,
+    count: usize,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Arc<[pairs::Delimiters]>, Error> {
+    let text = snapshot.text();
+    let mut seen = BTreeSet::new();
+    let mut pairs = Vec::with_capacity(origins.ranges().len());
+    for &origin in origins.ranges() {
+        if cancelled() {
+            return Err(Error::SurroundNotFound);
+        }
+        let Some(pair) =
+            crate::textobject::delimiters(text, syntax, origin, character, count, cancelled)?
+        else {
+            let cursor = motion::cursor(text, origin)?;
+            return Err(
+                if character.is_some_and(|ch| {
+                    pairs::pair(ch).0 == pairs::pair(ch).1 && text.get_char(cursor.0) == Some(ch)
+                }) {
+                    Error::SurroundAmbiguous
+                } else {
+                    Error::SurroundNotFound
+                },
+            );
+        };
+        if !seen.insert(pair.open) || !seen.insert(pair.close) {
+            return Err(Error::SurroundOverlap);
+        }
+        pairs.push(pair);
+    }
+    Ok(pairs.into())
+}
+
+pub(crate) fn prepare(
+    snapshot: &Snapshot,
+    origins: &SelectionSet,
+    pairs: Arc<[pairs::Delimiters]>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Resolved, Error> {
+    let mut preview = Vec::with_capacity(pairs.len().saturating_mul(2));
+    for pair in pairs.iter() {
+        if cancelled() {
+            return Err(Error::SurroundNotFound);
+        }
+        preview.push(motion::block(snapshot.text(), pair.open)?);
+        preview.push(motion::block(snapshot.text(), pair.close)?);
+    }
+    Ok(Resolved {
+        pairs,
+        preview: SelectionSet::new(preview, origins.primary_index() * 2)?,
+    })
+}
+
+pub(crate) fn transaction(
+    snapshot: &Snapshot,
+    origins: &SelectionSet,
+    pairs: &[pairs::Delimiters],
+    replacement: Option<char>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Transaction, Error> {
+    let (open, close): (Arc<str>, Arc<str>) = replacement.map_or_else(
+        || (Arc::from(""), Arc::from("")),
+        |ch| {
+            let (open, close) = pairs::pair(ch);
+            (Arc::from(open.to_string()), Arc::from(close.to_string()))
+        },
+    );
+    let mut edits = Vec::with_capacity(pairs.len().saturating_mul(2));
+    for pair in pairs {
+        if cancelled() {
+            return Err(Error::SurroundNotFound);
+        }
+        edits.push(Edit::new(
+            pair.open..CharOffset(pair.open.0 + 1),
+            Arc::clone(&open),
+        ));
+        edits.push(Edit::new(
+            pair.close..CharOffset(pair.close.0 + 1),
+            Arc::clone(&close),
+        ));
+    }
+    let transaction = snapshot.transaction(edits)?;
+    // Equal-length scalar replacements keep coordinates unchanged, including
+    // selection endpoints at a replaced bracket (Helix's sticky mapping).
+    Ok(if replacement.is_some() {
+        transaction.with_selections(origins.clone())?
+    } else {
+        transaction
+    })
+}
+
+pub(crate) fn preview(editor: &mut Editor, resolved: Resolved) {
+    editor.replacement = Some(Replacement {
+        document: editor.document.id(),
+        revision: editor.document.revision(),
+        view: editor.active_view(),
+        mode: editor.mode,
+        origins: std::mem::replace(&mut editor.selections, resolved.preview.clone()),
+        columns: editor.preferred_columns.take(),
+        preview: resolved.preview,
+        pairs: resolved.pairs,
+    });
+}
+
+pub(crate) fn cancel(editor: &mut Editor) {
+    if let Some(replacement) = editor.replacement.take()
+        && replacement.valid(editor)
+    {
+        editor.selections = replacement.origins;
+        editor.preferred_columns = replacement.columns;
+    }
+}
+
+pub(crate) fn finish(ctx: &mut CommandContext<'_>) -> Result<(), Error> {
+    let character = ctx.character.ok_or(Error::MissingCharacter)?;
+    let editor = &mut *ctx.editor;
+    let replacement = editor
+        .replacement
+        .take()
+        .ok_or(Error::NoSurroundReplacement)?;
+    if !replacement.valid(editor) {
+        return Err(Error::SurroundChanged);
+    }
+    editor.selections = replacement.origins;
+    editor.preferred_columns = replacement.columns;
+    crate::search::replace_surround(editor, replacement.pairs, character)
+}
+
+pub(crate) fn apply(editor: &mut Editor, transaction: Transaction) -> Result<(), Error> {
+    editor.apply(transaction, false)?;
+    editor.mode = Mode::Normal;
+    editor.selections = editor.normalized(editor.selections.clone(), Mode::Normal)?;
+    editor.preferred_columns = None;
+    Ok(())
+}
 
 fn insert(edits: &mut Vec<(CharOffset, String)>, position: CharOffset, text: &str) {
     if let Some((previous, content)) = edits.last_mut()
@@ -23,6 +200,7 @@ pub(crate) fn add(ctx: &mut CommandContext<'_>) -> Result<(), Error> {
             actual: editor.mode,
         });
     }
+    editor.finish_undo_group();
     let (open, close) = pairs::pair(character);
     let mut open_bytes = [0; 4];
     let mut close_bytes = [0; 4];
@@ -87,6 +265,231 @@ mod tests {
         for ch in keys.chars() {
             handler.handle(editor, Key::Char(ch)).unwrap();
         }
+    }
+
+    fn input(keys: &mut KeyHandler, editor: &mut Editor, sequence: &str) -> Result<(), Error> {
+        for ch in sequence.chars() {
+            keys.handle(editor, Key::Char(ch))?;
+        }
+        Ok(())
+    }
+
+    fn range(anchor: usize, head: usize) -> Selection {
+        Selection::new(CharOffset(anchor), CharOffset(head))
+    }
+
+    #[test]
+    fn delete_pairs_handles_counts_quotes_nearest_empty_contents_and_preserves_yanks() {
+        for (text, keys, expected) in [
+            ("(a(b)c)", "3lmd)", "(abc)"),
+            ("(a(b)c)", "3l2md(", "a(b)c"),
+            ("{[word]}", "2lmdm", "{word}"),
+            ("{[word]}", "2l2mdm", "[word]"),
+            ("\"word\"", "lmd\"", "word"),
+            ("a界a", "lmda", "界"),
+            ("()", "md)", ""),
+            ("「e\u{301}界」\r\n", "lmd」", "e\u{301}界\r\n"),
+        ] {
+            let mut editor = Editor::new(Document::from(text));
+            let mut keys_handler = KeyHandler::default();
+            input(&mut keys_handler, &mut editor, keys).unwrap();
+            assert_eq!(editor.document().text(), expected, "{text:?} {keys}");
+            assert_eq!(editor.document().undo_depth(), 1);
+            assert_eq!(editor.mode(), Mode::Normal);
+            editor.execute("undo", 1).unwrap();
+            assert_eq!(editor.document().text(), text);
+            editor.execute("redo", 1).unwrap();
+            assert_eq!(editor.document().text(), expected);
+        }
+        let mut editor = Editor::new(Document::from("(x)"));
+        press(&mut editor, "lyvmd)p");
+        assert_eq!(editor.document().text(), "xx");
+    }
+
+    #[test]
+    fn replacement_previews_delimiters_then_restores_direction_primary_and_undo() {
+        let mut editor = Editor::new(Document::from("(one) [two]"));
+        let before = SelectionSet::new(vec![range(4, 1), range(7, 10)], 1).unwrap();
+        editor.set_selections(before.clone()).unwrap();
+        let mut keys = KeyHandler::default();
+        input(&mut keys, &mut editor, "vmrm").unwrap();
+        assert_eq!(keys.hints().unwrap().title, "Replace with a pair of");
+        assert_eq!(editor.mode(), Mode::Select);
+        assert_eq!(
+            editor.selections().ranges(),
+            &[range(0, 1), range(4, 5), range(6, 7), range(10, 11)]
+        );
+        assert_eq!(editor.selections().primary_index(), 2);
+        assert_eq!(editor.document().undo_depth(), 0);
+        assert_eq!(editor.document().text(), "(one) [two]");
+        input(&mut keys, &mut editor, "}").unwrap();
+        assert_eq!(editor.document().text(), "{one} {two}");
+        assert_eq!(editor.selections(), &before);
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(editor.document().undo_depth(), 1);
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "(one) [two]");
+        assert_eq!(editor.selections(), &before);
+        editor.execute("redo", 1).unwrap();
+        assert_eq!(editor.document().text(), "{one} {two}");
+        assert_eq!(editor.selections(), &before);
+    }
+
+    #[test]
+    fn replacement_arguments_are_literal_and_cancellation_restores_the_exact_view() {
+        for replacement in ['m', '2', ':', ' ', '界', '\u{301}'] {
+            let mut editor = Editor::new(Document::from("(a)\r\n"));
+            let mut keys = KeyHandler::default();
+            input(&mut keys, &mut editor, "lmr)").unwrap();
+            keys.handle(&mut editor, Key::Char(replacement)).unwrap();
+            assert_eq!(
+                editor.document().text().to_string(),
+                format!("{replacement}a{replacement}\r\n")
+            );
+            for selection in editor.selections().ranges() {
+                for at in [selection.anchor, selection.head] {
+                    assert!(grapheme::is_boundary(editor.document().text(), at).unwrap());
+                }
+            }
+        }
+        for cancel in [Key::Escape, Key::Ctrl('c'), Key::Enter, Key::Tab, Key::Left] {
+            let mut editor = Editor::new(Document::from("(abc)"));
+            let before = SelectionSet::single(range(4, 1));
+            editor.set_selections(before.clone()).unwrap();
+            editor.execute("select_mode", 1).unwrap();
+            editor.preferred_columns = Some(vec![42]);
+            let mut keys = KeyHandler::default();
+            input(&mut keys, &mut editor, "9mr(").unwrap_err(); // Missing outer pair; no preview.
+            assert_eq!(editor.selections(), &before);
+            input(&mut keys, &mut editor, "mr(").unwrap();
+            keys.handle(&mut editor, cancel).unwrap();
+            assert_eq!(editor.selections(), &before);
+            assert_eq!(editor.preferred_columns, Some(vec![42]));
+            assert_eq!(editor.mode(), Mode::Select);
+            assert_eq!(editor.document().undo_depth(), 0);
+            assert!(keys.hints().is_none());
+        }
+    }
+
+    #[test]
+    fn missing_ambiguous_and_overlapping_pairs_leave_all_text_and_selections_untouched() {
+        for (text, selections, sequence, error) in [
+            (
+                "(a) b",
+                vec![range(1, 2), range(4, 5)],
+                "md(",
+                Error::SurroundNotFound,
+            ),
+            (
+                "(ab)",
+                vec![range(1, 2), range(2, 3)],
+                "mr(",
+                Error::SurroundOverlap,
+            ),
+            ("\"a\"", vec![range(0, 1)], "md\"", Error::SurroundAmbiguous),
+        ] {
+            let mut editor = Editor::new(Document::from(text));
+            let before = SelectionSet::new(selections, 0).unwrap();
+            editor.set_selections(before.clone()).unwrap();
+            let mut keys = KeyHandler::default();
+            assert_eq!(input(&mut keys, &mut editor, sequence), Err(error));
+            assert_eq!(editor.document().text(), text);
+            assert_eq!(editor.selections(), &before);
+            assert_eq!(editor.document().undo_depth(), 0);
+            assert!(keys.hints().is_none());
+        }
+    }
+
+    #[test]
+    fn distinct_nested_pairs_edit_together_and_syntax_resolves_a_quote_under_cursor() {
+        let before = SelectionSet::new(vec![range(1, 2), range(3, 4)], 1).unwrap();
+        for (sequence, expected) in [("md(", "abc"), ("mr(]", "[a[b]c]")] {
+            let mut editor = Editor::new(Document::from("(a(b)c)"));
+            editor.set_selections(before.clone()).unwrap();
+            press(&mut editor, sequence);
+            assert_eq!(editor.document().text(), expected);
+            assert_eq!(editor.document().undo_depth(), 1);
+            editor.execute("undo", 1).unwrap();
+            assert_eq!(editor.selections(), &before);
+        }
+        let mut editor = Editor::new(Document::from("fn f() { f(\"a\\\"b\"); }"));
+        editor.set_language(Some(crate::Language::Rust));
+        editor
+            .set_selections(SelectionSet::single(range(11, 12)))
+            .unwrap();
+        press(&mut editor, "mr\"'");
+        assert_eq!(editor.document().text(), "fn f() { f('a\\\"b'); }");
+    }
+
+    #[test]
+    fn explicit_brackets_do_not_parse_a_cold_language_buffer() {
+        let mut editor = Editor::new(Document::from("fn f() { (word) }"));
+        editor.set_language(Some(crate::Language::Rust));
+        editor
+            .set_selections(SelectionSet::single(range(10, 11)))
+            .unwrap();
+        let mut keys = KeyHandler::default();
+        input(&mut keys, &mut editor, "mr(").unwrap();
+        assert!(editor.parsed_syntax().is_none());
+        input(&mut keys, &mut editor, "]").unwrap();
+        assert_eq!(editor.document().text(), "fn f() { [word] }");
+    }
+
+    #[test]
+    fn background_edits_and_previews_cancel_and_reject_stale_results() {
+        let mut editor = Editor::new(Document::from("(word)"));
+        editor.set_background_search(true);
+        let mut keys = KeyHandler::default();
+        input(&mut keys, &mut editor, "lmr(").unwrap();
+        assert!(editor.search_waiting());
+        let pending = editor.take_search_job().unwrap();
+        keys.handle(&mut editor, Key::Escape).unwrap();
+        assert!(pending.run().is_none());
+        input(&mut keys, &mut editor, "mr(").unwrap();
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        editor.apply_search_result(result).unwrap();
+        assert_eq!(editor.selections().ranges(), &[range(0, 1), range(5, 6)]);
+        input(&mut keys, &mut editor, "[").unwrap();
+        assert_eq!(editor.selections().primary(), range(1, 2));
+        assert_eq!(editor.document().text(), "(word)");
+        let pending = editor.take_search_job().unwrap();
+        editor.execute("move_right", 1).unwrap();
+        assert!(pending.run().is_none());
+        input(&mut keys, &mut editor, "md(").unwrap();
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        editor.execute("move_right", 1).unwrap();
+        assert_eq!(
+            editor.apply_search_result(result).unwrap(),
+            crate::SearchCompletion::Ignored
+        );
+        assert_eq!(editor.document().text(), "(word)");
+        input(&mut keys, &mut editor, "md(").unwrap();
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        editor.apply_search_result(result).unwrap();
+        assert_eq!(editor.document().text(), "word");
+        assert_eq!(editor.document().undo_depth(), 1);
+    }
+
+    #[test]
+    fn external_edits_and_focus_changes_cancel_previews_before_mapping_original_selections() {
+        let mut editor = Editor::new(Document::from("(abc)"));
+        let before = SelectionSet::single(range(1, 4));
+        editor.set_selections(before.clone()).unwrap();
+        let other = editor.duplicate_view();
+        let mut keys = KeyHandler::default();
+        input(&mut keys, &mut editor, "mr(").unwrap();
+        assert!(editor.focus_view(other));
+        assert_eq!(editor.selections(), &before);
+        input(&mut keys, &mut editor, "mr(").unwrap();
+        let transaction = editor
+            .document()
+            .transaction([Edit::insert(CharOffset(0), "x")])
+            .unwrap();
+        editor.apply_external_change(transaction).unwrap();
+        assert_eq!(editor.selections().primary(), range(2, 5));
+        assert!(editor.replacement.is_none());
+        keys.cancel(&mut editor);
+        assert_eq!(editor.selections().primary(), range(2, 5));
     }
 
     #[test]

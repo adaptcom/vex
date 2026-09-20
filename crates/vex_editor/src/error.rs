@@ -22,6 +22,11 @@ pub enum Error {
     SelectionLimit,
     InvalidCompletion,
     EmptyYankRegister,
+    SurroundNotFound,
+    SurroundOverlap,
+    SurroundAmbiguous,
+    NoSurroundReplacement,
+    SurroundChanged,
 }
 
 impl From<vex_core::Error> for Error {
@@ -44,6 +49,15 @@ impl fmt::Display for Error {
                 write!(f, "command requires a character in its command context")
             }
             Self::EmptyYankRegister => write!(f, "nothing yanked; use y, d, or c first"),
+            Self::SurroundNotFound => write!(f, "surround pair not found around every cursor"),
+            Self::SurroundOverlap => {
+                write!(f, "multiple cursors target the same surround delimiter")
+            }
+            Self::SurroundAmbiguous => write!(f, "cursor is on an ambiguous surround delimiter"),
+            Self::NoSurroundReplacement => write!(f, "no surround replacement is awaiting input"),
+            Self::SurroundChanged => {
+                write!(f, "document or view changed during surround replacement")
+            }
             Self::EmptyBinding => write!(f, "a keybinding cannot be empty"),
             Self::ConflictingBinding => write!(
                 f,

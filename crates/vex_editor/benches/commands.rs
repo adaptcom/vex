@@ -276,6 +276,46 @@ fn delimiter_matching(c: &mut Criterion) {
     group.finish();
 }
 
+fn surround_edit(c: &mut Criterion) {
+    let mut group = c.benchmark_group("surround_edit_undo");
+    for bytes in [1 << 20, 100 << 20] {
+        let rope = Rope::from_str(&"(word)\n".repeat(bytes / 7));
+        for count in [1, 1000] {
+            let mut editor = Editor::new(Document::from(rope.clone()));
+            editor
+                .set_selections(
+                    SelectionSet::new(
+                        (0..count)
+                            .map(|index| Selection::cursor(CharOffset(index * 7 + 1)))
+                            .collect(),
+                        0,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            for replace in [false, true] {
+                let name = if replace { "replace" } else { "delete" };
+                group.bench_function(BenchmarkId::new(format!("{name}_{count}"), bytes), |b| {
+                    b.iter(|| {
+                        let mut context = vex_editor::CommandContext::new(&mut editor);
+                        context.character = Some('(');
+                        if replace {
+                            vex_editor::commands::surround_replace(&mut context).unwrap();
+                            context.character = Some(']');
+                            vex_editor::commands::surround_replace_finish(&mut context).unwrap();
+                        } else {
+                            vex_editor::commands::surround_delete(&mut context).unwrap();
+                        }
+                        editor.execute("undo", 1).unwrap();
+                        black_box(editor.document().text());
+                    });
+                });
+            }
+        }
+    }
+    group.finish();
+}
+
 fn surround_add(c: &mut Criterion) {
     let mut group = c.benchmark_group("surround_add_undo");
     for bytes in [1 << 20, 100 << 20] {
@@ -304,6 +344,6 @@ criterion_group! {
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects, delimiter_matching, surround_add
+    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects, delimiter_matching, surround_add, surround_edit
 }
 criterion_main!(benches);

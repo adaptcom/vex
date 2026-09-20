@@ -174,7 +174,7 @@ impl App {
             return Err(io::Error::other("commit message is empty"));
         }
         self.editor.finish_undo_group();
-        self.keys.cancel();
+        self.keys.cancel(&mut self.editor);
         self.queue_git_write(root, Operation::Commit { message })
     }
 
@@ -189,7 +189,7 @@ impl App {
             .status_key
             .clone();
         self.leave_commit_draft(&key)?;
-        self.keys.cancel();
+        self.keys.cancel(&mut self.editor);
         self.git_write.prefix = None;
         self.message = "Commit draft retained for this session".into();
         Ok(())
@@ -226,7 +226,7 @@ impl App {
             return Some(true);
         }
         if key == Key::Ctrl('c') {
-            self.keys.cancel();
+            self.keys.cancel(&mut self.editor);
             self.git_write.prefix = Some(id);
             self.message =
                 "Ctrl-c commit · Ctrl-k return and keep draft · Esc cancel prefix".into();
