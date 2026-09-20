@@ -17,6 +17,7 @@ use vex_editor::{
 
 mod clipboard;
 mod completion;
+mod formatting;
 mod git;
 mod git_write;
 mod jumps;
@@ -98,6 +99,7 @@ pub struct App {
     workspace: workspace::State,
     rename: rename::State,
     actions: actions::State,
+    formatting: formatting::State,
 }
 
 impl App {
@@ -142,6 +144,7 @@ impl App {
             workspace: workspace::State::default(),
             rename: rename::State::default(),
             actions: actions::State::default(),
+            formatting: formatting::State::default(),
         }
     }
 
@@ -865,6 +868,12 @@ commands! {
     fn reload_file(app, argument, force) ["reload"] {
         if !argument.is_empty() { return Err(io::Error::other("reload takes no arguments")); }
         app.reload_current_file(force)
+    }
+
+    /// Format the current file through its language server, leaving changes unsaved as one undo step.
+    fn format_file(app, argument, force) ["format", "fmt"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("format takes no arguments and does not accept !")); }
+        app.editor.execute("format_document", 1).map_err(io::Error::other)
     }
 
     /// Stage the selected whole file from disk. Save unsaved buffers first; hunk staging is not yet supported.

@@ -232,6 +232,7 @@ impl Default for Keymap {
                 (vec![Char('m'), Char('i')], "select_textobject_inner"),
                 (vec![Char('m'), Char('a')], "select_textobject_around"),
                 (vec![Char('m'), Char('s')], "surround_add"),
+                (vec![Char('=')], "format_selections"),
                 (vec![Char('>')], "indent"),
                 (vec![Char('<')], "unindent"),
                 (vec![Char('J')], "join_selections"),
@@ -1079,6 +1080,7 @@ mod tests {
                 (" h", crate::LanguageAction::DocumentHighlights),
                 (" r", crate::LanguageAction::Rename),
                 (" a", crate::LanguageAction::CodeAction),
+                ("=", crate::LanguageAction::FormatSelections),
             ] {
                 let mut editor = Editor::new(Document::from("name"));
                 if mode == Mode::Select {

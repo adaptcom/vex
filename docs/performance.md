@@ -1079,3 +1079,34 @@ saving and undo.
 ```sh
 cargo test -p vex_term --release --locked benchmark_code_action_submission_and_menu -- --ignored --nocapture
 ```
+
+## Formatting
+
+Formatting captures the active document and all of its views using immutable
+snapshots. It does not enumerate or upload hidden buffers. UTF-16 conversion,
+reply decoding, edit validation, text preparation, and view mapping run on
+workers. Existing-buffer edit delivery skips building the path catalog used to
+check newly opened files; only edits to hidden buffers schedule a full workspace
+synchronization. Normal active-document updates synchronize formatting results.
+
+A local release benchmark took 500 samples of `format_document` plus
+`take_lsp_update`, with three views of one buffer:
+
+| Buffer | Selections per view | Median submission | Sample p95 |
+|---|---:|---:|---:|
+| 1 MiB | 1 | 0.750 µs | 0.875 µs |
+| 1 MiB | 1,000 | 1.292 µs | 1.500 µs |
+| 8 MiB | 1 | 0.292 µs | 0.375 µs |
+| 8 MiB | 1,000 | 1.458 µs | 1.542 µs |
+
+These samples exclude file loading, server processing, worker preparation,
+result installation, drawing, cancellation, and update destruction. They measure
+submission cost rather than total formatter latency. Source tests verify exact
+UTF-16 ranges, option capture, multi-view edits, undo, no-op replies, invalid
+batches, stale settings, cancellation, and preservation of hidden unsaved buffers.
+The real rust-analyzer PTY test checks formatting, an immediately queued save,
+undo/redo, and the default lack of range-formatting support.
+
+```sh
+cargo test -p vex_term --release --locked benchmark_formatting_submission -- --ignored --nocapture
+```

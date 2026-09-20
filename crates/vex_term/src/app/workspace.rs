@@ -11,7 +11,7 @@ use std::{
 };
 use vex_core::Document;
 use vex_editor::{
-    ExternalEditPlan, Language, Mode, PreparedExternalEdit, background::Cancellation,
+    ExternalEditPlan, Indentation, Language, Mode, PreparedExternalEdit, background::Cancellation,
 };
 use vex_lsp::workspace_edit::{self, SynchronizedDocument, WorkspaceEdit};
 
@@ -28,6 +28,7 @@ pub struct Context {
     origin: Jump,
     window: u64,
     mode: Mode,
+    settings: Option<(Option<Language>, Indentation)>,
     pub(super) documents: Arc<[CapturedDocument]>,
 }
 
@@ -60,6 +61,9 @@ impl Context {
             && self.origin.selections.as_ref() == app.editor.selections()
             && self.window == app.focused_window_id()
             && self.mode == app.editor.mode()
+            && self.settings.is_none_or(|(language, indentation)| {
+                language == app.editor.language() && indentation == app.editor.indentation()
+            })
     }
 }
 
@@ -223,6 +227,29 @@ impl App {
             window: self.focused_window_id(),
             mode: self.editor.mode(),
             documents: self.capture_workspace_buffers(),
+            settings: None,
+        }
+    }
+
+    /// Capture just the active document and all of its views for edits that
+    /// cannot target another file (formatting). Hidden buffers are not visited.
+    pub(super) fn document_edit_context(&self) -> Context {
+        Context {
+            origin: self.current_jump(),
+            window: self.focused_window_id(),
+            mode: self.editor.mode(),
+            settings: Some((self.editor.language(), self.editor.indentation())),
+            documents: self
+                .files
+                .target()
+                .map(|path| CapturedDocument {
+                    path: path.into(),
+                    plan: self.editor.external_edit_plan(),
+                    dirty: self.is_dirty(),
+                    language: self.editor.language(),
+                })
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -386,6 +413,7 @@ impl App {
             }
             return true;
         }
+        let mut hidden_changed = false;
         let outcome = result.changes.and_then(|changes| {
             if let Some(server) = &mut server
                 && (!self.command_current(server.epoch, server.request) || !server.reply.claim())
@@ -394,12 +422,17 @@ impl App {
                     "language server edit is no longer current",
                 ));
             }
+            hidden_changed = changes
+                .iter()
+                .any(|change| change.edit.document_id() != self.editor.document().id());
             self.commit_workspace_edit(changes)
         });
         match outcome {
             Ok(count) => {
                 if server.is_none() {
-                    self.workspace.synchronize |= count > 0;
+                    // The normal document update already synchronizes active
+                    // edits. Only changed hidden buffers need a catalog update.
+                    self.workspace.synchronize |= count > 0 && hidden_changed;
                     self.dismiss_language_help();
                 }
                 self.invalidate_completion();

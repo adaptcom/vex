@@ -23,6 +23,7 @@ pub enum Error {
     NoMatch,
     InvalidRegex(String),
     SelectionLimit,
+    FormatSelectionCount,
     InvalidCompletion,
     EmptyYankRegister,
     EmptyRegister(char),
@@ -97,6 +98,9 @@ impl fmt::Display for Error {
                 "document or mode changed during search; search cancelled"
             ),
             Self::InvalidRegex(error) => write!(f, "invalid regex: {error}"),
+            Self::FormatSelectionCount => {
+                write!(f, "format_selections requires exactly one selection")
+            }
             Self::SelectionLimit => write!(
                 f,
                 "regex operation exceeds 100,000 selections or 64 KiB query"

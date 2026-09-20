@@ -121,6 +121,32 @@ def main():
             terminal.finish()
         print("PASS: real rust-analyzer code actions, diagnostic quick fix, unsaved edits, explicit save and undo")
 
+        # Stable rustfmt supports whole files; range formatting is opt-in.
+        format_source = "fn main(){let _x=1;}\n"
+        formatted = "fn main() {\n    let _x = 1;\n}\n"
+        main_file.write_text(format_source)
+        with Terminal([binary, str(main_file)]) as terminal:
+            terminal.start()
+            terminal.resize(140, 24)
+            terminal.expect_screen(b"RA:ready")
+            terminal.send(b"=")
+            terminal.expect_screen(b"range formatting")
+            assert main_file.read_text() == format_source
+            # An early write must wait for the formatting request and edit worker.
+            terminal.send(b":fmt\r:w\r")
+            terminal.expect_screen(b"wrote")
+            assert main_file.read_text() == formatted, main_file.read_text()
+            terminal.send(b"u:w\r")
+            terminal.expect_screen(b"fn main(){let _x=1;}")
+            terminal.expect_screen(b"wrote")
+            assert main_file.read_text() == format_source
+            terminal.send(b"U:format\r")
+            terminal.expect_screen(b"no formatting changes")
+            terminal.send(b":wq\r")
+            terminal.finish()
+            assert main_file.read_text() == formatted
+        print("PASS: real rust-analyzer document formatting, range capability check, early write ordering, undo/redo and no-op formatting")
+
         # Navigation uses ranges and document highlights from the real server.
         navigation_source = (
             "struct Widget;\n"

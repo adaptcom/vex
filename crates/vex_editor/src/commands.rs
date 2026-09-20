@@ -821,6 +821,24 @@ commands! {
         Ok(())
     }
 
+    /// Format the current selection through the language server. Like Helix,
+    /// this requires exactly one selection and range-formatting support.
+    /// Text preparation runs in the background; changes remain unsaved and undoable.
+    fn format_selections(ctx) {
+        if ctx.editor.selections().ranges().len() != 1 { return Err(Error::FormatSelectionCount); }
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_language_action(crate::LanguageAction::FormatSelections);
+        Ok(())
+    }
+
+    /// Format the whole document through its language server, preserving all
+    /// selections and creating one unsaved undo step. Used by :format and :fmt.
+    fn format_document(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_language_action(crate::LanguageAction::FormatDocument);
+        Ok(())
+    }
+
     /// Move to the next diagnostic, wrapping and honoring the repeat count.
     fn goto_next_diagnostic(ctx) {
         ctx.editor.finish_undo_group();

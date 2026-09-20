@@ -41,6 +41,8 @@ protocol failures, and request errors leave editing and saving available.
 | `Space-h` / `:select_references_to_symbol_under_cursor` | Select related occurrences in the current document |
 | `Space-r` / `:rename_symbol` | Rename the symbol across files through a prefilled prompt |
 | `Space-a` / `:code_action` | Choose and apply a language-server code action |
+| `=` / `:format_selections` | Format one selection through LSP range formatting |
+| `:format` / `:fmt` | Format the current file through LSP document formatting |
 | `Space-s` / `:symbol_picker` | Pick a symbol from the current document |
 | `Space-S` / `:workspace_symbol_picker` | Search symbols across the active server's workspace |
 | `Ctrl-o` / `:jump_backward` | Move backward through the current pane's jump history |
@@ -171,6 +173,38 @@ resolution, JSON work, and workspace preparation run on workers. A replaced list
 changed document revision, or restarted server invalidates old action tickets.
 Resource operations and confirmation-required annotations remain unsupported,
 as described under [workspace edits](workspace-edits.md).
+
+## Formatting
+
+`=` sends the single selection's exact range, in UTF-16 coordinates, to
+`textDocument/rangeFormatting`. Normal and select mode share the binding, and
+select mode is retained. Multiple selections report an error, matching
+[Helix's current command](https://github.com/helix-editor/helix/blob/master/helix-term/src/commands.rs).
+A server may expand the requested range to format a surrounding syntax construct.
+Vex does not substitute whole-file formatting if range formatting is unsupported.
+
+`:format` (alias `:fmt`) sends `textDocument/formatting` for the active file and
+works with any number of selections. Both requests pass the buffer's tab display
+width as `tabSize` and its indentation style as `insertSpaces`; additional
+formatter behavior remains under server/project configuration. Formatting does
+not save. `:w` saves explicitly, and undo restores the previous text in one step.
+An empty or identity response creates no undo step or revision.
+
+The request captures only the active document and its views. Unicode conversion,
+JSON decoding, edit validation, text construction, and cursor mapping run on
+workers. Malformed, overlapping, or out-of-bounds edits reject the entire result.
+Revision, selection, pane, mode, language, and indentation changes invalidate
+pending replies; Escape/Ctrl-c cancels. Queued editing or save commands wait for
+both the server reply and edit preparation. Unrelated hidden buffers are neither
+captured nor uploaded for formatting, and file I/O is not performed on the UI
+thread. Standard LSP document and workspace edit limits still apply.
+
+Rust-analyzer supports whole-file formatting with rustfmt. Its
+[`rustfmt.rangeFormatting.enable`](https://rust-analyzer.github.io/book/configuration.html#rust-analyzerrustfmtrangeformattingenable)
+setting defaults to false and requires nightly rustfmt for range formatting.
+With the default server settings, use `:format` for Rust. Servers that advertise
+range formatting can use `=` immediately; server-specific settings are a future
+configuration task.
 
 ## Completion
 
@@ -338,8 +372,7 @@ proportional to document size on the service thread. Definition/type/implementat
 reference destinations and workspace-edit files load on workers; some older
 symbol-jump paths still load synchronously.
 
-Signature help, formatting,
-semantic tokens, multi-buffer server reuse, and configurable server settings are
+Signature help, semantic tokens, multi-buffer server reuse, and configurable server settings are
 future work.
 
 Hover preparation runs on the LSP service thread using the bundled Markdown

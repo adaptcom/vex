@@ -23,7 +23,7 @@ fn run() -> io::Result<()> {
     for argument in env::args_os().skip(1) {
         if !literal && (argument == "--help" || argument == "-h") {
             println!(
-                "Vex — a terminal text editor\n\nUsage: vex [--] [FILE]\n\nOpen a UTF-8 file, create a new file, or start a scratch buffer.\n\ni/a  insert/append    Esc  normal mode    v  select mode\nhjkl / arrows  move  w/b/e  word motions  u/U  undo/redo\n:w [PATH]  save       :q  quit            :q!  discard and quit\n:wq  save and quit    :help [COMMAND]     Ctrl-s/Ctrl-q  save/quit"
+                "Vex — a terminal text editor\n\nUsage: vex [--] [FILE]\n\nOpen a UTF-8 file, create a new file, or start a scratch buffer.\n\ni/a  insert/append    Esc  normal mode    v  select mode\nhjkl / arrows  move  w/b/e  word motions  u/U  undo/redo\n:w [PATH]  save       :q  quit            :q!  discard and quit\n:wq  save and quit    :help [COMMAND]\n=  format selection  :format  format file"
             );
             return Ok(());
         }

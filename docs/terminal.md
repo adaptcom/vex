@@ -74,6 +74,8 @@ and calls that existing dispatcher.
 | Space-s, Space-S | Open document / workspace symbol picker |
 | Space-r | Rename the symbol at the primary cursor; edits remain unsaved in each affected buffer |
 | Space-a | Open the code-action menu; Enter applies, Escape cancels |
+| `=` | Format one selection using the language server |
+| `:format`, `:fmt` | Format the active file; changes remain unsaved and undoable |
 | Space-g | Open the [repository status view](git-status.md) |
 | Ctrl-w, Space-w | Enter [window mode](windows.md) to split, focus, swap, and close panes |
 | Escape | Cancel a prefix/picker/prompt; otherwise enter normal mode |

@@ -68,6 +68,8 @@ pub enum LanguageAction {
     DocumentHighlights,
     Rename,
     CodeAction,
+    FormatSelections,
+    FormatDocument,
     Completion,
     NextDiagnostic(usize),
     PreviousDiagnostic(usize),

@@ -79,7 +79,7 @@ selections, and measure operations that could affect input latency.
   use the shared picker with filtering, syntax previews, and last-picker reopening.
   Document highlights retain the primary occurrence; range preparation and file
   loading run on workers with cancellation, revision guards, and queued input.
-- [ ] LSP rename (`<space>r`), code actions (`<space>a`), and formatting (`=`).
+- [x] LSP rename (`<space>r`), code actions (`<space>a`), and formatting (`=`).
   Support validated edits across open and hidden buffers before enabling workspace
   edits; respect revisions and undo boundaries.
   The shared workspace-edit path now prepares text and every pane's selections on
@@ -93,7 +93,11 @@ selections, and measure operations that could affect input latency.
   Code actions now use a bordered `<space>a` menu with Helix navigation and
   ordering, service-owned opaque payloads, selected-action resolution, and
   edit-before-command delivery. Cancellation and failed literal edits discard
-  the continuation command. Next: range formatting.
+  the continuation command. Formatting now uses `=` for one exact selection
+  and `:format`/`:fmt` for the whole file, with buffer indentation options,
+  background preparation, one undo step, and cancellation/stale-result guards.
+  Formatting captures/synchronizes only the active document. Rust uses
+  `:format` by default; range formatting requires server support.
 - [ ] Document/workspace diagnostic pickers (`<space>d`/`D`) and first/last
   diagnostic jumps (`[D`/`]D`). Retain diagnostics beyond the active document.
 - [ ] Scrollable hover documentation and signature help.

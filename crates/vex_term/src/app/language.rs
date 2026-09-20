@@ -203,6 +203,7 @@ impl App {
         self.language.cancel();
         self.rename.clear();
         self.actions.clear();
+        self.formatting.clear();
         self.language.command = None;
     }
 
@@ -257,6 +258,7 @@ impl App {
             self.language.cancel();
             self.rename.clear();
             self.actions.clear();
+            self.formatting.clear();
             self.completion.clear();
             self.language.completion = None;
             self.language.epoch += 1;
@@ -311,6 +313,14 @@ impl App {
             }),
             Some(LanguageAction::Rename) => Some(super::completion::Request {
                 kind: self.prepare_rename_request(),
+                automatic: false,
+            }),
+            Some(LanguageAction::FormatSelections) => Some(super::completion::Request {
+                kind: self.prepare_formatting_request(false),
+                automatic: false,
+            }),
+            Some(LanguageAction::FormatDocument) => Some(super::completion::Request {
+                kind: self.prepare_formatting_request(true),
                 automatic: false,
             }),
             Some(LanguageAction::CodeAction) => Some(super::completion::Request {
@@ -368,6 +378,7 @@ impl App {
                             | RequestKind::DocumentHighlights
                             | RequestKind::PrepareRename { .. }
                             | RequestKind::Rename { .. }
+                            | RequestKind::Format { .. }
                             | RequestKind::CodeActions { .. }
                             | RequestKind::ApplyCodeAction { .. }
                             | RequestKind::ExecuteCommand { .. }
@@ -496,6 +507,9 @@ impl App {
                     Ok(Answer::Symbols(symbols)) => self.receive_symbols(symbols),
                     Ok(Answer::CompletionResolved(item)) => self.receive_resolved_completion(item),
                     Ok(Answer::RenamePrepared(name)) => self.receive_rename_preparation(name),
+                    Ok(Answer::Formatted { edit, versions }) => {
+                        self.receive_formatting(edit, versions)
+                    }
                     Ok(Answer::CodeActions(actions)) => self.receive_code_actions(actions),
                     Ok(Answer::CodeActionReady(action)) => self.receive_code_action_ready(action),
                     Ok(Answer::CommandExecuted) => {
@@ -514,6 +528,7 @@ impl App {
     fn fail_language_request(&mut self, error: String) {
         self.rename.clear();
         self.actions.clear();
+        self.formatting.clear();
         if self.fail_symbol_picker(&error) {
             self.cancel_language_request();
             self.clear_message();

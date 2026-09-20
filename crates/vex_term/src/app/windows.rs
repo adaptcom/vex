@@ -891,18 +891,22 @@ impl App {
         changes: Vec<super::workspace::Change>,
     ) -> io::Result<usize> {
         let mut prepared = Vec::with_capacity(changes.len());
-        let mut paths: std::collections::HashSet<PathBuf> = self
-            .files
-            .target()
-            .map(Path::to_path_buf)
-            .into_iter()
-            .chain(
-                self.windows
-                    .buffers
-                    .values()
-                    .filter_map(|buffer| buffer.files.target().map(Path::to_path_buf)),
-            )
-            .collect();
+        let mut paths: std::collections::HashSet<PathBuf> =
+            if changes.iter().any(|change| change.new_file.is_some()) {
+                self.files
+                    .target()
+                    .map(Path::to_path_buf)
+                    .into_iter()
+                    .chain(
+                        self.windows
+                            .buffers
+                            .values()
+                            .filter_map(|buffer| buffer.files.target().map(Path::to_path_buf)),
+                    )
+                    .collect()
+            } else {
+                Default::default()
+            };
         // No text, history, focus, or buffer-catalog mutations occur until every
         // destination and view has passed this preflight.
         for change in changes {

@@ -5,6 +5,7 @@ mod actions;
 mod apply;
 pub use actions::{ActionEdit, CodeAction, CodeActions};
 mod documentation;
+mod formatting;
 pub use apply::{Applied, ApplyReply};
 pub use vex_syntax::markup::Document as Documentation;
 mod command;
@@ -110,6 +111,10 @@ pub enum RequestKind {
         name: String,
         documents: Arc<[WorkspaceDocument]>,
     },
+    Format {
+        selection: Option<Selection>,
+        indentation: vex_editor::Indentation,
+    },
     CodeActions {
         selection: Selection,
         documents: Arc<[WorkspaceDocument]>,
@@ -156,6 +161,10 @@ pub enum Answer {
     Completion(Completions),
     CompletionResolved(CompletionItem),
     RenamePrepared(String),
+    Formatted {
+        edit: workspace_edit::WorkspaceEdit,
+        versions: Vec<workspace_edit::SynchronizedDocument>,
+    },
     CodeActions(CodeActions),
     CodeActionReady(ActionEdit),
     CommandExecuted,
@@ -530,6 +539,8 @@ async fn session(
                 "references":{},
                 "documentHighlight":{},
                 "rename":{"prepareSupport":true},
+                "formatting":{},
+                "rangeFormatting":{},
                 "codeAction":{"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["","quickfix","refactor","refactor.extract","refactor.inline","refactor.rewrite","source","source.organizeImports","source.fixAll"]}},"isPreferredSupport":true,"disabledSupport":true,"dataSupport":true,"resolveSupport":{"properties":["edit","command"]}},
                 "documentSymbol":{"hierarchicalDocumentSymbolSupport":true,"symbolKind":{"valueSet":(1..=26).collect::<Vec<_>>()}},
                 "completion":{"contextSupport":true,"completionItem":{
@@ -733,6 +744,7 @@ async fn session(
                             RequestKind::ResolveCompletion(item) => completion::resolve(&item, value, document.snapshot.text(), request.position).map(Answer::CompletionResolved),
                             RequestKind::PrepareRename { selection, .. } => rename::placeholder(&value, &document.snapshot, selection, request.position, &positions, &request.cancellation).map(Answer::RenamePrepared),
                             RequestKind::Rename { .. } => workspace_edit::parse(&value, &request.cancellation).map(|edit| Answer::WorkspaceEdit { edit, versions }),
+                            RequestKind::Format { .. } => formatting::parse(value, &uri, versions[0].version, &request.cancellation).map(|edit| Answer::Formatted { edit, versions }),
                             RequestKind::CodeActions { .. } => code_actions.replace(value, &document, &request.cancellation).map(Answer::CodeActions),
                             RequestKind::ApplyCodeAction { action, .. } => code_actions.ready(&action, &document, Some(value), &capabilities, versions, &request.cancellation).map(Answer::CodeActionReady),
                             RequestKind::ExecuteCommand { .. } => edit_failure.map_or(Ok(Answer::CommandExecuted), |error| Err(format!("workspace edit failed: {error}"))),
@@ -912,6 +924,15 @@ async fn start_request(
         RequestKind::ResolveCompletion(_) => ("completionItem/resolve", "completionProvider"),
         RequestKind::PrepareRename { .. } => ("textDocument/prepareRename", "renameProvider"),
         RequestKind::Rename { .. } => ("textDocument/rename", "renameProvider"),
+        RequestKind::Format {
+            selection: Some(_), ..
+        } => (
+            "textDocument/rangeFormatting",
+            "documentRangeFormattingProvider",
+        ),
+        RequestKind::Format {
+            selection: None, ..
+        } => ("textDocument/formatting", "documentFormattingProvider"),
         RequestKind::CodeActions { .. } => ("textDocument/codeAction", "codeActionProvider"),
         RequestKind::ApplyCodeAction { .. } => ("codeAction/resolve", "codeActionProvider"),
         RequestKind::ExecuteCommand { .. } => {
@@ -921,13 +942,23 @@ async fn start_request(
     let mut versions = Vec::new();
     let result = async {
         if capabilities[capability] != true && !capabilities[capability].is_object() {
-            return Err("language server does not support this request".into());
+            return Err(match &request.kind {
+                RequestKind::Format { selection: Some(_), .. } => "language server does not support range formatting; use :format for the whole file",
+                RequestKind::Format { selection: None, .. } => "language server does not support document formatting",
+                _ => "language server does not support this request",
+            }.into());
         }
         let command_params = if let RequestKind::ExecuteCommand { command, .. } = &request.kind {
             Some(command.params(capabilities)?)
         } else {
             None
         };
+        if matches!(&request.kind, RequestKind::Format { .. }) {
+            versions.push(workspace_edit::SynchronizedDocument {
+                path: document.path.clone(), version,
+                document: document.snapshot.id(), revision: document.snapshot.revision(),
+            });
+        }
         if let RequestKind::ApplyCodeAction { action, .. } = &request.kind {
             code_actions.validate(action, document)?;
         }
@@ -997,6 +1028,7 @@ async fn start_request(
             RequestKind::WorkspaceSymbols(query) => json!({"query":query}),
             RequestKind::ResolveCompletion(item) => item.raw.clone(),
             RequestKind::ExecuteCommand { .. } => command_params.unwrap(),
+            RequestKind::Format { selection, indentation } => formatting::params(uri, document, *selection, *indentation)?,
             RequestKind::CodeActions { selection, .. } => {
                 diagnostics.params(uri, document, version, *selection, &request.cancellation)?
             }

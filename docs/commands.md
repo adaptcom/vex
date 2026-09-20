@@ -65,6 +65,8 @@ Generated from command Rustdoc and the default keymap.
 | `select_references_to_symbol_under_cursor` | Normal: `<Space>h`, Select: `<Space>h` | Select document highlights for the symbol under the primary cursor, retaining the primary occurrence. |
 | `rename_symbol` | Normal: `<Space>r`, Select: `<Space>r` | Rename the symbol under the primary cursor through its language server.  Opens a prompt prefilled with the current name. Workspace edits preserve  unsaved buffers and create a separate undo step in each changed buffer. |
 | `code_action` | Normal: `<Space>a`, Select: `<Space>a` | Show language-server code actions for the primary selection.  The frontend resolves the selected action and applies its edits before  executing any accompanying server command. |
+| `format_selections` | Normal: `=`, Select: `=` | Format the current selection through the language server. Like Helix,  this requires exactly one selection and range-formatting support.  Text preparation runs in the background; changes remain unsaved and undoable. |
+| `format_document` |  | Format the whole document through its language server, preserving all  selections and creating one unsaved undo step. Used by :format and :fmt. |
 | `goto_next_diagnostic` | Normal: `]d`, Select: `]d` | Move to the next diagnostic, wrapping and honoring the repeat count. |
 | `goto_previous_diagnostic` | Normal: `[d`, Select: `[d` | Move to the previous diagnostic, wrapping and honoring the repeat count. |
 | `search_forward` | Normal: `/`, Select: `/` | Begin a forward regex search after the primary selection. Matches wrap; counts select successive matches, and select mode adds them. Acceptance stores the query in the chosen register (default: /) and makes it active for n/N across buffers. |
