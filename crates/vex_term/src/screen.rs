@@ -61,7 +61,10 @@ impl Style {
             Self::Text => (Reset, Reset),
             Self::Markup(attributes) => {
                 if attributes.contains(Attributes::CODE) {
-                    (Grey, DarkGrey)
+                    // ANSI grey pairs depend on the terminal palette and can
+                    // have almost no contrast. Code needs the same readable
+                    // foreground/background as ordinary document text.
+                    (Reset, Reset)
                 } else if attributes.contains(Attributes::LINK) {
                     (DarkCyan, Reset)
                 } else if attributes.contains(Attributes::MUTED) {
