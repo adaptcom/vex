@@ -71,6 +71,7 @@ pub enum ApplicationAction {
     Clipboard(ClipboardKind, ClipboardAction, usize),
     ClipboardWrite(ClipboardKind, std::sync::Arc<str>, bool),
     SaveSelection,
+    RecordJump(std::sync::Arc<SelectionSet>),
     Jump { forward: bool, count: usize },
     GitStatus,
     FilePicker,

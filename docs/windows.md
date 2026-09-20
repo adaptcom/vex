@@ -71,6 +71,27 @@ mode, selection direction, and the primary selection. Language services are
 not needed. Saved scalar positions currently normalize to valid grapheme/text
 bounds when revisited; remapping them through intervening edits remains on TODO.md.
 
+`g.` (`goto_last_modification`) jumps to the end of the latest retained undo
+group's change associated with its original primary selection, following
+[Helix's history behavior](https://github.com/helix-editor/helix/blob/master/helix-core/src/history.rs).
+When no change
+overlaps that selection, it uses the first change. It composes grouped edits,
+so moving the cursor after typing does not change the destination. Undo and
+redo choose the corresponding history entry; with no retained edits it does
+nothing. In select mode it extends each selection to the destination. Counts
+do not select older modifications.
+
+The command shares text-free undo metadata with the existing selection worker.
+Composition and selection construction check cancellation, and stale results
+cannot move the cursor or add a checkpoint. Later editing keys wait until it
+finishes. A successful jump records its origin for Ctrl-o. Ordinary single-caret
+typing remains a compact map; large groups compose spans of original text and
+inserted lengths without reading the document's contents.
+
+`python3 tools/navigation_smoke.py` checks the release executable's `g.`
+destination, queued delete/insert ordering, and Ctrl-o return through a real
+pseudo-terminal. Unit and property tests stay beside their Rust implementation.
+
 ## Different files
 
 `:vsplit [PATH]` and `:hsplit [PATH]` open a file in a new pane, or duplicate the

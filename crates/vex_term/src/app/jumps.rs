@@ -112,6 +112,13 @@ impl App {
         self.push_jump(self.current_jump());
     }
 
+    pub(super) fn record_jump_at(&mut self, selections: Arc<SelectionSet>) {
+        self.push_jump(Jump {
+            document: self.editor.document().id(),
+            selections,
+        });
+    }
+
     pub(super) fn navigate_jump(&mut self, forward: bool, count: usize) -> io::Result<()> {
         // Copy at most CAPACITY Arc handles. Commit the new history position
         // only after navigation succeeds; failed requests keep their return path.
@@ -187,6 +194,29 @@ mod tests {
     }
     fn cursor(app: &App) -> usize {
         app.editor.selections().primary().start().0
+    }
+
+    #[test]
+    fn last_modification_records_the_origin_only_after_the_worker_succeeds() {
+        let mut app = App::from_document(Document::from("abcdefghij"), (80, 24));
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.editor.insert_text("XY").unwrap();
+        app.editor.execute("normal_mode", 1).unwrap();
+        at(&mut app, 9);
+        app.editor.set_background_search(true);
+        for ch in ['g', '.'] {
+            press(&mut app, KeyCode::Char(ch), KeyModifiers::NONE);
+        }
+        assert!(app.input_waiting());
+        let result = app.editor.take_search_job().unwrap().run().unwrap();
+        assert_eq!(cursor(&app), 9);
+        app.handle_search_result(result);
+        assert!(!app.input_waiting());
+        assert_eq!(cursor(&app), 2);
+        app.execute("jump_backward").unwrap();
+        assert_eq!(cursor(&app), 9);
+        app.execute("jump_forward").unwrap();
+        assert_eq!(cursor(&app), 2);
     }
 
     #[test]

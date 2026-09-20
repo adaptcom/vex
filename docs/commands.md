@@ -45,6 +45,7 @@ Generated from command Rustdoc and the default keymap.
 | `last_picker` | Normal: `<Space>'`, Select: `<Space>'` | Reopen the last picker with its query, selected result, and scroll position. |
 | `global_search` | Normal: `<Space>/`, Select: `<Space>/` | Search file contents below the working directory with a regular expression, including unsaved buffers. Accepted queries use the chosen search register (default /). |
 | `goto_last_accessed_file` | Normal: `ga`, Select: `ga` | Switch to the last buffer accessed in this pane, restoring its view. |
+| `goto_last_modification` | Normal: `g.`, Select: `g.` | Go to the end of the latest undo group's change associated with its original primary selection. Select mode extends each selection; records a jump on success. |
 | `goto_last_modified_file` | Normal: `gm`, Select: `gm` | Switch to the last other buffer modified in this pane. |
 | `goto_next_buffer` | Normal: `gn`, Select: `gn` | Switch to the next loaded buffer in opening order, wrapping; accepts a count. |
 | `goto_previous_buffer` | Normal: `gp`, Select: `gp` | Switch to the previous loaded buffer in opening order, wrapping; accepts a count. |

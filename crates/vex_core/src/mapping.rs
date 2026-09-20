@@ -1,7 +1,45 @@
 //! Text-free position maps retained with undo groups for other views.
 
 use crate::{Affinity, CharOffset, Error, Selection, SelectionSet, Transaction};
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
+
+/// Share undo metadata in O(1), without allocating a container for the common
+/// single-map group. Subsequent adjacent typing can still compact in place.
+#[derive(Clone, Debug)]
+pub(crate) enum PositionMaps {
+    Single(Arc<PositionMap>),
+    Multiple(Arc<Vec<Arc<PositionMap>>>),
+}
+
+impl PositionMaps {
+    pub fn as_slice(&self) -> &[Arc<PositionMap>] {
+        match self {
+            Self::Single(map) => std::slice::from_ref(map),
+            Self::Multiple(maps) => maps,
+        }
+    }
+
+    pub fn push(&mut self, map: Arc<PositionMap>) {
+        match self {
+            Self::Single(previous) => {
+                if Arc::get_mut(previous).is_some_and(|previous| previous.merge_typing(&map)) {
+                    return;
+                }
+                *self = Self::Multiple(Arc::new(vec![previous.clone(), map]));
+            }
+            Self::Multiple(maps) => {
+                let maps = Arc::make_mut(maps);
+                if !maps
+                    .last_mut()
+                    .and_then(Arc::get_mut)
+                    .is_some_and(|previous| previous.merge_typing(&map))
+                {
+                    maps.push(map);
+                }
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct PositionMap {
@@ -9,6 +47,12 @@ pub(crate) struct PositionMap {
 }
 
 impl PositionMap {
+    pub fn changes(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&Range<CharOffset>, &Range<CharOffset>)> {
+        self.changes.iter().map(|(old, new)| (old, new))
+    }
+
     pub fn new(transaction: &Transaction) -> Self {
         Self {
             changes: transaction

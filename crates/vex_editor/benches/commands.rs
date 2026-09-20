@@ -409,11 +409,42 @@ fn registers(c: &mut Criterion) {
     group.finish();
 }
 
+fn last_modification(c: &mut Criterion) {
+    let mut group = c.benchmark_group("last_modification");
+    for mib in [1usize, 100] {
+        for carets in [1usize, 1000] {
+            let text = Rope::from_str(&"source text\n".repeat((mib << 20).div_ceil(12)));
+            let mut editor = editor(&text, carets);
+            editor.execute("insert_mode", 1).unwrap();
+            for _ in 0..16 {
+                editor.insert_text("x").unwrap();
+            }
+            editor.execute("normal_mode", 1).unwrap();
+            let label = format!("{mib}MiB_{carets}_carets");
+            let change = editor.document().last_modification().unwrap();
+            group.bench_function(BenchmarkId::new("resolve_metadata", &label), |b| {
+                b.iter(|| {
+                    black_box(black_box(&change).position(|| false));
+                });
+            });
+            editor.set_background_search(true);
+            group.bench_function(BenchmarkId::new("schedule_cancel", &label), |b| {
+                b.iter(|| {
+                    editor.execute("goto_last_modification", 1).unwrap();
+                    editor.execute("normal_mode", 1).unwrap();
+                    black_box(editor.take_search_job());
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects, delimiter_matching, surround_add, surround_edit, insert_repeat, registers
+    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects, delimiter_matching, surround_add, surround_edit, insert_repeat, registers, last_modification
 }
 criterion_main!(benches);

@@ -280,6 +280,7 @@ impl Default for Keymap {
                 (vec![Char('g'), Char('g')], "goto_file_start"),
                 (vec![Char('g'), Char('a')], "goto_last_accessed_file"),
                 (vec![Char('g'), Char('m')], "goto_last_modified_file"),
+                (vec![Char('g'), Char('.')], "goto_last_modification"),
                 (vec![Char('g'), Char('n')], "goto_next_buffer"),
                 (vec![Char('g'), Char('p')], "goto_previous_buffer"),
                 (vec![Char('g'), Char('f')], "goto_file"),

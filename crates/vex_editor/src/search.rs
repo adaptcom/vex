@@ -66,6 +66,10 @@ struct CompiledPattern {
 
 #[derive(Debug)]
 enum Work {
+    LastModification {
+        modification: vex_core::Modification,
+        extend: bool,
+    },
     Surround {
         character: Option<char>,
         count: usize,
@@ -103,6 +107,7 @@ enum Work {
 
 #[derive(Debug)]
 enum Outcome {
+    Jump(Option<SelectionSet>),
     SurroundPreview(crate::surround::Resolved),
     Edit(vex_core::Transaction),
     Search(Arc<CompiledPattern>, Option<SelectionSet>),
@@ -161,6 +166,29 @@ impl SearchJob {
             );
         }
         let outcome = (|| match self.work {
+            Work::LastModification {
+                modification,
+                extend,
+            } => {
+                let Some(position) = modification.position(cancelled) else {
+                    return Ok(Outcome::Jump(None));
+                };
+                let text = self.snapshot.text();
+                let position = vex_core::grapheme::floor(text, position)?;
+                let mut selections = Vec::with_capacity(self.origins.ranges().len());
+                for &selection in self.origins.ranges() {
+                    if cancelled() {
+                        return Ok(Outcome::Jump(None));
+                    }
+                    selections.push(vex_core::motion::put_cursor(
+                        text, selection, position, extend,
+                    )?);
+                }
+                Ok(Outcome::Jump(Some(SelectionSet::new(
+                    selections,
+                    self.origins.primary_index(),
+                )?)))
+            }
             Work::Surround {
                 character,
                 count,
@@ -286,6 +314,7 @@ impl SearchJob {
 
 #[derive(Clone, Copy, Debug)]
 enum Kind {
+    Jump,
     SurroundPrepare,
     SurroundEdit,
     Preview { accept: bool },
@@ -324,6 +353,7 @@ impl Search {
             matches!(
                 p.kind,
                 Kind::Repeat
+                    | Kind::Jump
                     | Kind::SurroundPrepare
                     | Kind::SurroundEdit
                     | Kind::CopyLines
@@ -337,6 +367,7 @@ impl Search {
         self.pending.as_ref().map(|pending| match pending.kind {
             Kind::SurroundPrepare | Kind::SurroundEdit => "matching surrounds...",
             Kind::CopyLines | Kind::Textobject => "selecting...",
+            Kind::Jump => "locating change...",
             _ => "searching...",
         })
     }
@@ -539,6 +570,22 @@ pub(crate) fn textobject(ctx: &mut CommandContext<'_>, around: bool) -> Result<(
     )
 }
 
+pub(crate) fn last_modification(ctx: &mut CommandContext<'_>) -> Result<(), Error> {
+    require_normal_or_select(ctx.editor)?;
+    ctx.editor.finish_undo_group();
+    let Some(modification) = ctx.editor.document.last_modification() else {
+        return Ok(());
+    };
+    dispatch(
+        ctx.editor,
+        Work::LastModification {
+            modification,
+            extend: ctx.editor.mode == Mode::Select,
+        },
+        Kind::Jump,
+    )
+}
+
 pub(crate) fn match_brackets(ctx: &mut CommandContext<'_>) -> Result<(), Error> {
     require_normal_or_select(ctx.editor)?;
     ctx.editor.finish_undo_group();
@@ -662,6 +709,16 @@ pub(crate) fn apply_result(
         editor.cache_parsed_syntax(syntax);
     }
     let (pattern, selections) = match result.outcome {
+        Ok(Outcome::Jump(selections)) => {
+            if let Some(selections) = selections {
+                editor.selections = selections;
+                editor.preferred_columns = None;
+                editor.request_application_action(crate::ApplicationAction::RecordJump(Arc::new(
+                    pending.selections,
+                )));
+            }
+            return Ok(SearchCompletion::Navigation);
+        }
         Ok(Outcome::SurroundPreview(resolved)) => {
             crate::surround::preview(editor, resolved);
             return Ok(SearchCompletion::Navigation);
@@ -723,6 +780,7 @@ pub(crate) fn apply_result(
             Ok(SearchCompletion::Navigation)
         }
         Kind::CopyLines
+        | Kind::Jump
         | Kind::Textobject
         | Kind::Remember(_)
         | Kind::SurroundPrepare
@@ -923,6 +981,84 @@ mod tests {
         editor.set_background_search(true);
         editor.execute("search_forward", 1).unwrap();
         editor
+    }
+
+    #[test]
+    fn last_modification_uses_history_extends_in_select_mode_and_keeps_counts_irrelevant() {
+        let mut editor = Editor::new(Document::from("abcdef"));
+        editor.execute("goto_last_modification", 1).unwrap();
+        assert!(editor.take_application_action().is_none());
+        editor.execute("move_right", 2).unwrap();
+        editor.execute("insert_mode", 1).unwrap();
+        editor.insert_text("🦀").unwrap();
+        editor.insert_text("e\u{301}").unwrap();
+        editor.execute("normal_mode", 1).unwrap();
+        editor.execute("goto_file_start", 1).unwrap();
+        let origin = editor.selections.clone();
+        editor.execute("goto_last_modification", 500).unwrap();
+        assert_eq!(editor.selections.primary(), range(5, 6));
+        assert_eq!(
+            editor.take_application_action(),
+            Some(crate::ApplicationAction::RecordJump(Arc::new(origin)))
+        );
+        editor.execute("goto_file_start", 1).unwrap();
+        editor.execute("select_mode", 1).unwrap();
+        editor.execute("goto_last_modification", 1).unwrap();
+        assert_eq!(editor.selections.primary(), range(0, 6));
+        assert_eq!(editor.mode(), Mode::Select);
+        editor.execute("undo", 1).unwrap();
+        let before = editor.selections.clone();
+        editor.take_application_action();
+        editor.execute("goto_last_modification", 1).unwrap();
+        assert_eq!(editor.selections, before);
+        assert!(editor.take_application_action().is_none());
+        editor.execute("redo", 1).unwrap();
+        editor.execute("normal_mode", 1).unwrap();
+        let mut keys = KeyHandler::default();
+        keys.handle(&mut editor, Key::Char('g')).unwrap();
+        assert_eq!(
+            keys.handle(&mut editor, Key::Char('.')).unwrap(),
+            crate::Dispatch::Executed("goto_last_modification")
+        );
+        assert_eq!(editor.selections.primary(), range(5, 6));
+    }
+
+    #[test]
+    fn last_modification_worker_rejects_stale_revisions_and_cancelled_navigation() {
+        let mut editor = Editor::new(Document::from("abc"));
+        editor.execute("insert_mode", 1).unwrap();
+        editor.insert_text("X").unwrap();
+        editor.execute("normal_mode", 1).unwrap();
+        editor.set_background_search(true);
+        editor.execute("goto_last_modification", 1).unwrap();
+        assert!(editor.search_waiting());
+        let job = editor.take_search_job().unwrap();
+        editor.execute("move_right", 1).unwrap();
+        assert!(job.cancellation().is_cancelled());
+        assert!(job.run().is_none());
+        editor.execute("goto_last_modification", 1).unwrap();
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        editor.execute("insert_mode", 1).unwrap();
+        editor.insert_text("Y").unwrap();
+        editor.execute("normal_mode", 1).unwrap();
+        let original = editor.selections.clone();
+        assert_eq!(
+            editor.apply_search_result(result).unwrap(),
+            SearchCompletion::Ignored
+        );
+        assert_eq!(editor.selections, original);
+        assert!(editor.take_application_action().is_none());
+        editor.execute("goto_last_modification", 1).unwrap();
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        assert_eq!(
+            editor.apply_search_result(result).unwrap(),
+            SearchCompletion::Navigation
+        );
+        assert!(!editor.search_waiting());
+        assert!(matches!(
+            editor.take_application_action(),
+            Some(crate::ApplicationAction::RecordJump(_))
+        ));
     }
 
     fn registered(editor: &mut Editor, name: char, command: &str) -> Result<(), Error> {

@@ -685,6 +685,9 @@ commands! {
         Ok(())
     }
 
+    /// Go to the end of the latest undo group's change associated with its original primary selection. Select mode extends each selection; records a jump on success.
+    fn goto_last_modification(ctx) { crate::search::last_modification(ctx) }
+
     /// Switch to the last other buffer modified in this pane.
     fn goto_last_modified_file(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::LastModified, 1));

@@ -19,6 +19,32 @@ traversal copies at most 32 handles, then restores the selected entry. Costs
 scale with restored selections and grapheme lookups, without scanning document
 text or adding checkpoint work to ordinary typing.
 
+`g.` captures the last undo group's text-free metadata in O(1), sharing its
+position maps. The selection worker composes changes with cancellation; it does
+not scan or flatten the document. Adjacent single-caret typing compacts to one
+map, whose destination is a direct lookup. A 16-character typing group at 1,000
+carets took **75.0 µs at 1 MiB** and **75.9 µs at 100 MiB** to resolve. Scheduling
+and cancelling took **0.259 / 0.264 µs** with one selection and **126 / 152 µs**
+with 1,000 selections, respectively. The latter includes selection normalization
+when leaving the pending command. Reproduce with:
+
+```sh
+cargo bench -p vex_editor --bench commands --locked -- last_modification --noplot
+```
+
+These use the same Criterion settings and exclude worker scheduling, rendering,
+and terminal I/O. More complex undo groups cost more according to the number of
+maps and composed spans, independently of unchanged document text.
+
+Because this changed undo metadata storage, isolated release binaries before
+and after the change were also compared with the `edit_undo/source_(1|100)MiB/`
+core benchmarks. The central estimates were **0.738 → 0.709 µs** (one caret,
+1 MiB), **0.864 → 0.853 µs** (one caret, 100 MiB), **410 → 409 µs** (1,000 carets,
+1 MiB), and **709 → 684 µs** (1,000 carets, 100 MiB). This local comparison found
+no regression in the measured editing cases; it is not a general latency bound.
+Single-map undo groups share their existing allocation without allocating an
+additional container for navigation metadata.
+
 ## Workspace search input
 
 `cargo bench -p vex_term --bench rendering --locked -- workspace_search_input --noplot`

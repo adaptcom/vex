@@ -27,6 +27,7 @@ pub mod grapheme;
 mod history;
 pub mod layout;
 mod mapping;
+mod modification;
 pub mod motion;
 pub mod pairs;
 mod position;
@@ -38,6 +39,7 @@ mod transaction;
 
 pub use document::{ChangeExtent, Document, DocumentId, Revision, Snapshot};
 pub use error::Error;
+pub use modification::Modification;
 pub use position::{ByteOffset, CharOffset};
 pub use ropey::{Rope, RopeSlice};
 pub use selection::{Selection, SelectionSet};

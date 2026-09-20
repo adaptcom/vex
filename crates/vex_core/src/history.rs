@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, sync::Arc};
 
-use crate::mapping::PositionMap;
+use crate::mapping::{PositionMap, PositionMaps};
 use crate::{Rope, SelectionSet, document::ChangeExtent};
 
 #[derive(Clone, Debug)]
@@ -14,7 +14,7 @@ struct Entry {
     before: State,
     after: State,
     change: ChangeExtent,
-    maps: Vec<Arc<PositionMap>>,
+    maps: PositionMaps,
 }
 
 /// Rope clones share unchanged storage, including across undo branches.
@@ -59,20 +59,13 @@ impl History {
                 new_end: crate::CharOffset(after.text.len_chars() - suffix),
             };
             entry.after = after;
-            if !entry
-                .maps
-                .last_mut()
-                .and_then(Arc::get_mut)
-                .is_some_and(|previous| previous.merge_typing(&map))
-            {
-                entry.maps.push(map);
-            }
+            entry.maps.push(map);
         } else if self.limit != 0 {
             self.done.push_back(Entry {
                 before,
                 after,
                 change,
-                maps: vec![map],
+                maps: PositionMaps::Single(map),
             });
             while self.done.len() > self.limit {
                 self.done.pop_front();
@@ -90,7 +83,7 @@ impl History {
         let state = (
             entry.before.clone(),
             entry.change.reversed(),
-            entry.maps.clone(),
+            entry.maps.as_slice().to_vec(),
         );
         self.undone.push(entry);
         Some(state)
@@ -98,13 +91,26 @@ impl History {
 
     pub fn redo(&mut self) -> Option<(State, ChangeExtent, Vec<Arc<PositionMap>>)> {
         let entry = self.undone.pop()?;
-        let state = (entry.after.clone(), entry.change, entry.maps.clone());
+        let state = (
+            entry.after.clone(),
+            entry.change,
+            entry.maps.as_slice().to_vec(),
+        );
         self.done.push_back(entry);
         Some(state)
     }
 
     pub fn undo_depth(&self) -> usize {
         self.done.len()
+    }
+
+    pub fn modification(&self) -> Option<crate::Modification> {
+        let entry = self.done.back()?;
+        Some(crate::Modification {
+            original_len: entry.before.text.len_chars(),
+            primary: entry.before.selections.primary(),
+            maps: entry.maps.clone(),
+        })
     }
 
     pub fn redo_depth(&self) -> usize {

@@ -359,6 +359,12 @@ impl Document {
         self.history.undo_depth()
     }
 
+    /// Share text-free metadata for locating the latest retained undo step's
+    /// change. Resolve it on a worker when a group contains many edits.
+    pub fn last_modification(&self) -> Option<crate::Modification> {
+        self.history.modification()
+    }
+
     pub fn redo_depth(&self) -> usize {
         self.history.redo_depth()
     }

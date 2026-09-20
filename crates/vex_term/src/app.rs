@@ -530,6 +530,10 @@ impl App {
                 self.message = "jump checkpoint saved".into();
                 Ok(())
             }
+            Some(ApplicationAction::RecordJump(selections)) => {
+                self.record_jump_at(selections);
+                Ok(())
+            }
             Some(ApplicationAction::Jump { forward, count }) => self.navigate_jump(forward, count),
             Some(ApplicationAction::GitStatus) => self.open_git_status(),
             Some(ApplicationAction::FilePicker) => {
