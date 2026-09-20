@@ -76,6 +76,7 @@ pub enum ApplicationAction {
     GitStatus,
     FilePicker,
     BufferPicker,
+    JumpPicker,
     LastPicker,
     GlobalSearch(char),
     Buffer(BufferAction, usize),

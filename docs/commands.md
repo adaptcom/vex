@@ -42,6 +42,7 @@ Generated from command Rustdoc and the default keymap.
 | `completion` | Insert: `<C-x>` | Request language-server completion at the insertion cursor. |
 | `file_picker` | Normal: `<Space>f`, Select: `<Space>f` | Open a fuzzy file picker at the current project root. |
 | `buffer_picker` | Normal: `<Space>b`, Select: `<Space>b` | Open a fuzzy picker of loaded buffers, including hidden and unsaved buffers. |
+| `jumplist_picker` | Normal: `<Space>j`, Select: `<Space>j` | Open a fuzzy picker of saved jump locations from every pane, restoring the full selection on acceptance. |
 | `last_picker` | Normal: `<Space>'`, Select: `<Space>'` | Reopen the last picker with its query, selected result, and scroll position. |
 | `global_search` | Normal: `<Space>/`, Select: `<Space>/` | Search file contents below the working directory with a regular expression, including unsaved buffers. Accepted queries use the chosen search register (default /). |
 | `goto_last_accessed_file` | Normal: `ga`, Select: `ga` | Switch to the last buffer accessed in this pane, restoring its view. |

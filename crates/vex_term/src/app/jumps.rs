@@ -10,8 +10,8 @@ const CAPACITY: usize = 32;
 
 #[derive(Clone, Debug)]
 pub(super) struct Jump {
-    document: DocumentId,
-    selections: Arc<SelectionSet>,
+    pub document: DocumentId,
+    pub selections: Arc<SelectionSet>,
 }
 
 impl Jump {
@@ -35,6 +35,10 @@ pub(super) struct History {
 }
 
 impl History {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &Jump> {
+        self.entries.iter()
+    }
+
     pub fn new(initial: Jump) -> Self {
         Self {
             entries: VecDeque::from([initial]),
@@ -132,8 +136,19 @@ impl App {
         let Some(jump) = destination else {
             return Ok(());
         };
+        self.restore_jump(jump.document, &jump.selections)?;
+        *self.jump_history_mut() = history;
+        self.clear_message();
+        Ok(())
+    }
+
+    pub(super) fn restore_jump(
+        &mut self,
+        document: DocumentId,
+        saved: &SelectionSet,
+    ) -> io::Result<()> {
         let mode = self.editor.mode();
-        self.open_buffer(jump.document)?;
+        self.open_buffer(document)?;
         self.editor
             .execute("normal_mode", 1)
             .map_err(io::Error::other)?;
@@ -143,16 +158,15 @@ impl App {
                 .map_err(io::Error::other)?;
         }
         let length = self.editor.document().text().len_chars();
-        let selections = if jump
-            .selections
+        let selections = if saved
             .ranges()
             .iter()
             .all(|selection| selection.end().0 <= length)
         {
-            jump.selections.as_ref().clone()
+            saved.clone()
         } else {
             SelectionSet::new(
-                jump.selections
+                saved
                     .ranges()
                     .iter()
                     .map(|selection| {
@@ -162,15 +176,13 @@ impl App {
                         )
                     })
                     .collect(),
-                jump.selections.primary_index(),
+                saved.primary_index(),
             )
             .map_err(io::Error::other)?
         };
         self.editor
             .set_selections(selections)
             .map_err(io::Error::other)?;
-        *self.jump_history_mut() = history;
-        self.clear_message();
         Ok(())
     }
 }

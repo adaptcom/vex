@@ -70,7 +70,8 @@ selections, and measure operations that could affect input latency.
   mode; counted Ctrl-o/Ctrl-i traverse each pane's bounded history, including
   scratch buffers, and preserve a forward return path. `g.` locates the last
   undo group's primary change through cancellable background metadata composition.
-  The jump picker remains. Add lazy remapping of saved selections through edits/undo/reloads;
+  `<space>j` picks checkpoints from all panes with background filtering, previews,
+  and full selection restoration. Add lazy remapping of saved selections through edits/undo/reloads;
   checkpoints currently retain scalar positions and clamp to valid text bounds.
 - [ ] LSP references (`gr`), type definition (`gy`), implementation (`gi`), and
   reference selections (`<space>h`). Reuse pickers for multiple destinations.

@@ -71,6 +71,10 @@ mode, selection direction, and the primary selection. Language services are
 not needed. Saved scalar positions currently normalize to valid grapheme/text
 bounds when revisited; remapping them through intervening edits remains on TODO.md.
 
+Space-j (`jumplist_picker`) opens the [jump picker](pickers.md#jump-picker) for all
+panes. It previews unsaved text and restores full selection checkpoints in the
+focused pane. Space-' reopens it with its previous query and selected checkpoint.
+
 `g.` (`goto_last_modification`) jumps to the end of the latest retained undo
 group's change associated with its original primary selection, following
 [Helix's history behavior](https://github.com/helix-editor/helix/blob/master/helix-core/src/history.rs).
@@ -88,8 +92,8 @@ finishes. A successful jump records its origin for Ctrl-o. Ordinary single-caret
 typing remains a compact map; large groups compose spans of original text and
 inserted lengths without reading the document's contents.
 
-`python3 tools/navigation_smoke.py` checks the release executable's `g.`
-destination, queued delete/insert ordering, and Ctrl-o return through a real
+`python3 tools/navigation_smoke.py` checks the release executable's `g.` and
+jump-picker destinations, queued edit ordering, and Ctrl-o return through a real
 pseudo-terminal. Unit and property tests stay beside their Rust implementation.
 
 ## Different files

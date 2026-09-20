@@ -261,6 +261,7 @@ impl Default for Keymap {
                 (vec![Char('m'), Char('r')], "surround_replace"),
                 (vec![Char(' '), Char('f')], "file_picker"),
                 (vec![Char(' '), Char('b')], "buffer_picker"),
+                (vec![Char(' '), Char('j')], "jumplist_picker"),
                 (vec![Char(' '), Char('\'')], "last_picker"),
                 (vec![Char(' '), Char('/')], "global_search"),
                 (vec![Char(' '), Char('g')], "git_status"),
@@ -729,6 +730,16 @@ mod tests {
     #[test]
     fn jump_bindings_forward_counts_to_the_application_in_both_modes() {
         for mode in [Mode::Normal, Mode::Select] {
+            let mut editor = Editor::new(Document::from("text"));
+            if mode == Mode::Select {
+                editor.execute("select_mode", 1).unwrap();
+            }
+            press(&mut KeyHandler::default(), &mut editor, " j");
+            assert_eq!(
+                editor.take_application_action(),
+                Some(crate::ApplicationAction::JumpPicker)
+            );
+            assert_eq!(editor.mode(), mode);
             for (key, forward, name) in [
                 (Key::Ctrl('o'), false, "jump_backward"),
                 (Key::Ctrl('i'), true, "jump_forward"),

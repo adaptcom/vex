@@ -2,9 +2,11 @@
 //! matching; the view only receives bounded results and paints visible rows.
 
 pub(crate) mod buffers;
+mod catalog;
 pub(crate) mod files;
 mod fuzzy;
 mod ignore;
+pub(crate) mod jumps;
 mod preview;
 pub(crate) mod search;
 pub(crate) mod symbols;

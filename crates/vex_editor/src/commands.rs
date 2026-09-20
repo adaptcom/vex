@@ -663,6 +663,13 @@ commands! {
         Ok(())
     }
 
+    /// Open a fuzzy picker of saved jump locations from every pane, restoring the full selection on acceptance.
+    fn jumplist_picker(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_application_action(crate::ApplicationAction::JumpPicker);
+        Ok(())
+    }
+
     /// Reopen the last picker with its query, selected result, and scroll position.
     fn last_picker(ctx) {
         ctx.editor.finish_undo_group();

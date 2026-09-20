@@ -546,6 +546,10 @@ impl App {
                 self.open_buffer_picker();
                 Ok(())
             }
+            Some(ApplicationAction::JumpPicker) => {
+                self.open_jump_picker();
+                Ok(())
+            }
             Some(ApplicationAction::Buffer(action, count)) => self.buffer_action(action, count),
             Some(ApplicationAction::DocumentSymbols) => {
                 self.open_symbol_picker(false);

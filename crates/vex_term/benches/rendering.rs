@@ -371,6 +371,20 @@ fn jump_history(c: &mut Criterion) {
                     });
                 },
             );
+            group.bench_function(
+                BenchmarkId::new(
+                    "picker_open_query_cancel",
+                    format!("{mib}MiB_{carets}_carets"),
+                ),
+                |b| {
+                    b.iter(|| {
+                        app.execute("jumplist_picker").unwrap();
+                        app.handle(Event::Paste("needle".into()));
+                        app.handle(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+                        black_box(app.editor.selections());
+                    });
+                },
+            );
         }
     }
     group.finish();

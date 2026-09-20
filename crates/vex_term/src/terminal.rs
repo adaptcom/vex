@@ -187,6 +187,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             if let Some(job) = app.take_buffer_job() {
                 runtime.submit_buffers(job);
             }
+            if let Some(job) = app.take_jump_job() {
+                runtime.submit_jumps(job);
+            }
             if let Some(job) = app.take_preview_job() {
                 runtime.submit_preview(job);
             }
@@ -242,6 +245,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Buffers(result)) => {
                     redraw |= app.handle_buffer_result(result)
                 }
+                AppEvent::Background(BackgroundEvent::Jumps(result)) => {
+                    redraw |= app.handle_jump_result(result)
+                }
                 AppEvent::Background(BackgroundEvent::Prompt(result)) => {
                     redraw |= app.handle_prompt_completion(result);
                 }
@@ -296,6 +302,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(job) = app.take_buffer_job() {
                 runtime.submit_buffers(job);
+            }
+            if let Some(job) = app.take_jump_job() {
+                runtime.submit_jumps(job);
             }
             if let Some(job) = app.take_workspace_search_job(Instant::now()) {
                 runtime.submit_workspace_search(job);

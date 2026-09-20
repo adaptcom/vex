@@ -18,7 +18,7 @@ compatibility guarantee.
 ## Using the picker
 
 Space-f or `:file_picker` opens a fuzzy file picker. Space-' (`:last_picker`)
-reopens the most recently closed file, buffer, symbol, or search picker with its query,
+reopens the most recently closed file, buffer, jump, symbol, or search picker with its query,
 caret, selected result, and scroll position. Accepting a result and cancelling
 both retain the picker. Only one previous picker is retained, with its bounded
 result list and preview; the full file index is released on the worker.
@@ -100,6 +100,32 @@ and the existing byte cap. Buffers over 8 MiB get a bounded plain-text preview
 without parsing the whole document. External reloads invalidate pending previews.
 Accepting switches the current pane and records a Ctrl-o checkpoint; early Enter
 waits for the current query before dispatching subsequent editing keys.
+
+## Jump picker
+
+Space-j (`:jumplist_picker`) lists saved locations from every pane, newest first
+within each pane, following [Helix's jump picker](https://github.com/helix-editor/helix/blob/master/helix-term/src/commands.rs).
+Rows show the path (or scratch/draft name), primary cursor line, and selected
+text. `*` marks the buffer that is current in the checkpoint's source pane.
+Filtering matches paths and snippets. Enter restores the entire selection set
+in the focused pane, including direction and primary selection, and records
+the origin for Ctrl-o. Hidden unsaved buffers and scratch buffers work too.
+
+Opening shares one rope snapshot per referenced buffer and existing selection
+allocations. Labels are built once on the picker worker, reading at most 256
+scalars across at most 32 ranges per checkpoint; truncated snippets end in `…`.
+Queries reuse those labels and the buffer picker's bounded fuzzy ranker, keeping
+at most 512 results. This bounds label work even for whole-file selections or
+thousands of carets. Checkpoint identity comparisons do not traverse selections.
+Previews use current unsaved snapshots and the same syntax/size limits as buffer
+previews, centered around the saved primary cursor's line.
+
+Space-' retains the query, selected checkpoint, and scroll position. Reopening
+captures current snapshots; closed pickers release their captured document text.
+External reloads refresh rows and previews. Enter waits for refreshed results
+before releasing queued input, and revision checks reject stale destinations.
+Saved positions currently clamp to valid text bounds after edits; lazy remapping
+through intervening changes remains on TODO.md.
 
 ## Workspace text search
 

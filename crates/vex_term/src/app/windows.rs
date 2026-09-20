@@ -717,6 +717,57 @@ impl App {
             .map(|buffer| buffer.editor.document().snapshot())
     }
 
+    pub(super) fn snapshot_for_buffer(&self, id: DocumentId) -> Option<vex_core::Snapshot> {
+        if id == self.editor.document().id() {
+            Some(self.editor.document().snapshot())
+        } else {
+            self.windows
+                .buffers
+                .get(&id)
+                .map(|buffer| buffer.editor.document().snapshot())
+        }
+    }
+
+    pub(super) fn jump_catalog(&self) -> std::sync::Arc<crate::picker::jumps::Catalog> {
+        use crate::picker::jumps::{Capture, Catalog, Document};
+        use std::sync::Arc;
+        let mut documents = HashMap::new();
+        let mut captures = Vec::new();
+        for pane in self.windows.panes.values() {
+            for jump in pane.jumps.iter().rev() {
+                let document = match documents.entry(jump.document) {
+                    std::collections::hash_map::Entry::Occupied(entry) => Arc::clone(entry.get()),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        let (editor, files) = if jump.document == self.editor.document().id() {
+                            (&self.editor, &self.files)
+                        } else if let Some(buffer) = self.windows.buffers.get(&jump.document) {
+                            (&buffer.editor, &buffer.files)
+                        } else {
+                            continue;
+                        };
+                        entry
+                            .insert(Arc::new(Document {
+                                snapshot: editor.document().snapshot(),
+                                label: self.commit_title(jump.document).unwrap_or_else(|| {
+                                    files
+                                        .path()
+                                        .map(|path| path.display().to_string())
+                                        .unwrap_or_else(|| "[scratch]".into())
+                                }),
+                            }))
+                            .clone()
+                    }
+                };
+                captures.push(Capture {
+                    document,
+                    selections: jump.selections.clone(),
+                    current: jump.document == pane.document,
+                });
+            }
+        }
+        Arc::new(Catalog::new(captures))
+    }
+
     pub(super) fn buffer_catalog(&self) -> std::sync::Arc<[crate::picker::buffers::CatalogEntry]> {
         use crate::picker::{Entry, buffers::CatalogEntry};
         use std::sync::Arc;

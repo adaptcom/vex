@@ -19,6 +19,24 @@ traversal copies at most 32 handles, then restores the selected entry. Costs
 scale with restored selections and grapheme lookups, without scanning document
 text or adding checkpoint work to ordinary typing.
 
+Opening the jump picker, pasting a six-character query, and cancelling with 32
+checkpoints measured **0.767 / 0.755 µs** for one selection per checkpoint in
+1 / 100 MiB buffers, and **0.736 / 0.756 µs** for 1,000 selections per checkpoint.
+Reproduce with:
+
+```sh
+cargo bench -p vex_term --bench rendering --locked -- jump_history/picker_open_query_cancel --noplot
+```
+
+These 2026-09-20 measurements use the same Criterion settings. They include
+catalog capture, query dispatch, cancellation, and releasing the capture. They
+exclude fixture construction, worker execution, result delivery, drawing, and
+terminal I/O. Opening clones checkpoint handles and one rope snapshot per
+referenced buffer; query edits share the catalog. Label construction and fuzzy
+ranking run on the existing picker worker, with at most 256 snippet scalars /
+32 selection ranges read per checkpoint and at most 512 returned rows. Large
+selection sets remain shared until a chosen checkpoint is restored.
+
 `g.` captures the last undo group's text-free metadata in O(1), sharing its
 position maps. The selection worker composes changes with cancellation; it does
 not scan or flatten the document. Adjacent single-caret typing compacts to one

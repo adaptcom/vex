@@ -15,6 +15,7 @@ use crossterm::event::{Event, KeyEventKind};
 use std::{io, path::PathBuf, sync::Arc};
 use vex_editor::background::Cancellation;
 
+mod jumps;
 mod search;
 mod symbols;
 
@@ -23,6 +24,7 @@ enum Target {
     File(PathBuf),
     Symbol(vex_lsp::Location),
     Buffer(vex_core::DocumentId),
+    Jump(crate::picker::jumps::Location),
     Search(crate::picker::search::Hit),
 }
 
@@ -30,6 +32,7 @@ enum Source {
     Files(Option<PathBuf>, PathBuf),
     Symbols(symbols::Source),
     Buffers(Arc<[CatalogEntry]>),
+    Jumps(Arc<crate::picker::jumps::Catalog>),
     Search(search::Source),
 }
 
@@ -61,6 +64,7 @@ pub(super) struct State {
     preview_job: Option<PreviewJob>,
     symbol_job: Option<SymbolJob>,
     buffer_job: Option<BufferJob>,
+    jump_job: Option<crate::picker::jumps::Job>,
     search_job: Option<crate::picker::search::Job>,
 }
 
@@ -150,6 +154,16 @@ impl App {
         active.preview_target = None;
         active.accept_pending = false;
         self.picker.preview_job = None;
+        if let Source::Jumps(catalog) = &active.source {
+            self.picker.jump_job = Some(crate::picker::jumps::Job {
+                session: active.session,
+                revision: active.revision,
+                catalog: catalog.clone(),
+                query: active.view.query.text().into(),
+                cancellation: active.cancellation.clone(),
+            });
+            return;
+        }
         if let Source::Buffers(catalog) = &active.source {
             self.picker.buffer_job = Some(BufferJob {
                 session: active.session,
@@ -198,6 +212,15 @@ impl App {
         let cancellation = active.preview_cancel.clone();
         self.picker.preview_job = target.and_then(|target| {
             let (path, position) = match target {
+                Target::Jump(location) => {
+                    let mut job =
+                        self.buffer_preview(location.document, session, request, cancellation)?;
+                    job.position = Some(vex_lsp::Position {
+                        line: location.line.try_into().ok()?,
+                        character: 0,
+                    });
+                    return Some(job);
+                }
                 Target::Buffer(id) => {
                     return self.buffer_preview(id, session, request, cancellation);
                 }
@@ -224,6 +247,9 @@ impl App {
     }
 
     pub(super) fn refresh_picker_buffer(&mut self, document: vex_core::DocumentId) {
+        if self.refresh_jump_picker(document) {
+            return;
+        }
         if self.workspace_search_active() {
             self.refresh_workspace_search();
             return;
@@ -238,7 +264,7 @@ impl App {
             Some(Target::File(path)) | Some(Target::Symbol(vex_lsp::Location { path, .. })) => self
                 .snapshot_for_path(path)
                 .is_some_and(|snapshot| snapshot.id() == document),
-            Some(Target::Search(_)) | None => false,
+            Some(Target::Search(_) | Target::Jump(_)) | None => false,
         };
         if changed {
             self.picker.active.as_mut().unwrap().preview_target = None;
@@ -253,6 +279,9 @@ impl App {
             active.accept_pending = false;
             if let Source::Search(source) = &mut active.source {
                 source.documents = Arc::from([]);
+            }
+            if let Source::Jumps(catalog) = &mut active.source {
+                *catalog = Arc::default(); // Closed pickers retain rows, not document snapshots.
             }
             if matches!(active.source, Source::Symbols(_)) {
                 self.cancel_language_request();
@@ -270,6 +299,7 @@ impl App {
         self.picker.preview_job = None;
         self.picker.symbol_job = None;
         self.picker.buffer_job = None;
+        self.picker.jump_job = None;
         self.picker.search_job = None;
     }
 
@@ -295,6 +325,10 @@ impl App {
         active.view.resume();
         if matches!(active.source, Source::Buffers(_)) {
             active.source = Source::Buffers(self.buffer_catalog());
+        }
+        if matches!(active.source, Source::Jumps(_)) {
+            active.source = Source::Jumps(self.jump_catalog());
+            active.view.pending = true;
         }
         if let Source::Search(source) = &mut active.source {
             source.documents = self.workspace_documents();
@@ -415,7 +449,9 @@ impl App {
             Action::Query => self.submit_picker_query(),
             Action::Selection => self.request_picker_preview(),
             Action::Accept => {
-                if active.view.pending && active.view.items.is_empty() {
+                if active.view.pending
+                    && (active.view.items.is_empty() || matches!(active.source, Source::Jumps(_)))
+                {
                     active.accept_pending = true;
                 } else {
                     self.accept_picker();
@@ -508,6 +544,7 @@ impl App {
                 }
                 self.open_buffer(id)
             }
+            Target::Jump(location) => self.accept_jump_location(location),
         };
         match result {
             Ok(()) => {

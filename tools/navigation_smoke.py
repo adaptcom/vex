@@ -30,7 +30,21 @@ def main():
             assert path.read_text() == "XYZlpha bet!a\n"
             terminal.send(b":q\r")
             terminal.finish()
-        print("PASS: g. undo-group destination, ordered navigation/delete/insert, jump origin, save, terminal cleanup")
+        path.write_text("alpha\nbeta\ngamma\n")
+        with Terminal([binary, str(path)]) as terminal:
+            terminal.start()
+            terminal.send(b"2gg\x133gg jtext.txt:2\ri!")
+            terminal.expect_screen(b"INS")
+            terminal.save_from_insert()
+            assert path.read_text() == "alpha\n!beta\ngamma\n"
+            # Undo first so the return checkpoint's original scalar offset is
+            # valid even before lazy jump remapping is implemented.
+            terminal.send(b"u\x0fi?")
+            terminal.save_from_insert()
+            assert path.read_text() == "alpha\nbeta\n?gamma\n"
+            terminal.send(b":q\r")
+            terminal.finish()
+        print("PASS: g. and jump picker destinations, queued edits, undo, jump origins, save, terminal cleanup")
 
 
 if __name__ == "__main__":
