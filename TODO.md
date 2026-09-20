@@ -30,7 +30,7 @@ selections, and measure operations that could affect input latency.
 7. [ ] Match mode: `mm`, `mi`/`ma` textobjects for words, paragraphs, and paired
    delimiters, followed by `ms`/`mr`/`md` surrounds.
    Word/WORD and paragraph objects now run through the cancellable selection
-   worker; delimiter matching and surrounds remain.
+   worker, and `ms` adds surrounds; delimiter matching and `mr`/`md` remain.
 8. [ ] Repeat the last insert with `.`. Record logical editing actions, including
    counted commands and completion, so replay stays independent of terminal input.
 

@@ -28,6 +28,7 @@ mod keymap;
 mod register;
 mod search;
 mod selection;
+mod surround;
 mod syntax;
 mod textobject;
 mod views;

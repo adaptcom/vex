@@ -50,7 +50,7 @@ See [repository status](docs/git-status.md).
 See [terminal usage and architecture](docs/terminal.md).
 
 Use `miw`/`miW` to select words/WORDs and `mip` to select paragraphs; `ma` includes
-adjacent whitespace. See [match mode](docs/match.md).
+adjacent whitespace. `ms<char>` surrounds the selections. See [match mode](docs/match.md).
 
 Press Space-f for the fuzzy project file picker. Named key groups (`g`, `m`, Space,
 `[`, `]`, Ctrl-w) show available bindings. Discovery, matching, and previews run in the

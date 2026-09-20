@@ -217,11 +217,34 @@ fn textobjects(c: &mut Criterion) {
     group.finish();
 }
 
+fn surround_add(c: &mut Criterion) {
+    let mut group = c.benchmark_group("surround_add_undo");
+    for bytes in [1 << 20, 100 << 20] {
+        let rope = Rope::from_str(&"word\n".repeat(bytes / 5));
+        for (name, count) in [("whole_buffer", 1), ("1000_selections", 1000)] {
+            let mut editor = editor(&rope, count);
+            if count == 1 {
+                editor.execute("select_all", 1).unwrap();
+            }
+            group.bench_function(BenchmarkId::new(name, bytes), |b| {
+                b.iter(|| {
+                    let mut context = vex_editor::CommandContext::new(&mut editor);
+                    context.character = Some('(');
+                    vex_editor::commands::surround_add(&mut context).unwrap();
+                    editor.execute("undo", 1).unwrap();
+                    black_box(editor.document().text());
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects
+    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects, surround_add
 }
 criterion_main!(benches);

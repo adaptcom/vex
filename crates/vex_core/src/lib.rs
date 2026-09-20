@@ -28,6 +28,7 @@ mod history;
 pub mod layout;
 mod mapping;
 pub mod motion;
+pub mod pairs;
 mod position;
 pub mod regex;
 pub mod search;

@@ -181,6 +181,7 @@ impl Default for Keymap {
                 (vec![Char('r')], "replace"),
                 (vec![Char('m'), Char('i')], "select_textobject_inner"),
                 (vec![Char('m'), Char('a')], "select_textobject_around"),
+                (vec![Char('m'), Char('s')], "surround_add"),
                 (vec![Char('>')], "indent"),
                 (vec![Char('<')], "unindent"),
                 (vec![Char('J')], "join_selections"),
@@ -373,6 +374,23 @@ impl KeyHandler {
     }
 
     pub fn hints(&self) -> Option<KeyHints<'_>> {
+        if self
+            .character_command
+            .is_some_and(|command| command.input == crate::CommandInput::SurroundAdd)
+        {
+            return Some(KeyHints {
+                title: "Surround selections with",
+                entries: vec![
+                    (Key::Char('('), "Parentheses (either bracket)"),
+                    (Key::Char('['), "Square brackets"),
+                    (Key::Char('{'), "Braces"),
+                    (Key::Char('<'), "Angle brackets"),
+                    (Key::Char('"'), "Quotes or any character"),
+                    (Key::Enter, "Line endings"),
+                    (Key::Escape, "Cancel"),
+                ],
+            });
+        }
         if let Some(command) = self.character_command
             && matches!(
                 command.input,
@@ -431,7 +449,7 @@ impl KeyHandler {
             let character = match key {
                 Key::Char(ch) if !ch.is_control() => ch,
                 Key::Enter => '\n',
-                Key::Tab => '\t',
+                Key::Tab if command.input == crate::CommandInput::Character => '\t',
                 _ => {
                     self.cancel();
                     return Ok(Dispatch::Ignored);

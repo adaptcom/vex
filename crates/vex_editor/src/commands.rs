@@ -34,6 +34,7 @@ pub enum CommandInput {
     Character,
     TextobjectInner,
     TextobjectAround,
+    SurroundAdd,
 }
 
 #[derive(Debug)]
@@ -450,6 +451,9 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
 }
 
 commands! {
+    /// Surround each selection with a character or bracket pair, selecting the result and returning to normal mode. Either bracket chooses its matching pair; other characters repeat on both sides. Enter uses the buffer's line ending. Ignores counts, leaves registers unchanged, and records one undo step.
+    fn surround_add(ctx) [SurroundAdd] { crate::surround::add(ctx) }
+
     /// Select the word (w), WORD (W), or paragraph (p) at each cursor, retaining normal/select mode. Counts select successive paragraphs; word objects ignore counts. Scans support background cancellation.
     fn select_textobject_inner(ctx) [TextobjectInner] { crate::search::textobject(ctx, false) }
 

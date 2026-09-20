@@ -29,5 +29,20 @@ can cancel a pending scan. Scans check cancellation between graphemes or lines;
 individual grapheme-boundary lookups and final selection normalization remain
 nonpreemptible. Revision, mode, and selection checks reject stale results.
 
-Delimiter textobjects, bracket matching, and surround commands remain the next
-parts of match mode tracked in [TODO.md](../TODO.md).
+## Adding surrounds
+
+`ms<char>` wraps every selection in a delimiter pair, selects the complete
+result, and returns to normal mode. For example, `miwms)` wraps a word in
+parentheses. Either opening or closing bracket chooses the same pair. Supported
+brackets are `()`, `[]`, `{}`, `<>`, `‘’`, `“”`, `«»`, `「」`, and `（）`.
+Other characters repeat on both sides, so `ms"` adds quotes and `msm` adds a
+literal `m` to each side. Enter adds the buffer's line ending on each side.
+
+Counts are ignored when adding surrounds, following [Helix's command behavior](https://github.com/helix-editor/helix/blob/master/helix-term/src/commands.rs).
+The operation preserves selection direction and primary selection, leaves yank
+registers unchanged, and makes one undo step. Adjacent selections and empty
+cursors receive separate pairs. Only the inserted delimiters enter edit strings;
+selected contents remain in rope storage, even for a whole-buffer selection.
+
+Delimiter textobjects, bracket matching, and surround replacement/deletion remain
+the next parts of match mode tracked in [TODO.md](../TODO.md).

@@ -4,6 +4,7 @@ Generated from command Rustdoc and the default keymap.
 
 | Command | Bindings by mode | Description |
 |---|---|---|
+| `surround_add` | Normal: `ms`, Select: `ms` | Surround each selection with a character or bracket pair, selecting the result and returning to normal mode. Either bracket chooses its matching pair; other characters repeat on both sides. Enter uses the buffer's line ending. Ignores counts, leaves registers unchanged, and records one undo step. |
 | `select_textobject_inner` | Normal: `mi`, Select: `mi` | Select the word (w), WORD (W), or paragraph (p) at each cursor, retaining normal/select mode. Counts select successive paragraphs; word objects ignore counts. Scans support background cancellation. |
 | `select_textobject_around` | Normal: `ma`, Select: `ma` | Select each cursor's word (w) or WORD (W) with following horizontal whitespace, falling back to preceding whitespace, or paragraph (p) including following blank lines. Counts select successive paragraphs; word objects ignore counts. |
 | `copy_selection_on_next_line` | Normal: `C`, Select: `C` | Add copies of each selection on following logical lines at the same display columns. Counts add copies, skipping lines that cannot fit both endpoints. Multi-line selections advance by their height; the primary follows its last copy. Uses the cancellable search worker when enabled. |

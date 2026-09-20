@@ -104,6 +104,24 @@ words/paragraphs and many selections can require substantial work, but do not
 copy the full buffer or scan it on the input thread. Cancellation is checked
 between graphemes/lines; individual Unicode boundary lookups remain nonpreemptible.
 
+Surround addition uses two boundary inserts per selection, merging coincident
+inserts without copying selected contents. On the same machine/profile:
+
+```sh
+cargo bench -p vex_editor --bench commands --locked -- surround_add --noplot
+```
+
+| Document | Surround whole buffer + undo | Surround 1,000 selections + undo |
+|---|---:|---:|
+| 1 MiB | 1.47 µs | 0.987 ms |
+| 100 MiB | 2.03 µs | 1.36 ms |
+
+These ASCII fixtures include transaction construction, rope updates, selection
+mapping/normalization, and undo. The original rope remains shared during the run.
+They exclude rendering, terminal latency, and repeated edits accumulating history.
+The whole-buffer case changes only its two boundaries; it is not a measurement
+of replacing all selected text.
+
 ## Command and movement baseline
 
 Recorded on the same development machine on 2026-09-19 with the same Criterion
