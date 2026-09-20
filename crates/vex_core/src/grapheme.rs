@@ -29,29 +29,67 @@ impl<'a> Cursor<'a> {
         })
     }
 
+    #[inline]
     fn query<T>(
         &mut self,
         operation: impl Fn(&mut GraphemeCursor, &str, usize) -> Result<T, GraphemeIncomplete>,
     ) -> T {
+        match operation(&mut self.cursor, self.chunk, self.start) {
+            Ok(value) => value,
+            Err(request) => self.resume(operation, request),
+        }
+    }
+
+    #[cold]
+    fn resume<T>(
+        &mut self,
+        operation: impl Fn(&mut GraphemeCursor, &str, usize) -> Result<T, GraphemeIncomplete>,
+        mut request: GraphemeIncomplete,
+    ) -> T {
+        // A tiny overlapping chunk keeps the current boundary inside a chunk
+        // when resuming a forward scan. unicode-segmentation 1.13.3 otherwise
+        // recounts regional indicators at chunk start even when its running
+        // count is already known (upstream fix: unicode-segmentation#175).
+        // Preserve that running state: restarting the cursor would repeatedly
+        // scan the prefix of a long flag run. No allocation or flattening needed.
+        let mut bridge = [0u8; 8];
+        let mut overlap = None;
         loop {
-            match operation(&mut self.cursor, self.chunk, self.start) {
-                Ok(value) => return value,
-                Err(GraphemeIncomplete::PreContext(end)) => {
+            match request {
+                GraphemeIncomplete::PreContext(end) => {
                     let (chunk, start, _, _) = self.text.chunk_at_byte(end - 1);
                     self.cursor.provide_context(&chunk[..end - start], start);
                 }
-                Err(request @ (GraphemeIncomplete::PrevChunk | GraphemeIncomplete::NextChunk)) => {
+                GraphemeIncomplete::PrevChunk | GraphemeIncomplete::NextChunk => {
                     let byte = match request {
                         GraphemeIncomplete::PrevChunk => self.start - 1,
-                        _ => self.start + self.chunk.len(),
+                        _ => self.cursor.cur_cursor(),
                     };
                     let (chunk, start, _, _) = self.text.chunk_at_byte(byte);
                     self.chunk = chunk;
                     self.start = start;
+                    overlap = None;
+                    if request == GraphemeIncomplete::NextChunk && byte == start {
+                        let (previous, _, _, _) = self.text.chunk_at_byte(byte - 1);
+                        let left = previous.chars().next_back().unwrap();
+                        let right = chunk.chars().next().unwrap();
+                        left.encode_utf8(&mut bridge);
+                        right.encode_utf8(&mut bridge[left.len_utf8()..]);
+                        overlap =
+                            Some((left.len_utf8() + right.len_utf8(), byte - left.len_utf8()));
+                    }
                 }
-                Err(GraphemeIncomplete::InvalidOffset) => {
+                GraphemeIncomplete::InvalidOffset => {
                     unreachable!("cursor and chunks describe the same rope")
                 }
+            }
+            let (chunk, start) = match overlap {
+                Some((len, start)) => (std::str::from_utf8(&bridge[..len]).unwrap(), start),
+                None => (self.chunk, self.start),
+            };
+            match operation(&mut self.cursor, chunk, start) {
+                Ok(value) => return value,
+                Err(next) => request = next,
             }
         }
     }
@@ -237,6 +275,14 @@ mod tests {
             "🇺🇸🇨🇦🇯🇵".repeat(150),
         ] {
             assert!(Rope::from_str(&input).chunks().count() > 1);
+            check_against_flat_text(&input);
+        }
+    }
+
+    #[test]
+    fn regional_indicator_runs_keep_their_parity_across_chunk_boundaries() {
+        for padding in 0..16 {
+            let input = format!("{}{}z", "a".repeat(padding), "🇺".repeat(400));
             check_against_flat_text(&input);
         }
     }
