@@ -128,6 +128,25 @@ columns, copying many selections, and cold deep-column lookups still cost more.
 cargo bench -p vex_editor --bench commands --locked -- copy_selection_next_line --noplot
 ```
 
+For insert-mode Ctrl-u, restricting indentation discovery to text before the
+caret removed a full-line scan. The following before/after measurements keep
+the caret eight spaces into one long blank line and include deletion plus undo:
+
+| Line size | Before | After |
+|---|---:|---:|
+| 1 MiB | 2.34 ms | 0.955 µs |
+| 100 MiB | 222 ms | 1.10 µs |
+
+```sh
+cargo bench -p vex_editor --bench commands --locked -- kill_line_start_near_beginning --noplot
+```
+
+This benchmark uses ten flat-sampling Criterion samples, a 500 ms warmup, and a
+one-second target extended for the expensive baseline. The fixture and initial
+caret are outside the timed loop. Results are central estimates for this specific
+case, excluding document loading, drawing, and terminal transport. Ctrl-u near
+the end of a long indentation prefix still necessarily visits that prefix.
+
 ## Terminal viewport baseline
 
 Recorded on the same development machine on 2026-09-19, with 30 samples, a

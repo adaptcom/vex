@@ -134,6 +134,29 @@ fn comments(c: &mut Criterion) {
     group.finish();
 }
 
+fn insert_line_kill(c: &mut Criterion) {
+    let mut group = c.benchmark_group("kill_line_start_near_beginning");
+    group
+        .sample_size(10)
+        .sampling_mode(criterion::SamplingMode::Flat);
+    for bytes in [1 << 20, 100 << 20] {
+        let rope = Rope::from_str(&" ".repeat(bytes));
+        let mut editor = Editor::new(Document::from(rope));
+        editor.execute("insert_mode", 1).unwrap();
+        editor
+            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(8))))
+            .unwrap();
+        group.bench_function(BenchmarkId::from_parameter(bytes), |b| {
+            b.iter(|| {
+                editor.execute("kill_to_line_start", 1).unwrap();
+                black_box(editor.selections());
+                editor.execute("undo", 1).unwrap();
+            });
+        });
+    }
+    group.finish();
+}
+
 fn copy_selections(c: &mut Criterion) {
     let mut group = c.benchmark_group("copy_selection_next_line");
     for bytes in [1 << 20, 100 << 20] {
@@ -166,6 +189,6 @@ criterion_group! {
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = commands, search, background_search, comments, copy_selections
+    targets = commands, search, background_search, comments, copy_selections, insert_line_kill
 }
 criterion_main!(benches);

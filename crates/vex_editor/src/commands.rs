@@ -936,7 +936,14 @@ commands! {
             if head == start && head.0 > 0 {
                 grapheme::previous(text, head, 1)
             } else {
-                Ok(motion::first_nonwhitespace(text, head)?.filter(|first| *first < head).unwrap_or(start))
+                // Only text before the caret affects this deletion. In
+                // particular, a huge indentation suffix must not slow Ctrl-u
+                // near the start of a line.
+                let first = text.slice(start.0..head.0).chars().position(|ch| !ch.is_whitespace());
+                match first {
+                    Some(offset) => grapheme::floor(text, CharOffset(start.0 + offset)),
+                    None => Ok(start),
+                }
             }
         })
     }
