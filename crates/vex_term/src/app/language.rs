@@ -1,14 +1,10 @@
 //! Main-thread language-service state, navigation, and presentation.
 
 use super::App;
-use crate::{
-    files::FileState,
-    render::Viewport,
-    screen::{Frame, Style},
-};
+use crate::screen::{Frame, Style};
 use std::{collections::VecDeque, io, path::PathBuf, time::Instant};
 use vex_core::{CharOffset, DocumentId, Revision, SelectionSet, motion};
-use vex_editor::{Editor, Language, LanguageAction, Mode, background::Cancellation};
+use vex_editor::{Language, LanguageAction, Mode, background::Cancellation};
 use vex_lsp::{Answer, CompletionOptions, CompletionTrigger, Diagnostic, Event, RequestKind};
 
 struct Pending {
@@ -365,23 +361,7 @@ impl App {
                 .ok_or_else(|| io::Error::other("invalid definition position"))?;
             self.move_to(offset)?;
         } else {
-            if self.is_dirty() {
-                return Err(io::Error::other(
-                    "save this buffer before jumping to another file",
-                ));
-            }
-            let (document, files) = FileState::load(Some(&location.path))?;
-            let offset = vex_lsp::offset(document.text(), location.position)
-                .ok_or_else(|| io::Error::other("invalid definition position"))?;
-            let mut editor = Editor::new(document);
-            editor.set_language(Language::detect(files.path(), editor.document().text()));
-            editor.set_background_search(true);
-            editor.set_background_syntax(true);
-            self.editor = editor;
-            self.files = files;
-            self.automatic_language = true;
-            self.viewport = Viewport::default();
-            self.prompt = None;
+            let offset = self.open_window_definition(&location)?;
             self.move_to(offset)?;
         }
         if let Some(origin) = origin {
@@ -402,21 +382,7 @@ impl App {
             .cloned()
             .ok_or_else(|| io::Error::other("no previous jump"))?;
         if self.files.target() != Some(path.as_path()) {
-            if self.is_dirty() {
-                return Err(io::Error::other(
-                    "save this buffer before jumping to another file",
-                ));
-            }
-            let (document, files) = FileState::load(Some(&path))?;
-            let mut editor = Editor::new(document);
-            editor.set_language(Language::detect(files.path(), editor.document().text()));
-            editor.set_background_search(true);
-            editor.set_background_syntax(true);
-            self.editor = editor;
-            self.files = files;
-            self.automatic_language = true;
-            self.viewport = Viewport::default();
-            self.prompt = None;
+            self.open_window_file(&path)?;
         }
         self.move_to(CharOffset(
             position.0.min(self.editor.document().text().len_chars()),
@@ -498,9 +464,9 @@ impl App {
         format!(" {label}:{} {errors}E {warnings}W", self.language.status)
     }
 
-    pub(super) fn paint_language(&self, frame: &mut Frame) {
+    pub(super) fn paint_language(&self, frame: &mut Frame, body_height: u16) {
         if frame.width() >= 8 {
-            for row in 0..frame.height().saturating_sub(2) {
+            for row in 0..body_height {
                 let line = self.viewport.top_line + usize::from(row);
                 if let Some(severity) = self
                     .language
@@ -526,9 +492,9 @@ impl App {
         if let Some(popup) = &self.language.popup {
             let rows: Vec<_> = popup
                 .lines()
-                .take(usize::from(frame.height().saturating_sub(2)).min(12))
+                .take(usize::from(body_height).min(12))
                 .collect();
-            let top = frame.height().saturating_sub(2 + rows.len() as u16);
+            let top = body_height.saturating_sub(rows.len() as u16);
             for (index, line) in rows.iter().enumerate() {
                 frame.fill_row(top + index as u16, Style::Status);
                 frame.label(1, top + index as u16, line, Style::Status);

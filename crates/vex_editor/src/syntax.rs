@@ -126,6 +126,12 @@ impl Editor {
         self.syntax.borrow_mut().requested.clear();
     }
 
+    /// Cancel a request before replacing a multi-document worker batch. Cached
+    /// ranges stay available and missing ranges can immediately be reissued.
+    pub fn cancel_syntax_request(&mut self) {
+        self.syntax.get_mut().cancel();
+    }
+
     /// Return cached colors or plain text while requesting background work.
     /// At most 128 distinct ranges per frame are highlighted in background mode.
     pub fn syntax_highlights(&self, range: Range<ByteOffset>) -> Arc<[HighlightSpan]> {
@@ -241,6 +247,9 @@ pub struct SyntaxJob {
 }
 
 impl SyntaxJob {
+    pub fn document_id(&self) -> vex_core::DocumentId {
+        self.snapshot.id()
+    }
     pub fn cancellation(&self) -> Cancellation {
         self.cancellation.clone()
     }
@@ -284,6 +293,12 @@ pub struct SyntaxResult {
     ranges: Vec<CachedRange>,
 }
 
+impl SyntaxResult {
+    pub fn document_id(&self) -> vex_core::DocumentId {
+        self.document
+    }
+}
+
 /// Persistent, runtime-independent worker state. Construct and run on a worker
 /// thread; parser, tree, query cursor, and grammar initialization stay there.
 #[derive(Default)]
@@ -294,7 +309,16 @@ pub struct SyntaxWorker {
 
 impl SyntaxWorker {
     pub fn run(&mut self, job: SyntaxJob) -> Option<SyntaxResult> {
-        let cancelled = || job.cancellation.is_cancelled();
+        self.run_cancellable(job, || false)
+    }
+
+    /// Also observe the owning batch's cancellation, including during parsing.
+    pub fn run_cancellable(
+        &mut self,
+        job: SyntaxJob,
+        abort: impl Fn() -> bool,
+    ) -> Option<SyntaxResult> {
+        let cancelled = || job.cancellation.is_cancelled() || abort();
         if cancelled() {
             return None;
         }

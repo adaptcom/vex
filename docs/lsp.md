@@ -50,11 +50,17 @@ no other message or prompt is active. Errors take precedence over other markers
 on the same line. Editing clears diagnostics immediately until a current result
 arrives.
 
-Definition jumps can open another local file. Since Vex currently owns one active
-buffer, crossing files requires saving any unsaved changes first. The jump list
-retains up to 32 paths and cursor positions, and returning reloads that file from
-disk. File switching creates a fresh editor/history; it does not preserve hidden
-buffers. Multiple definition results currently choose the first result.
+Definition jumps open another local file in the focused pane. Crossing files
+requires saving unsaved changes first unless another pane still displays the old
+buffer. The jump list retains up to 32 paths and cursor positions. Opening or
+returning to an already displayed file reuses its buffer/history; otherwise it
+loads from disk. Buffers with no views are released. Multiple definition results
+currently choose the first result.
+
+Language services maintain one active document session. Switching focus between
+views of the same file keeps the session and cancels cursor-specific requests.
+Focusing a different file changes the session. Diagnostics, hover, and completion
+are shown in the focused pane; multi-buffer server reuse remains future work.
 
 Project discovery uses the nearest configured marker (`.marksman.toml`,
 `.shellcheckrc`, or a TypeScript/JavaScript project manifest), falling back to the

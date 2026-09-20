@@ -150,7 +150,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
             let (width, height) = app.size();
             app.paint(renderer.frame(width, height)?)?;
             renderer.present(&mut output)?;
-            if let Some(job) = app.editor.take_syntax_job() {
+            if let Some(job) = app.take_syntax_batch() {
                 runtime.submit_syntax(job);
             }
             if let Some(job) = app.take_picker_job() {
@@ -185,7 +185,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
                     redraw |= app.handle_search_result(result);
                 }
                 AppEvent::Background(BackgroundEvent::Syntax(result)) => {
-                    redraw |= app.editor.apply_syntax_result(result);
+                    redraw |= app.handle_syntax_results(result);
                 }
                 AppEvent::Background(BackgroundEvent::Files(result)) => {
                     redraw |= app.handle_picker_result(result)

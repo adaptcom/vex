@@ -24,6 +24,7 @@ mod error;
 mod keymap;
 mod search;
 mod syntax;
+mod views;
 
 pub use commands::{Command, CommandContext};
 pub use error::Error;
@@ -32,6 +33,7 @@ pub use search::{SearchCancellation, SearchCompletion, SearchJob, SearchResult, 
 pub use syntax::{SyntaxJob, SyntaxResult, SyntaxWorker};
 pub use vex_core::search::Direction as SearchDirection;
 pub use vex_syntax::{Highlight, HighlightSpan, Language};
+pub use views::ViewId;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Mode {
@@ -58,9 +60,30 @@ pub enum ApplicationAction {
     FilePicker,
     HalfPageUp(usize),
     HalfPageDown(usize),
+    Window(WindowAction, usize),
 }
 
-/// The first editor model: one document and its active view, independent of a TTY.
+/// Window operations interpreted by the frontend's split layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowAction {
+    SplitVertical,
+    SplitHorizontal,
+    Rotate,
+    FocusLeft,
+    FocusDown,
+    FocusUp,
+    FocusRight,
+    SwapLeft,
+    SwapDown,
+    SwapUp,
+    SwapRight,
+    Close,
+    Only,
+    OpenHorizontal,
+    OpenVertical,
+}
+
+/// One shared document and its views, independent of a TTY.
 /// All selections stay on grapheme boundaries. Insert mode owns zero-width
 /// carets; other modes allow directional ranges and a zero-width EOF cursor.
 #[derive(Debug)]
@@ -76,6 +99,7 @@ pub struct Editor {
     search: search::Search,
     language_action: Option<LanguageAction>,
     application_action: Option<ApplicationAction>,
+    views: views::Views,
 }
 
 impl Editor {
@@ -92,6 +116,7 @@ impl Editor {
         let selections = SelectionSet::single(
             motion::block(document.text(), CharOffset(0)).expect("BOF is valid"),
         );
+        let views = views::Views::new(document.revision());
         Self {
             document,
             selections,
@@ -104,6 +129,7 @@ impl Editor {
             search: search::Search::default(),
             language_action: None,
             application_action: None,
+            views,
         }
     }
 
@@ -213,6 +239,7 @@ impl Editor {
     }
 
     fn synchronize_caches(&mut self) {
+        self.synchronize_views();
         self.search.invalidate();
         self.layout.get_mut().synchronize(&self.document);
         self.syntax.get_mut().synchronize(&self.document);

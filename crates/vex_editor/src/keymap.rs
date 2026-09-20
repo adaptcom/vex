@@ -193,6 +193,43 @@ impl Default for Keymap {
                     .bind(mode, keys, command)
                     .expect("valid default binding");
             }
+            for prefix in [vec![Ctrl('w')], vec![Char(' '), Char('w')]] {
+                for (key, command) in [
+                    (Char('w'), "rotate_view"),
+                    (Ctrl('w'), "rotate_view"),
+                    (Char('v'), "vsplit"),
+                    (Ctrl('v'), "vsplit"),
+                    (Char('s'), "hsplit"),
+                    (Ctrl('s'), "hsplit"),
+                    (Char('f'), "goto_file_hsplit"),
+                    (Char('F'), "goto_file_vsplit"),
+                    (Char('q'), "wclose"),
+                    (Ctrl('q'), "wclose"),
+                    (Char('o'), "wonly"),
+                    (Ctrl('o'), "wonly"),
+                    (Char('h'), "jump_view_left"),
+                    (Ctrl('h'), "jump_view_left"),
+                    (Left, "jump_view_left"),
+                    (Char('H'), "swap_view_left"),
+                    (Char('j'), "jump_view_down"),
+                    (Ctrl('j'), "jump_view_down"),
+                    (Down, "jump_view_down"),
+                    (Char('J'), "swap_view_down"),
+                    (Char('k'), "jump_view_up"),
+                    (Ctrl('k'), "jump_view_up"),
+                    (Up, "jump_view_up"),
+                    (Char('K'), "swap_view_up"),
+                    (Char('l'), "jump_view_right"),
+                    (Ctrl('l'), "jump_view_right"),
+                    (Right, "jump_view_right"),
+                    (Char('L'), "swap_view_right"),
+                ] {
+                    let mut keys = prefix.clone();
+                    keys.push(key);
+                    keymap.bind(mode, keys, command).unwrap();
+                }
+                keymap.name_group(mode, prefix, "Window").unwrap();
+            }
             for (key, title) in [
                 ('g', "Goto"),
                 (' ', "Space"),
@@ -368,6 +405,57 @@ mod tests {
     fn press(handler: &mut KeyHandler, editor: &mut Editor, keys: &str) {
         for key in keys.chars() {
             handler.handle(editor, Key::Char(key)).unwrap();
+        }
+    }
+
+    #[test]
+    fn window_prefix_aliases_cancel_and_dispatch_documented_functions() {
+        use crate::{ApplicationAction, WindowAction};
+        for mode in [Mode::Normal, Mode::Select] {
+            for prefix in [vec![Key::Ctrl('w')], vec![Key::Char(' '), Key::Char('w')]] {
+                let mut editor = Editor::new(Document::from("text"));
+                if mode == Mode::Select {
+                    editor.execute("select_mode", 1).unwrap();
+                }
+                let mut keys = KeyHandler::default();
+                press(&mut keys, &mut editor, "3");
+                for &key in &prefix {
+                    keys.handle(&mut editor, key).unwrap();
+                }
+                assert_eq!(keys.hints().unwrap().title, "Window");
+                keys.handle(&mut editor, Key::Escape).unwrap();
+                assert_eq!(editor.mode(), mode);
+                assert!(editor.take_application_action().is_none());
+                assert_eq!(keys.count(), None);
+                for (key, expected) in [
+                    (Key::Char('v'), WindowAction::SplitVertical),
+                    (Key::Ctrl('s'), WindowAction::SplitHorizontal),
+                    (Key::Left, WindowAction::FocusLeft),
+                    (Key::Ctrl('q'), WindowAction::Close),
+                    (Key::Char('L'), WindowAction::SwapRight),
+                ] {
+                    for &key in &prefix {
+                        keys.handle(&mut editor, key).unwrap();
+                    }
+                    let Dispatch::Executed(name) = keys.handle(&mut editor, key).unwrap() else {
+                        panic!("window command did not execute");
+                    };
+                    assert!(!commands::find(name).unwrap().description().is_empty());
+                    assert_eq!(
+                        editor.take_application_action(),
+                        Some(ApplicationAction::Window(expected, 1))
+                    );
+                }
+                press(&mut keys, &mut editor, "3");
+                for &key in &prefix {
+                    keys.handle(&mut editor, key).unwrap();
+                }
+                keys.handle(&mut editor, Key::Ctrl('w')).unwrap();
+                assert_eq!(
+                    editor.take_application_action(),
+                    Some(ApplicationAction::Window(WindowAction::Rotate, 3))
+                );
+            }
         }
     }
 

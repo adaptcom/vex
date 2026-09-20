@@ -519,7 +519,7 @@ impl App {
         }
     }
 
-    pub(super) fn paint_completion(&mut self, frame: &mut Frame) {
+    pub(super) fn paint_completion(&mut self, frame: &mut Frame, body: u16) {
         self.invalidate_completion();
         let Some(session) = &mut self.completion.active else {
             return;
@@ -528,7 +528,6 @@ impl App {
             return;
         }
         let Some(cursor) = frame.cursor else { return };
-        let body = frame.height().saturating_sub(2);
         let below = body.saturating_sub(cursor.y + 1);
         let above = cursor.y;
         let desired = (session.items.len().clamp(1, 10) + 2) as u16;
@@ -1189,7 +1188,7 @@ mod tests {
                     shape: crate::screen::CursorShape::Bar,
                 };
                 frame.cursor = (width > 0 && height > 0).then_some(cursor);
-                app.paint_completion(&mut frame);
+                app.paint_completion(&mut frame, height.saturating_sub(2));
                 if let Some(actual) = frame.cursor {
                     assert_eq!(actual, cursor);
                     assert_eq!(frame.style_at(x, y), Some(Style::Text));

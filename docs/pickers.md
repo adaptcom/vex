@@ -1,7 +1,7 @@
 # Key groups and file picker
 
 Normal and select modes have named prefix groups: `g` (Goto), Space, `[` (Previous),
-and `]` (Next). Pressing a prefix displays its available continuations, using the
+`]` (Next), and Ctrl-w / Space-w ([Window](windows.md)). Pressing a prefix displays its available continuations, using the
 same Rustdoc as command help. Completing a command or pressing an unbound key
 leaves the group. Escape cancels a pending prefix/count while preserving the
 editing mode; Escape with no pending input enters normal mode. Groups are
@@ -61,10 +61,11 @@ limit is reached. Tabs use four-column stops, and Unicode graphemes are clipped
 without crossing the pane border.
 
 Resizing to a narrow terminal cancels preview work. Previews never edit the
-document or start a language server. Opening another file requires saving current
-changes first; an error leaves the picker open. Successful opens add the origin to the existing
-Ctrl-o jump list. As with definition jumps, switching files currently reloads
-from disk and creates fresh undo history.
+document or start a language server. The chosen file opens in the focused pane.
+Opening another file requires saving current changes first unless another pane
+still displays that buffer; an error leaves the picker open. Successful opens add
+the origin to the existing Ctrl-o jump list. Already displayed files reuse their
+buffer and undo history; files without an open view are loaded from disk.
 
 ## Discovery and visibility
 

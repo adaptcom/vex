@@ -13,6 +13,7 @@ pub struct Viewport {
     pub left_column: usize,
 }
 
+#[derive(Clone, Copy)]
 pub struct Chrome<'a> {
     pub filename: &'a str,
     pub dirty: bool,
@@ -30,6 +31,20 @@ pub fn paint(
     chrome: Chrome<'_>,
 ) -> Result<(), vex_core::Error> {
     editor.begin_syntax_frame();
+    paint_view(frame, editor, viewport, chrome, 1)?;
+    paint_command_line(frame, chrome.message, chrome.error, chrome.prompt);
+    Ok(())
+}
+
+/// Paint one view after the caller has begun the document's syntax frame.
+/// Multiple views accumulate their visible ranges in the same request.
+pub(crate) fn paint_view(
+    frame: &mut Frame,
+    editor: &Editor,
+    viewport: &mut Viewport,
+    chrome: Chrome<'_>,
+    reserved_bottom: u16,
+) -> Result<(), vex_core::Error> {
     let width = usize::from(frame.width());
     let height = usize::from(frame.height());
     if width == 0 || height == 0 {
@@ -43,7 +58,7 @@ pub fn paint(
     };
     let row = text.char_to_line(primary.0);
     let column = editor.display_column(primary)?;
-    let body_height = height.saturating_sub(2);
+    let body_height = height.saturating_sub(1 + usize::from(reserved_bottom));
     let gutter = if width >= 8 {
         (text.len_lines().ilog10() as usize + 2).min(width / 3)
     } else {
@@ -96,7 +111,10 @@ pub fn paint(
         .collect::<Result<Vec<_>, _>>()?;
     let style = |position: CharOffset, syntax: Style| {
         if position == primary {
-            return Style::PrimaryCursor;
+            return Style::PrimaryCursor(match syntax {
+                Style::Syntax(highlight) => Some(highlight),
+                _ => None,
+            });
         }
         if cursors.binary_search(&position).is_ok() {
             return Style::SecondaryCursor;
@@ -223,8 +241,8 @@ pub fn paint(
             },
         });
     }
-    if height >= 2 {
-        let status_row = (height - 2) as u16;
+    if height > usize::from(reserved_bottom) {
+        let status_row = body_height as u16;
         frame.fill_row(status_row, Style::Status);
         let mode = match editor.mode() {
             Mode::Normal => "NOR",
@@ -257,17 +275,29 @@ pub fn paint(
             );
         }
     }
+    Ok(())
+}
+
+/// Paint the single application-wide command/message line after composing panes.
+pub(crate) fn paint_command_line(
+    frame: &mut Frame,
+    message: &str,
+    error: bool,
+    prompt: Option<(char, &str, usize)>,
+) {
+    let width = usize::from(frame.width());
+    let height = usize::from(frame.height());
+    if width == 0 || height == 0 {
+        return;
+    }
+    frame.fill_row((height - 1) as u16, Style::Text);
     let bottom = (height - 1) as u16;
-    if let Some((prefix, prompt, caret)) = chrome.prompt {
+    if let Some((prefix, prompt, caret)) = prompt {
         frame.put(
             0,
             bottom,
             prefix.encode_utf8(&mut [0; 4]),
-            if chrome.error {
-                Style::Error
-            } else {
-                Style::Text
-            },
+            if error { Style::Error } else { Style::Text },
         );
         let tabs = NonZeroUsize::new(4).unwrap();
         let prompt_column = prompt[..caret].graphemes(true).fold(0usize, |col, g| {
@@ -303,15 +333,10 @@ pub fn paint(
         frame.label(
             0,
             bottom,
-            chrome.message,
-            if chrome.error {
-                Style::Error
-            } else {
-                Style::Message
-            },
+            message,
+            if error { Style::Error } else { Style::Message },
         );
     }
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -378,7 +403,7 @@ mod tests {
         assert!(frame.row_text(0).starts_with("1 a   界e\u{301}"));
         assert_eq!(frame.style_at(6, 0), Some(Style::Selection));
         assert_eq!(frame.cursor.unwrap().x, 8);
-        assert_eq!(frame.style_at(8, 0), Some(Style::PrimaryCursor));
+        assert_eq!(frame.style_at(8, 0), Some(Style::PrimaryCursor(None)));
     }
 
     #[test]
@@ -455,7 +480,10 @@ mod tests {
             .unwrap();
         let frame = render(&editor, 50, 8, &mut Viewport::default());
         assert_eq!(frame.style_at(2, 0), Some(Style::Selection));
-        assert_eq!(frame.style_at(3, 0), Some(Style::PrimaryCursor));
+        assert_eq!(
+            frame.style_at(3, 0),
+            Some(Style::PrimaryCursor(Some(Highlight::Keyword)))
+        );
     }
 
     #[test]
@@ -482,7 +510,10 @@ mod tests {
                 );
             }
         }
-        assert_eq!(frame.style_at(19, 0), Some(Style::PrimaryCursor));
+        assert_eq!(
+            frame.style_at(19, 0),
+            Some(Style::PrimaryCursor(Some(Highlight::Comment)))
+        );
     }
 
     #[test]

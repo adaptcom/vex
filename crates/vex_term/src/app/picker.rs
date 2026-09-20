@@ -2,18 +2,16 @@
 
 use super::App;
 use crate::{
-    files::FileState,
     input,
     picker::{
         self, Action, Layout, Picker, Preview,
         files::{FileJob, FileResult, PreviewJob, PreviewResult},
     },
-    render::Viewport,
     screen::{Frame, Style},
 };
 use crossterm::event::{Event, KeyEventKind};
 use std::{io, path::PathBuf};
-use vex_editor::{Editor, Language, background::Cancellation};
+use vex_editor::background::Cancellation;
 
 struct Active {
     view: Picker<PathBuf>,
@@ -253,11 +251,6 @@ impl App {
         if self.files.target() == Some(path.as_path()) {
             return Ok(());
         }
-        if self.is_dirty() {
-            return Err(io::Error::other(
-                "Save this buffer before opening another file · Esc close",
-            ));
-        }
         // A path may disappear or become a directory after discovery. Do not
         // turn an outdated picker entry into an unrelated empty new buffer.
         if !std::fs::metadata(&path)?.is_file() {
@@ -265,19 +258,7 @@ impl App {
                 "Selected path is no longer a regular file",
             ));
         }
-        let (document, files) = FileState::load(Some(&path))?;
-        self.record_jump();
-        let mut editor = Editor::new(document);
-        editor.set_language(Language::detect(files.path(), editor.document().text()));
-        editor.set_background_search(true);
-        editor.set_background_syntax(true);
-        self.editor = editor;
-        self.files = files;
-        self.automatic_language = true;
-        self.viewport = Viewport::default();
-        self.keys.cancel();
-        self.prompt = None;
-        Ok(())
+        self.open_window_from_picker(&path)
     }
 
     pub(super) fn paint_active_picker(&mut self, frame: &mut Frame) {
@@ -293,14 +274,25 @@ impl App {
         let Some(hints) = self.keys.hints() else {
             return;
         };
+        // Show aliases together so window mode fits without repeating each
+        // command's documentation for its letter, arrow, and Ctrl variants.
+        let mut entries: Vec<(String, &str)> = Vec::new();
+        for (key, description) in hints.entries {
+            if let Some((keys, _)) = entries.iter_mut().find(|(_, doc)| *doc == description) {
+                keys.push_str(&format!("/{key}"));
+            } else {
+                entries.push((key.to_string(), description));
+            }
+        }
         let width = frame.width().min(78);
-        let height = frame.height().min((hints.entries.len() + 2) as u16);
+        let bottom = frame.height().saturating_sub(1);
+        let height = bottom.min((entries.len() + 1) as u16);
         if width == 0 || height == 0 {
             return;
         }
         let x = frame.width() - width;
-        let y = frame.height() - height;
-        for row in y..frame.height() {
+        let y = bottom - height;
+        for row in y..bottom {
             for col in x..frame.width() {
                 frame.put(col, row, " ", Style::Selection);
             }
@@ -313,8 +305,7 @@ impl App {
             &format!(" {} · Esc cancel", hints.title),
             Style::Status,
         );
-        for (offset, (key, description)) in hints
-            .entries
+        for (offset, (key, description)) in entries
             .iter()
             .take(usize::from(height.saturating_sub(1)))
             .enumerate()
@@ -509,7 +500,7 @@ mod tests {
                 .unwrap()
                 .view
                 .notice
-                .contains("Save this buffer")
+                .contains("save this buffer")
         );
         assert!(app.is_dirty());
         assert_eq!(app.editor.document().text(), "alxpha contents");

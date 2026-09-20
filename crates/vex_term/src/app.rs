@@ -18,6 +18,7 @@ use vex_editor::{
 mod completion;
 mod language;
 mod picker;
+mod windows;
 
 enum PromptKind {
     Command,
@@ -62,6 +63,7 @@ pub struct App {
     language: language::State,
     picker: picker::State,
     completion: completion::State,
+    windows: windows::State,
 }
 
 impl App {
@@ -78,6 +80,7 @@ impl App {
     fn new(document: Document, files: FileState, size: (u16, u16)) -> Self {
         let mut editor = Editor::new(document);
         editor.set_language(Language::detect(files.path(), editor.document().text()));
+        let windows = windows::State::new(&editor);
         Self {
             editor,
             files,
@@ -92,6 +95,7 @@ impl App {
             language: language::State::default(),
             picker: picker::State::default(),
             completion: completion::State::default(),
+            windows,
         }
     }
 
@@ -199,7 +203,7 @@ impl App {
                 {
                     self.clear_message();
                     self.keys.cancel();
-                    let count = usize::from(self.size.1).saturating_sub(3).max(1);
+                    let count = usize::from(self.active_size().1).saturating_sub(2).max(1);
                     if let Err(error) = self.editor.execute(
                         if event.code == KeyCode::PageDown {
                             "move_down"
@@ -230,13 +234,13 @@ impl App {
                                 kind: PromptKind::Command,
                             });
                         }
-                        Key::Ctrl('s') => {
+                        Key::Ctrl('s') if self.keys.pending_keys().is_empty() => {
                             self.keys.cancel();
                             if let Err(error) = write_file(self, "", false) {
                                 self.fail(error);
                             }
                         }
-                        Key::Ctrl('q') => {
+                        Key::Ctrl('q') if self.keys.pending_keys().is_empty() => {
                             self.keys.cancel();
                             if let Err(error) = quit(self, "", false) {
                                 self.fail(error);
@@ -294,6 +298,26 @@ impl App {
         self.apply_application_action();
         self.refresh_diagnostics();
         self.open_search_prompt();
+        self.paint_windows(frame)?;
+        let diagnostic = self.diagnostic_message();
+        render::paint_command_line(
+            frame,
+            if self.message.is_empty() {
+                &diagnostic
+            } else {
+                &self.message
+            },
+            self.error,
+            self.prompt
+                .as_ref()
+                .map(|p| (p.prefix(), p.input.text(), p.input.cursor())),
+        );
+        self.paint_key_hints(frame);
+        self.paint_active_picker(frame);
+        Ok(())
+    }
+
+    fn paint_current_window(&mut self, frame: &mut Frame, reserved_bottom: u16) -> io::Result<()> {
         let filename = self
             .files
             .path()
@@ -313,7 +337,7 @@ impl App {
         }
         pending.push_str(&self.language_status());
         let diagnostic = self.diagnostic_message();
-        render::paint(
+        render::paint_view(
             frame,
             &self.editor,
             &mut self.viewport,
@@ -332,12 +356,12 @@ impl App {
                     .as_ref()
                     .map(|p| (p.prefix(), p.input.text(), p.input.cursor())),
             },
+            reserved_bottom,
         )
         .map_err(io::Error::other)?;
-        self.paint_language(frame);
-        self.paint_key_hints(frame);
-        self.paint_completion(frame);
-        self.paint_active_picker(frame);
+        let body_height = frame.height().saturating_sub(1 + reserved_bottom);
+        self.paint_language(frame, body_height);
+        self.paint_completion(frame, body_height);
         Ok(())
     }
 
@@ -347,8 +371,13 @@ impl App {
                 self.open_file_picker();
                 Ok(())
             }
-            Some(ApplicationAction::HalfPageUp(count)) => self.scroll_half_page(false, count),
-            Some(ApplicationAction::HalfPageDown(count)) => self.scroll_half_page(true, count),
+            Some(ApplicationAction::HalfPageUp(count)) => self
+                .scroll_half_page(false, count)
+                .map_err(io::Error::other),
+            Some(ApplicationAction::HalfPageDown(count)) => {
+                self.scroll_half_page(true, count).map_err(io::Error::other)
+            }
+            Some(ApplicationAction::Window(action, count)) => self.window_action(action, count),
             None => Ok(()),
         };
         if let Err(error) = result {
@@ -366,7 +395,7 @@ impl App {
             };
             Ok(text.char_to_line(cursor.0))
         };
-        let distance = (usize::from(self.size.1).saturating_sub(2) / 2)
+        let distance = (usize::from(self.active_size().1).saturating_sub(1) / 2)
             .max(1)
             .saturating_mul(count);
         let before = cursor_line(&self.editor)?;
@@ -504,6 +533,30 @@ macro_rules! commands {
 }
 
 commands! {
+    /// Split vertically, optionally opening PATH in the new right-hand window.
+    fn vertical_split(app, argument, force) ["vsplit", "vs"] {
+        if force { return Err(io::Error::other("vsplit does not accept !")); }
+        app.split_with_path(true, argument)
+    }
+
+    /// Split horizontally, optionally opening PATH in the new lower window.
+    fn horizontal_split(app, argument, force) ["hsplit", "hs", "split", "sp"] {
+        if force { return Err(io::Error::other("hsplit does not accept !")); }
+        app.split_with_path(false, argument)
+    }
+
+    /// Keep only the current window. Use ! to discard unsaved buffers in other windows.
+    fn only(app, argument, force) ["only"] {
+        if !argument.is_empty() { return Err(io::Error::other("only takes no arguments")); }
+        app.only_window(force)
+    }
+
+    /// Quit all windows. Use ! to discard unsaved buffers.
+    fn quit_all(app, argument, force) ["quit-all", "qa", "qall"] {
+        if !argument.is_empty() { return Err(io::Error::other("quit-all takes no arguments")); }
+        app.quit_all(force)
+    }
+
     /// Show or configure automatic completion for this session: on, off, delay MS (0..10000), or min-length N (1..256). Defaults to on, 100 ms, and 2 characters; Ctrl-x always remains available.
     fn auto_completion(app, argument, force) ["auto-completion"] {
         if force { return Err(io::Error::other("auto-completion does not accept !")); }
@@ -519,6 +572,7 @@ commands! {
 
     /// Write the buffer atomically. Accepts an optional path; ! permits overwriting external changes or an existing destination.
     fn write_file(app, argument, force) ["write", "w"] {
+        app.check_save_target(argument)?;
         app.editor.finish_undo_group();
         let bytes = app.files.save(app.editor.document(), if argument.is_empty() { None } else { Some(Path::new(argument)) }, force)?;
         if app.automatic_language {
@@ -531,12 +585,10 @@ commands! {
         Ok(())
     }
 
-    /// Quit. Unsaved changes require :q! to discard them.
+    /// Close the current window; quit when it is the last one. Discarding the last view of unsaved text requires :q!.
     fn quit(app, argument, force) ["quit", "q"] {
         if !argument.is_empty() { return Err(io::Error::other("quit takes no arguments")); }
-        if app.is_dirty() && !force { return Err(io::Error::other("unsaved changes; use :w to save or :q! to discard")); }
-        app.quit = true;
-        Ok(())
+        app.close_window(force)
     }
 
     /// Write and quit after a successful save. Accepts the same path and ! options as :write.
@@ -580,7 +632,7 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, KeyModifiers};
 
-    fn press(app: &mut App, text: &str) {
+    pub(super) fn press(app: &mut App, text: &str) {
         for ch in text.chars() {
             app.handle(Event::Key(KeyEvent::new(
                 KeyCode::Char(ch),
@@ -588,11 +640,11 @@ mod tests {
             )));
         }
     }
-    fn key(app: &mut App, code: KeyCode) {
+    pub(super) fn key(app: &mut App, code: KeyCode) {
         app.handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     }
 
-    fn draw(app: &mut App) -> Frame {
+    pub(super) fn draw(app: &mut App) -> Frame {
         let mut frame = Frame::default();
         frame.reset(app.size.0, app.size.1).unwrap();
         app.paint(&mut frame).unwrap();

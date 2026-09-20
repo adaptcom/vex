@@ -148,7 +148,7 @@ impl FileState {
     }
 }
 
-fn resolve(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn resolve(path: &Path) -> io::Result<PathBuf> {
     match fs::canonicalize(path) {
         Ok(path) => Ok(path),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {

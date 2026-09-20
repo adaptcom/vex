@@ -38,8 +38,12 @@ diagnostics. See [language services and setup](docs/lsp.md).
 See [terminal usage and architecture](docs/terminal.md).
 
 Press Space-f for the fuzzy project file picker. Named key groups (`g`, Space,
-`[`, `]`) show available bindings. Discovery, matching, and previews run in the
+`[`, `]`, Ctrl-w) show available bindings. Discovery, matching, and previews run in the
 background using Vex's own implementations. See [key groups and pickers](docs/pickers.md).
+
+Use `Ctrl-w v` / `Ctrl-w s` for vertical/horizontal splits. Panes can share a
+buffer or display different files, with independent cursors and scrolling.
+`Space w` is an alias; see [window mode](docs/windows.md) for all bindings.
 
 ## Development
 
@@ -217,8 +221,8 @@ queue. Completion opens automatically after two identifier characters and
 a 100 ms pause, or immediately on server trigger characters and `Ctrl-x`.
 The menu and documentation panel sit next to the cursor; see
 [language services](docs/lsp.md#completion) for controls and session settings.
-Multiple buffers, registers, more picker providers, and language configuration files
-remain upcoming milestones. Further layout
+Hidden buffers and buffer picking, registers, more picker providers, and language
+configuration files remain upcoming milestones. Further layout
 work can address cold indexing and updates near the beginning of a huge line.
 
 See [the benchmark notes](docs/performance.md) for the initial performance baseline.

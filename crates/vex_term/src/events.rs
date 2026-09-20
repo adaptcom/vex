@@ -4,7 +4,7 @@
 use crate::picker::files::{FileJob, FileResult, FileWorker, PreviewJob, PreviewResult};
 use crossterm::event::{self, Event};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     io,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Condvar, Mutex},
@@ -28,7 +28,7 @@ pub(crate) enum AppEvent {
 /// with ordered protocol messages must get a FIFO policy, not share these slots.
 pub(crate) enum BackgroundEvent {
     Search(SearchResult),
-    Syntax(SyntaxResult),
+    Syntax(Vec<SyntaxResult>),
     Files(FileResult),
     Preview(PreviewResult),
 }
@@ -205,6 +205,41 @@ impl Job for SyntaxJob {
     }
 }
 
+/// All visible buffers travel together through the latest-result slot, so one
+/// buffer's highlight completion cannot replace another buffer's result.
+pub(crate) struct SyntaxBatch {
+    pub documents: Vec<vex_core::DocumentId>,
+    pub jobs: Vec<SyntaxJob>,
+    pub cancellation: Cancellation,
+}
+
+impl Job for SyntaxBatch {
+    fn cancellation(&self) -> Cancellation {
+        self.cancellation.clone()
+    }
+}
+
+#[derive(Default)]
+struct SyntaxBuffers(HashMap<vex_core::DocumentId, SyntaxWorker>);
+
+impl SyntaxBuffers {
+    fn run(&mut self, batch: SyntaxBatch) -> Option<BackgroundEvent> {
+        self.0.retain(|id, _| batch.documents.contains(id));
+        let mut results = Vec::new();
+        for job in batch.jobs {
+            if batch.cancellation.is_cancelled() {
+                return None;
+            }
+            let worker = self.0.entry(job.document_id()).or_default();
+            if let Some(result) = worker.run_cancellable(job, || batch.cancellation.is_cancelled())
+            {
+                results.push(result);
+            }
+        }
+        (!batch.cancellation.is_cancelled()).then_some(BackgroundEvent::Syntax(results))
+    }
+}
+
 impl Job for FileJob {
     fn cancellation(&self) -> Cancellation {
         self.cancellation.clone()
@@ -332,7 +367,7 @@ impl<J: Job> Drop for LatestWorker<J> {
 pub(crate) struct Runtime {
     pub events: EventQueue,
     search: Option<SearchWorker>,
-    syntax: Option<LatestWorker<SyntaxJob>>,
+    syntax: Option<LatestWorker<SyntaxBatch>>,
     lsp: Option<vex_lsp::Service>,
     files: Option<LatestWorker<FileJob>>,
     preview: Option<LatestWorker<PreviewJob>>,
@@ -343,9 +378,9 @@ impl Runtime {
     pub(crate) fn start() -> io::Result<Self> {
         let events = EventQueue::default();
         let search = SearchWorker::start(events.clone())?;
-        let mut syntax_state = SyntaxWorker::default();
+        let mut syntax_state = SyntaxBuffers::default();
         let syntax = LatestWorker::spawn("vex-syntax", events.clone(), move |job| {
-            syntax_state.run(job).map(BackgroundEvent::Syntax)
+            syntax_state.run(job)
         })?;
         let queue = events.clone();
         let lsp = vex_lsp::Service::start(move |event| queue.lsp(event))?;
@@ -396,7 +431,7 @@ impl Runtime {
         self.search.as_ref().unwrap().submit(job);
     }
 
-    pub(crate) fn submit_syntax(&self, job: SyntaxJob) {
+    pub(crate) fn submit_syntax(&self, job: SyntaxBatch) {
         self.syntax.as_ref().unwrap().submit(job);
     }
 
@@ -460,7 +495,7 @@ mod tests {
                 app.handle_search_result(result);
             }
             AppEvent::Background(BackgroundEvent::Syntax(result)) => {
-                app.editor.apply_syntax_result(result);
+                app.handle_syntax_results(result);
             }
             AppEvent::Background(BackgroundEvent::Files(result)) => {
                 app.handle_picker_result(result);
@@ -542,13 +577,13 @@ mod tests {
         editor.set_language(Some(vex_editor::Language::Rust));
         editor.set_background_syntax(true);
         let mut syntax = SyntaxWorker::default();
-        events.background(BackgroundEvent::Syntax(
+        events.background(BackgroundEvent::Syntax(vec![
             syntax.run(syntax_job(&mut editor)).unwrap(),
-        ));
+        ]));
         editor.set_language(Some(vex_editor::Language::Rust));
-        events.background(BackgroundEvent::Syntax(
+        events.background(BackgroundEvent::Syntax(vec![
             syntax.run(syntax_job(&mut editor)).unwrap(),
-        ));
+        ]));
         let mut search = searching();
         search.update_search("last").unwrap();
         events.background(BackgroundEvent::Search(
@@ -568,7 +603,7 @@ mod tests {
         else {
             panic!("syntax completion was lost or starved");
         };
-        assert!(editor.apply_syntax_result(result));
+        assert!(editor.apply_syntax_result(result.into_iter().next().unwrap()));
         assert!(matches!(
             events.next(Duration::ZERO, true),
             Some(AppEvent::Background(BackgroundEvent::Search(_)))
@@ -596,7 +631,9 @@ mod tests {
         editor.set_background_syntax(true);
         let mut state = SyntaxWorker::default();
         let syntax = LatestWorker::spawn("test-syntax", events.clone(), move |job| {
-            state.run(job).map(BackgroundEvent::Syntax)
+            state
+                .run(job)
+                .map(|result| BackgroundEvent::Syntax(vec![result]))
         })
         .unwrap();
         syntax.submit(syntax_job(&mut editor));
@@ -605,7 +642,7 @@ mod tests {
         else {
             panic!("syntax must complete independently of search");
         };
-        assert!(editor.apply_syntax_result(result));
+        assert!(editor.apply_syntax_result(result.into_iter().next().unwrap()));
         assert!(editor.search_pending());
         release.send(()).unwrap();
         let Some(AppEvent::Background(BackgroundEvent::Search(result))) =

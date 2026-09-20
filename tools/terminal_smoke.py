@@ -77,7 +77,7 @@ class Terminal:
     def __exit__(self, *_):
         if self.status is None:
             # Let the editor stop its workers and language server on test failure.
-            self.send(b"\x03:q!\r")
+            self.send(b"\x03:qa!\r")
             deadline = time.monotonic() + 2
             while self.poll() is None and time.monotonic() < deadline:
                 self.drain()
@@ -277,6 +277,47 @@ def main():
             terminal.finish()
         assert pages.read_text() == page_source
         print("PASS: Ctrl-u/Ctrl-d half-page movement, counts, resize, and clean quit")
+
+        split_path = Path(directory) / "split.txt"
+        split_path.write_text("alpha\nsecond\n")
+        other_path = Path(directory) / "other.txt"
+        other_path.write_text("beta\n")
+        with Terminal([binary, str(split_path)]) as terminal:
+            terminal.start()
+            terminal.send(b"\x17v")  # Ctrl-w v
+            terminal.expect_screen("│".encode())
+            terminal.send(b"iX\x03 whu")  # Shared edit, focus left, shared undo.
+            terminal.expect_screen(b"alpha")
+            terminal.send(b"U\x13")
+            terminal.expect_screen(b"wrote")
+            assert split_path.read_text() == "Xalpha\nsecond\n"
+            terminal.send(b" wl\x17\x13")  # Ctrl-w Ctrl-s must split, not save.
+            terminal.expect_screen(b"Xalpha")
+            terminal.send(b"\x17\x11")  # Ctrl-w Ctrl-q closes only this window.
+            terminal.expect_screen("│".encode())
+            assert terminal.poll() is None
+            terminal.send(b" wo:vsplit " + os.fsencode(other_path) + b"\r")
+            terminal.expect_screen(b"beta")
+            terminal.expect_screen(b"Xalpha")
+            terminal.send(b"iY\x03:q\r")
+            terminal.expect_screen(b"unsaved changes")
+            terminal.send(b":w\r")
+            terminal.expect_screen(b"wrote")
+            terminal.send(b" wH")  # Swap the active file left.
+            terminal.resize(10, 3)
+            # Confirm the small resize was handled, rather than mistaking an
+            # earlier queued focus redraw for its clear-screen sequence.
+            terminal.send(b":help\r")
+            terminal.expect_screen(b"\x1b[3;1Hi/a insert")
+            terminal.resize(80, 24)
+            terminal.expect_screen("│".encode())
+            terminal.send(b":q\r")
+            terminal.expect_screen(b"Xalpha")
+            assert terminal.poll() is None
+            terminal.send(b":q\r")
+            terminal.finish()
+            assert other_path.read_text() == "Ybeta\n"
+        print("PASS: window prefixes, shared undo/save, distinct buffers, close protection, swap, resize")
 
         rust_path = Path(directory) / "highlight.rs"
         rust_path.write_text('fn main() { let message = "界"; }\n')

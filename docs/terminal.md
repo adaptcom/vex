@@ -41,9 +41,10 @@ and calls that existing dispatcher.
 | `K`, `gd`, Ctrl-o | Hover, go to definition, return from a definition jump |
 | `]d`, `[d` | Next/previous diagnostic, with counts and wrapping |
 | Space-f, Space-k | Open file picker / show hover |
+| Ctrl-w, Space-w | Enter [window mode](windows.md) to split, focus, swap, and close panes |
 | Escape | Cancel a prefix/picker/prompt; otherwise enter normal mode |
 | `:` in normal/select mode | Open the command prompt |
-| Ctrl-s, Ctrl-q | Save / quit with an unsaved-change check |
+| Ctrl-s, Ctrl-q | Save / close the current pane with an unsaved-change check |
 | Ctrl-c | Cancel the prompt or return to normal mode |
 
 See the [editing command reference](commands.md) for exact movement semantics.
@@ -85,9 +86,12 @@ and both wrap and accept counts. See [search semantics and limits](search.md).
 |---|---|
 | `:write [PATH]`, `:w [PATH]` | Save to the current or supplied path |
 | `:write! [PATH]`, `:w! [PATH]` | Allow replacing an existing destination or external edits |
-| `:quit`, `:q` | Quit if the buffer has no unsaved changes |
-| `:quit!`, `:q!` | Discard unsaved changes and quit |
-| `:write-quit [PATH]`, `:wq [PATH]`, `:x [PATH]` | Save, then quit only if saving succeeds |
+| `:quit`, `:q` | Close the current pane; protect the last view of unsaved text |
+| `:quit!`, `:q!` | Close the current pane, allowing unsaved text to be discarded |
+| `:vsplit [PATH]`, `:hsplit [PATH]` | Split and optionally open a different file |
+| `:only[!]` | Keep only the current pane |
+| `:quit-all[!]`, `:qa[!]` | Quit all panes, with ! to discard unsaved text |
+| `:write-quit [PATH]`, `:wq [PATH]`, `:x [PATH]` | Save, then close the current pane only if saving succeeds |
 | `:help [COMMAND]`, `:h [COMMAND]` | Show help or a command's documentation |
 | `:language [NAME/text/auto]`, `:lang [...]` | Show or set the language |
 | `:lsp-restart` | Restart the configured language server for the current file |
@@ -113,7 +117,7 @@ Named files start their configured server when it is installed on `PATH` (or
 selected by its executable override). Diagnostics appear in the gutter and status line; `K`
 opens a hover panel. Definition jumps can open another file after saving pending
 changes, and Ctrl-o returns to the origin. See [language services](lsp.md) for
-setup, single-buffer navigation limits, and failure handling.
+setup, active-document service limits, and failure handling.
 
 ## Rendering and input
 
@@ -141,7 +145,8 @@ encoding. It has no UI framework or Ratatui dependency:
 The primary cursor changes shape between block and bar. Other cursors and
 selected ranges use cell styles. The status line shows mode, unsaved changes
 (`[+]`), pending keys/count, path, primary position, and selection count. The
-bottom line shows messages, errors, or the prompt.
+bottom line shows messages, errors, or the prompt. This line is global across all
+splits; each pane has only its own status line.
 
 Movement and rendering share display-width conventions in `vex_core::display`.
 Control characters and standalone zero-width clusters appear as replacement
@@ -164,7 +169,9 @@ The LSP service uses a small futures executor and dedicated pipe threads, withou
 Tokio. No service holds a shared mutable editor lock.
 
 The inbox holds up to 256 terminal events and applies backpressure to the input
-producer. Search and syntax each have a separate latest-completion slot, so they
+producer. Syntax requests and completions batch all visible buffers together. The worker
+retains a parser per open buffer; replacing a batch reissues any outstanding
+ranges for its other buffers. Search and syntax each have a separate latest-completion slot, so they
 cannot overwrite each other and full input cannot block a needed result. Ready
 services alternate to prevent starvation, with ordinary input taking a turn
 between completions. Search and syntax use the same worker
@@ -212,7 +219,8 @@ replacement creates a new inode, so other hard links, ownership, extended
 attributes, and ACLs are not preserved. The content check is not a lock against
 concurrent writers, and the parent directory is not synced for crash durability.
 
-This version has one buffer and view. File I/O is synchronous. Rendering stops
+Split panes can show shared or different buffers; see [window mode](windows.md).
+Buffers are retained while at least one pane displays them. File I/O is synchronous. Rendering stops
 at the right edge. Cached display columns avoid repeatedly scanning hidden line
 prefixes; cold queries and reindexing after an early edit can still be expensive.
 Bundled syntax languages share size and work budgets on a background worker.
@@ -273,7 +281,7 @@ cargo run --release -p vex_term --example long_lines --locked -- 10 100
 
 The Unix smoke script launches the real executable with a controlling
 pseudo-terminal. It exercises Rust syntax colors, paste, CRLF, grouped undo/redo,
-insert-mode savepoints, dirty quit, save, resize,
+insert-mode savepoints, shared/different-file splits, window key sequences, dirty quit, save, resize,
 focus, seeking/editing at the end of a 1 MiB line, and terminal cleanup. It also
 runs the panic-cleanup source test under a
 PTY; this test returns early in the normal noninteractive Cargo test run.

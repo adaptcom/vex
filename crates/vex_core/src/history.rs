@@ -1,5 +1,6 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
+use crate::mapping::PositionMap;
 use crate::{Rope, SelectionSet, document::ChangeExtent};
 
 #[derive(Clone, Debug)]
@@ -13,6 +14,7 @@ struct Entry {
     before: State,
     after: State,
     change: ChangeExtent,
+    maps: Vec<Arc<PositionMap>>,
 }
 
 /// Rope clones share unchanged storage, including across undo branches.
@@ -36,7 +38,14 @@ impl Default for History {
 }
 
 impl History {
-    pub fn record(&mut self, before: State, after: State, change: ChangeExtent, grouped: bool) {
+    pub fn record(
+        &mut self,
+        before: State,
+        after: State,
+        change: ChangeExtent,
+        map: Arc<PositionMap>,
+        grouped: bool,
+    ) {
         self.undone.clear();
         if grouped && self.open_group {
             let entry = self.done.back_mut().expect("open group has an entry");
@@ -50,11 +59,20 @@ impl History {
                 new_end: crate::CharOffset(after.text.len_chars() - suffix),
             };
             entry.after = after;
+            if !entry
+                .maps
+                .last_mut()
+                .and_then(Arc::get_mut)
+                .is_some_and(|previous| previous.merge_typing(&map))
+            {
+                entry.maps.push(map);
+            }
         } else if self.limit != 0 {
             self.done.push_back(Entry {
                 before,
                 after,
                 change,
+                maps: vec![map],
             });
             while self.done.len() > self.limit {
                 self.done.pop_front();
@@ -67,16 +85,20 @@ impl History {
         self.open_group = false;
     }
 
-    pub fn undo(&mut self) -> Option<(State, ChangeExtent)> {
+    pub fn undo(&mut self) -> Option<(State, ChangeExtent, Vec<Arc<PositionMap>>)> {
         let entry = self.done.pop_back()?;
-        let state = (entry.before.clone(), entry.change.reversed());
+        let state = (
+            entry.before.clone(),
+            entry.change.reversed(),
+            entry.maps.clone(),
+        );
         self.undone.push(entry);
         Some(state)
     }
 
-    pub fn redo(&mut self) -> Option<(State, ChangeExtent)> {
+    pub fn redo(&mut self) -> Option<(State, ChangeExtent, Vec<Arc<PositionMap>>)> {
         let entry = self.undone.pop()?;
-        let state = (entry.after.clone(), entry.change);
+        let state = (entry.after.clone(), entry.change, entry.maps.clone());
         self.done.push_back(entry);
         Some(state)
     }

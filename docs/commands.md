@@ -4,6 +4,21 @@ Generated from command Rustdoc and the default keymap.
 
 | Command | Bindings by mode | Description |
 |---|---|---|
+| `rotate_view` | Normal: `<Space>ww`, Normal: `<Space>w<C-w>`, Normal: `<C-w>w`, Normal: `<C-w><C-w>`, Select: `<Space>ww`, Select: `<Space>w<C-w>`, Select: `<C-w>w`, Select: `<C-w><C-w>` | Focus the next window in layout order. A count advances multiple windows. |
+| `vsplit` | Normal: `<Space>wv`, Normal: `<Space>w<C-v>`, Normal: `<C-w>v`, Normal: `<C-w><C-v>`, Select: `<Space>wv`, Select: `<Space>w<C-v>`, Select: `<C-w>v`, Select: `<C-w><C-v>` | Split the current window vertically, opening a shared view on the right. |
+| `hsplit` | Normal: `<Space>ws`, Normal: `<Space>w<C-s>`, Normal: `<C-w>s`, Normal: `<C-w><C-s>`, Select: `<Space>ws`, Select: `<Space>w<C-s>`, Select: `<C-w>s`, Select: `<C-w><C-s>` | Split the current window horizontally, opening a shared view below. |
+| `jump_view_left` | Normal: `<Space>wh`, Normal: `<Space>w<C-h>`, Normal: `<Space>w<Left>`, Normal: `<C-w>h`, Normal: `<C-w><C-h>`, Normal: `<C-w><Left>`, Select: `<Space>wh`, Select: `<Space>w<C-h>`, Select: `<Space>w<Left>`, Select: `<C-w>h`, Select: `<C-w><C-h>`, Select: `<C-w><Left>` | Focus the window to the left. |
+| `jump_view_down` | Normal: `<Space>wj`, Normal: `<Space>w<C-j>`, Normal: `<Space>w<Down>`, Normal: `<C-w>j`, Normal: `<C-w><C-j>`, Normal: `<C-w><Down>`, Select: `<Space>wj`, Select: `<Space>w<C-j>`, Select: `<Space>w<Down>`, Select: `<C-w>j`, Select: `<C-w><C-j>`, Select: `<C-w><Down>` | Focus the window below. |
+| `jump_view_up` | Normal: `<Space>wk`, Normal: `<Space>w<C-k>`, Normal: `<Space>w<Up>`, Normal: `<C-w>k`, Normal: `<C-w><C-k>`, Normal: `<C-w><Up>`, Select: `<Space>wk`, Select: `<Space>w<C-k>`, Select: `<Space>w<Up>`, Select: `<C-w>k`, Select: `<C-w><C-k>`, Select: `<C-w><Up>` | Focus the window above. |
+| `jump_view_right` | Normal: `<Space>wl`, Normal: `<Space>w<C-l>`, Normal: `<Space>w<Right>`, Normal: `<C-w>l`, Normal: `<C-w><C-l>`, Normal: `<C-w><Right>`, Select: `<Space>wl`, Select: `<Space>w<C-l>`, Select: `<Space>w<Right>`, Select: `<C-w>l`, Select: `<C-w><C-l>`, Select: `<C-w><Right>` | Focus the window to the right. |
+| `swap_view_left` | Normal: `<Space>wH`, Normal: `<C-w>H`, Select: `<Space>wH`, Select: `<C-w>H` | Swap the current window with the window to the left. |
+| `swap_view_down` | Normal: `<Space>wJ`, Normal: `<C-w>J`, Select: `<Space>wJ`, Select: `<C-w>J` | Swap the current window with the window below. |
+| `swap_view_up` | Normal: `<Space>wK`, Normal: `<C-w>K`, Select: `<Space>wK`, Select: `<C-w>K` | Swap the current window with the window above. |
+| `swap_view_right` | Normal: `<Space>wL`, Normal: `<C-w>L`, Select: `<Space>wL`, Select: `<C-w>L` | Swap the current window with the window to the right. |
+| `wclose` | Normal: `<Space>wq`, Normal: `<Space>w<C-q>`, Normal: `<C-w>q`, Normal: `<C-w><C-q>`, Select: `<Space>wq`, Select: `<Space>w<C-q>`, Select: `<C-w>q`, Select: `<C-w><C-q>` | Close this window, protecting the last view of unsaved text. Exit when no windows remain. |
+| `wonly` | Normal: `<Space>wo`, Normal: `<Space>w<C-o>`, Normal: `<C-w>o`, Normal: `<C-w><C-o>`, Select: `<Space>wo`, Select: `<Space>w<C-o>`, Select: `<C-w>o`, Select: `<C-w><C-o>` | Keep only this window, protecting unsaved text in other buffers. |
+| `goto_file_hsplit` | Normal: `<Space>wf`, Normal: `<C-w>f`, Select: `<Space>wf`, Select: `<C-w>f` | Open filenames in the selections in horizontal splits. Paths are relative to the current file. |
+| `goto_file_vsplit` | Normal: `<Space>wF`, Normal: `<C-w>F`, Select: `<Space>wF`, Select: `<C-w>F` | Open filenames in the selections in vertical splits. Paths are relative to the current file. |
 | `completion` | Insert: `<C-x>` | Request language-server completion at the insertion cursor. |
 | `file_picker` | Normal: `<Space>f`, Select: `<Space>f` | Open a fuzzy file picker at the current project root. |
 | `jump_back` | Normal: `<C-o>`, Select: `<C-o>` | Return to the location before the last successful file or definition jump. |

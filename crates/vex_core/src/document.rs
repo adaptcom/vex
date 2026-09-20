@@ -7,6 +7,7 @@ use std::{
 };
 
 use crate::history::{History, State};
+use crate::mapping::PositionMap;
 use crate::{Affinity, ByteOffset, CharOffset, Edit, Error, Rope, SelectionSet, Transaction};
 
 /// Process-local identity, distinct even for documents containing identical text.
@@ -101,6 +102,8 @@ pub struct Document {
     text: Rope,
     history: History,
     pub(crate) change: ChangeExtent,
+    maps: Vec<Arc<PositionMap>>,
+    reverse_maps: bool,
 }
 
 impl Document {
@@ -130,6 +133,23 @@ impl Document {
     pub fn change_since(&self, snapshot: &Snapshot) -> Option<ChangeExtent> {
         (snapshot.id == self.id && snapshot.revision.0.checked_add(1) == Some(self.revision.0))
             .then_some(self.change)
+    }
+
+    /// Map another view's selections through the most recent edit/undo/redo.
+    /// Call exactly once per revision, before another change is applied.
+    pub fn map_other_selections(&self, selections: &SelectionSet) -> Result<SelectionSet, Error> {
+        let mut selections = selections.clone();
+        if self.reverse_maps {
+            for map in self.maps.iter().rev() {
+                selections = map.selections(&selections, true)?;
+            }
+        } else {
+            for map in &self.maps {
+                selections = map.selections(&selections, false)?;
+            }
+        }
+        selections.validate(self.text.len_chars())?;
+        Ok(selections)
     }
 
     /// Read UTF-8 without first collecting the entire file into a String.
@@ -290,7 +310,12 @@ impl Document {
             old_end,
             new_end: CharOffset(text.len_chars() - (self.text.len_chars() - old_end.0)),
         };
-        self.history.record(before, after, change, grouped);
+        let map = Arc::new(PositionMap::new(&transaction));
+        self.maps.clear();
+        self.reverse_maps = false;
+        self.history
+            .record(before, after, change, Arc::clone(&map), grouped);
+        self.maps.push(map);
         self.change = change;
         self.text = text;
         self.revision = revision;
@@ -304,7 +329,9 @@ impl Document {
             return Ok(false);
         }
         let revision = self.revision.next()?;
-        let (state, change) = self.history.undo().expect("checked undo history");
+        let (state, change, maps) = self.history.undo().expect("checked undo history");
+        self.maps = maps;
+        self.reverse_maps = true;
         self.change = change;
         self.text = state.text;
         *selections = state.selections;
@@ -318,7 +345,9 @@ impl Document {
             return Ok(false);
         }
         let revision = self.revision.next()?;
-        let (state, change) = self.history.redo().expect("checked redo history");
+        let (state, change, maps) = self.history.redo().expect("checked redo history");
+        self.maps = maps;
+        self.reverse_maps = false;
         self.change = change;
         self.text = state.text;
         *selections = state.selections;
@@ -351,6 +380,8 @@ impl From<Rope> for Document {
             text,
             history: History::default(),
             change: ChangeExtent::default(),
+            maps: Vec::new(),
+            reverse_maps: false,
         }
     }
 }

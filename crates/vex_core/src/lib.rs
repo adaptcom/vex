@@ -26,6 +26,7 @@ mod error;
 pub mod grapheme;
 mod history;
 pub mod layout;
+mod mapping;
 pub mod motion;
 mod position;
 pub mod search;

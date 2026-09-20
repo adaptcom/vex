@@ -328,6 +328,96 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
 }
 
 commands! {
+    /// Focus the next window in layout order. A count advances multiple windows.
+    fn rotate_view(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::Rotate, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Split the current window vertically, opening a shared view on the right.
+    fn vsplit(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::SplitVertical, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Split the current window horizontally, opening a shared view below.
+    fn hsplit(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::SplitHorizontal, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Focus the window to the left.
+    fn jump_view_left(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::FocusLeft, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Focus the window below.
+    fn jump_view_down(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::FocusDown, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Focus the window above.
+    fn jump_view_up(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::FocusUp, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Focus the window to the right.
+    fn jump_view_right(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::FocusRight, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Swap the current window with the window to the left.
+    fn swap_view_left(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::SwapLeft, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Swap the current window with the window below.
+    fn swap_view_down(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::SwapDown, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Swap the current window with the window above.
+    fn swap_view_up(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::SwapUp, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Swap the current window with the window to the right.
+    fn swap_view_right(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::SwapRight, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Close this window, protecting the last view of unsaved text. Exit when no windows remain.
+    fn wclose(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::Close, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Keep only this window, protecting unsaved text in other buffers.
+    fn wonly(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::Only, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Open filenames in the selections in horizontal splits. Paths are relative to the current file.
+    fn goto_file_hsplit(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::OpenHorizontal, ctx.count.get()));
+        Ok(())
+    }
+
+    /// Open filenames in the selections in vertical splits. Paths are relative to the current file.
+    fn goto_file_vsplit(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::OpenVertical, ctx.count.get()));
+        Ok(())
+    }
+
     /// Request language-server completion at the insertion cursor.
     fn completion(ctx) {
         require_insert(ctx.editor)?;

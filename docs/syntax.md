@@ -48,7 +48,10 @@ Inline syntax does not cross paragraphs or enter fenced code blocks. Code fences
 receive literal styling; highlighting their embedded language is future work.
 
 Drawing reads cached spans and records visible byte ranges. After drawing, the
-event loop submits one snapshot request containing the missing ranges. Text
+event loop submits a batch of snapshot requests containing the missing ranges
+for all visible buffers. Views of the same buffer contribute to one request and
+share its cached spans. The worker retains a parser per open buffer; a batch
+completion prevents one buffer from overwriting another buffer's results. Text
 appears immediately; completed colors trigger a redraw even while input is idle.
 Search and syntax have independent workers and completion slots in the shared
 event queue. Neither worker accesses mutable editor state.
@@ -72,7 +75,7 @@ Drawing requests only the horizontally visible part of each displayed line.
 Captures enclosing the viewport, such as multiline strings and comments, are
 clipped to it. Smaller nested captures override enclosing ones, so escapes retain
 their own style inside strings; later query patterns break equal-size ties.
-Returned spans are sorted and disjoint. Up to 128 distinct ranges per frame are
+Returned spans are sorted and disjoint. Up to 128 distinct ranges per buffer per frame are
 requested and cached, with at most 4,096 captures per query. Extra ranges in very
 tall viewports stay plain text. Edits invalidate highlight spans. Cursor
 movement over cached ranges does not reparse or rerun queries.

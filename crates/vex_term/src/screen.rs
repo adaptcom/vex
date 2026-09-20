@@ -4,7 +4,9 @@
 use crossterm::{
     cursor::{Hide, MoveTo, SetCursorStyle, Show},
     queue,
-    style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
+    style::{
+        Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+    },
     terminal::{BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate},
 };
 use std::io::{self, Write};
@@ -20,16 +22,22 @@ pub enum Style {
     Syntax(Highlight),
     Gutter,
     Status,
+    InactiveStatus,
     Message,
     Error,
     Selection,
-    PrimaryCursor,
+    PrimaryCursor(Option<Highlight>),
     SecondaryCursor,
+    InactiveCursor,
     PickerMatch,
     PickerSelectedMatch,
 }
 
 impl Style {
+    fn reversed(self) -> bool {
+        matches!(self, Self::PrimaryCursor(_))
+    }
+
     fn colors(self) -> (Color, Color) {
         use Color::*;
         match self {
@@ -54,11 +62,13 @@ impl Style {
             ),
             Self::Gutter => (DarkGrey, Reset),
             Self::Status => (Black, Grey),
+            Self::InactiveStatus => (Grey, DarkGrey),
             Self::Message => (DarkCyan, Reset),
             Self::Error => (Red, Reset),
             Self::Selection => (Black, Grey),
-            Self::PrimaryCursor => (Black, Cyan),
+            Self::PrimaryCursor(highlight) => highlight.map_or(Self::Text, Self::Syntax).colors(),
             Self::SecondaryCursor => (Black, DarkCyan),
+            Self::InactiveCursor => (DarkGrey, Reset),
             Self::PickerMatch => (Yellow, Reset),
             Self::PickerSelectedMatch => (DarkYellow, Grey),
         }
@@ -104,6 +114,43 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Copy a pane's complete glyphs and translate its optional hardware cursor.
+    pub(crate) fn blit(&mut self, x: u16, y: u16, source: &Frame) {
+        for row in 0..source.height.min(self.height.saturating_sub(y)) {
+            for column in 0..source.width.min(self.width.saturating_sub(x)) {
+                let cell = &source.cells
+                    [usize::from(row) * usize::from(source.width) + usize::from(column)];
+                if cell.width > 0 {
+                    self.put(x + column, y + row, &cell.text, cell.style);
+                }
+            }
+        }
+        if let Some(cursor) = source.cursor {
+            let (cx, cy) = (
+                u32::from(x) + u32::from(cursor.x),
+                u32::from(y) + u32::from(cursor.y),
+            );
+            if cx < u32::from(self.width) && cy < u32::from(self.height) {
+                self.cursor = Some(Cursor {
+                    x: cx as u16,
+                    y: cy as u16,
+                    shape: cursor.shape,
+                });
+            }
+        }
+    }
+
+    pub(crate) fn inactive(&mut self) {
+        self.cursor = None;
+        for cell in &mut self.cells {
+            cell.style = match cell.style {
+                Style::Status => Style::InactiveStatus,
+                Style::PrimaryCursor(_) | Style::SecondaryCursor => Style::InactiveCursor,
+                other => other,
+            };
+        }
+    }
+
     pub fn width(&self) -> u16 {
         self.width
     }
@@ -260,6 +307,16 @@ impl Renderer {
                         SetForegroundColor(foreground),
                         SetBackgroundColor(background)
                     )?;
+                    if last_style.is_some_and(Style::reversed) != cell.style.reversed() {
+                        queue!(
+                            self.output,
+                            SetAttribute(if cell.style.reversed() {
+                                Attribute::Reverse
+                            } else {
+                                Attribute::NoReverse
+                            })
+                        )?;
+                    }
                     last_style = Some(cell.style);
                 }
                 queue!(self.output, Print(&cell.text))?;
@@ -281,7 +338,13 @@ impl Renderer {
                     }
                 )?;
             }
-            queue!(self.output, MoveTo(cursor.x, cursor.y), Show)?;
+            queue!(self.output, MoveTo(cursor.x, cursor.y))?;
+            // The cell grid draws the reversed block. A terminal block on top
+            // could invert it again or impose the terminal's fixed cursor color.
+            // Insert and prompt carets still use the terminal's bar cursor.
+            if cursor.shape == CursorShape::Bar {
+                queue!(self.output, Show)?;
+            }
         }
         queue!(self.output, EndSynchronizedUpdate)?;
         if let Err(error) = writer.write_all(&self.output).and_then(|()| writer.flush()) {
@@ -297,6 +360,48 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_reverses_existing_colors_without_leaking_reverse_to_other_cells() {
+        for highlight in [None, Some(Highlight::Keyword), Some(Highlight::String)] {
+            let underlying = highlight.map_or(Style::Text, Style::Syntax);
+            let cursor = Style::PrimaryCursor(highlight);
+            assert_eq!(cursor.colors(), underlying.colors());
+            let mut renderer = Renderer::default();
+            let frame = renderer.frame(3, 1).unwrap();
+            frame.put(0, 0, "a", cursor);
+            frame.put(1, 0, "b", underlying);
+            frame.cursor = Some(Cursor {
+                x: 0,
+                y: 0,
+                shape: CursorShape::Block,
+            });
+            let mut bytes = Vec::new();
+            renderer.present(&mut bytes).unwrap();
+            let output = String::from_utf8(bytes).unwrap();
+            assert!(output.contains("\x1b[7ma"));
+            assert!(output.contains("\x1b[27mb"));
+            assert!(!output.contains("\x1b[?25h"));
+            let frame = renderer.frame(3, 1).unwrap();
+            frame.put(0, 0, "a", underlying);
+            frame.put(1, 0, "b", underlying);
+            frame.cursor = Some(Cursor {
+                x: 1,
+                y: 0,
+                shape: CursorShape::Bar,
+            });
+            let mut bytes = Vec::new();
+            renderer.present(&mut bytes).unwrap();
+            let output = String::from_utf8(bytes).unwrap();
+            assert!(!output.contains("\x1b[7m"));
+            assert!(output.contains("\x1b[?25h"));
+        }
+        assert_eq!(
+            Style::InactiveCursor.colors(),
+            (Color::DarkGrey, Color::Reset)
+        );
+        assert!(!Style::InactiveCursor.reversed());
+    }
 
     #[test]
     fn unchanged_frames_emit_nothing_and_wide_to_narrow_clears_the_trailing_cell() {
