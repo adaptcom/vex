@@ -58,6 +58,8 @@ pub enum LanguageAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApplicationAction {
     FilePicker,
+    DocumentSymbols,
+    WorkspaceSymbols,
     HalfPageUp(usize),
     HalfPageDown(usize),
     Window(WindowAction, usize),

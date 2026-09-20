@@ -341,6 +341,8 @@ pub(crate) struct PreviewJob {
     pub session: u64,
     pub request: u64,
     pub path: PathBuf,
+    pub snapshot: Option<vex_core::Snapshot>,
+    pub position: Option<vex_lsp::Position>,
     pub cancellation: Cancellation,
 }
 
@@ -356,8 +358,12 @@ impl PreviewJob {
         if self.cancellation.is_cancelled() {
             return None;
         }
-        let preview = preview(&self.path, &self.cancellation)
-            .unwrap_or_else(|error| Preview::plain(format!("Preview unavailable: {error}")));
+        let preview = if let Some(position) = self.position {
+            symbol_preview(&self.path, self.snapshot, position, &self.cancellation)
+        } else {
+            preview(&self.path, &self.cancellation)
+        }
+        .unwrap_or_else(|error| Preview::plain(format!("Preview unavailable: {error}")));
         (!self.cancellation.is_cancelled()).then_some(PreviewResult {
             session: self.session,
             request: self.request,
@@ -365,6 +371,85 @@ impl PreviewJob {
             preview,
         })
     }
+}
+
+fn symbol_preview(
+    path: &Path,
+    snapshot: Option<vex_core::Snapshot>,
+    position: vex_lsp::Position,
+    cancellation: &Cancellation,
+) -> io::Result<Preview> {
+    let snapshot = match snapshot {
+        Some(snapshot) => snapshot,
+        None => {
+            if !fs::symlink_metadata(path)?.is_file() {
+                return Err(io::Error::other("not a regular file"));
+            }
+            let mut file = File::open(path)?.take(vex_lsp::MAX_DOCUMENT_BYTES as u64 + 1);
+            let mut bytes = Vec::new();
+            let mut chunk = [0; 8192];
+            loop {
+                if cancellation.is_cancelled() {
+                    return Ok(Preview::default());
+                }
+                let read = file.read(&mut chunk)?;
+                if read == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk[..read]);
+            }
+            if bytes.len() > vex_lsp::MAX_DOCUMENT_BYTES {
+                return Err(io::Error::other("symbol preview exceeds 8 MiB"));
+            }
+            if bytes.contains(&0) {
+                return Err(io::Error::other("binary file"));
+            }
+            let text = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
+            Document::from(text).snapshot()
+        }
+    };
+    if snapshot.text().len_bytes() > vex_lsp::MAX_DOCUMENT_BYTES {
+        return Err(io::Error::other("symbol preview exceeds 8 MiB"));
+    }
+    let text = snapshot.text();
+    let offset = vex_lsp::offset(text, position)
+        .ok_or_else(|| io::Error::other("invalid symbol position"))?;
+    let line = text.char_to_line(offset.0);
+    let first_line = line.saturating_sub(3);
+    let start = text.line_to_byte(first_line);
+    let last_line = (first_line + 200).min(text.len_lines());
+    let end = text.line_to_byte(last_line).min(start + PREVIEW_BYTES);
+    let end = text.char_to_byte(text.byte_to_char(end));
+    let mut preview = Preview {
+        text: text.byte_slice(start..end).to_string(),
+        line_offset: Some(first_line),
+        focus_line: Some(line - first_line),
+        ..Preview::default()
+    };
+    if !cancellation.is_cancelled()
+        && let Some(language) = Language::detect(Some(path), text)
+    {
+        let mut syntax = Syntax::from_snapshot(language, snapshot.clone());
+        preview.highlights = syntax
+            .highlights_current(ByteOffset(start)..ByteOffset(end), || {
+                cancellation.is_cancelled()
+            })
+            .iter()
+            .filter_map(|span| {
+                let a = span.range.start.0.max(start);
+                let b = span.range.end.0.min(end);
+                (a < b).then_some(vex_editor::HighlightSpan {
+                    range: ByteOffset(a - start)..ByteOffset(b - start),
+                    highlight: span.highlight,
+                })
+            })
+            .collect::<Vec<_>>()
+            .into();
+    }
+    if end < text.len_bytes() {
+        preview.text.push_str("\n… preview truncated");
+    }
+    Ok(preview)
 }
 
 fn preview(path: &Path, cancellation: &Cancellation) -> io::Result<Preview> {
@@ -419,6 +504,67 @@ fn preview(path: &Path, cancellation: &Cancellation) -> io::Result<Preview> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn symbol_previews_follow_late_lines_preserve_multiline_syntax_and_use_snapshots() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("late.rs");
+        let source = format!(
+            "/*\n{}🦀 target\n*/\nfn tail() {{}}\n",
+            "comment\n".repeat(300)
+        );
+        fs::write(&path, "saved contents differ").unwrap();
+        let document = Document::from(source.as_str());
+        let result = symbol_preview(
+            &path,
+            Some(document.snapshot()),
+            vex_lsp::Position {
+                line: 301,
+                character: 3,
+            },
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert!(result.text.contains("🦀 target"));
+        assert_eq!(result.line_offset, Some(298));
+        assert_eq!(result.focus_line, Some(3));
+        let byte = result.text.find("target").unwrap();
+        assert!(
+            result
+                .highlights
+                .iter()
+                .any(|span| span.range.contains(&ByteOffset(byte))
+                    && span.highlight == vex_syntax::Highlight::Comment)
+        );
+        fs::write(&path, &source).unwrap();
+        let disk = symbol_preview(
+            &path,
+            None,
+            vex_lsp::Position {
+                line: 301,
+                character: 3,
+            },
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert_eq!(disk.text, result.text);
+        assert!(
+            symbol_preview(
+                &path,
+                None,
+                vex_lsp::Position {
+                    line: 999,
+                    character: 0
+                },
+                &Cancellation::default()
+            )
+            .is_err()
+        );
+        let mut frame = crate::screen::Frame::default();
+        frame.reset(60, 8).unwrap();
+        result.paint(&mut frame, 1, 1, 58, 7);
+        assert!(frame.row_text(4).contains("302 >🦀 target"));
+    }
 
     fn job(root: &Path, query: &str) -> FileJob {
         FileJob {
@@ -618,6 +764,8 @@ mod tests {
             PreviewJob {
                 session: 1,
                 request: 1,
+                snapshot: None,
+                position: None,
                 path,
                 cancellation: cancel
             }

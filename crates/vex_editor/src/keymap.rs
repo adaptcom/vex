@@ -176,6 +176,8 @@ impl Default for Keymap {
                 (vec![Char('N')], "search_previous"),
                 (vec![Char('K')], "hover"),
                 (vec![Char(' '), Char('f')], "file_picker"),
+                (vec![Char(' '), Char('s')], "symbol_picker"),
+                (vec![Char(' '), Char('S')], "workspace_symbol_picker"),
                 (vec![Char(' '), Char('k')], "hover"),
                 (vec![Ctrl('o')], "jump_back"),
                 (vec![Char('g'), Char('d')], "goto_definition"),

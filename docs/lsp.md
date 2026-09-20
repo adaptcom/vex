@@ -35,7 +35,9 @@ protocol failures, and request errors leave editing and saving available.
 |---|---|
 | `K` / `:hover` | Show documentation at the primary cursor |
 | `gd` / `:goto_definition` | Jump to the first definition returned by the server |
-| `Ctrl-o` / `:jump_back` | Return to the previous file-picker or definition-jump location |
+| `Space-s` / `:symbol_picker` | Pick a symbol from the current document |
+| `Space-S` / `:workspace_symbol_picker` | Search symbols across the active server's workspace |
+| `Ctrl-o` / `:jump_back` | Return to the previous file, definition, or symbol jump location |
 | `]d` / `:goto_next_diagnostic` | Next diagnostic, wrapping and accepting a count |
 | `[d` / `:goto_previous_diagnostic` | Previous diagnostic, wrapping and accepting a count |
 | `:lsp-restart` | Restart the server for the current file |
@@ -50,7 +52,7 @@ no other message or prompt is active. Errors take precedence over other markers
 on the same line. Editing clears diagnostics immediately until a current result
 arrives.
 
-Definition jumps open another local file in the focused pane. Crossing files
+Definition and symbol jumps open another local file in the focused pane. Crossing files
 requires saving unsaved changes first unless another pane still displays the old
 buffer. The jump list retains up to 32 paths and cursor positions. Opening or
 returning to an already displayed file reuses its buffer/history; otherwise it
@@ -196,7 +198,7 @@ retain their separate latest-result slots. Input and ready services alternate so
 diagnostic traffic cannot starve editing. Server failures are displayed in the
 editor instead of terminating the terminal session.
 
-Initialization has a 30-second deadline; hover, definition, completion, and resolve requests have
+Initialization has a 30-second deadline; hover, definition, symbol, completion, and resolve requests have
 10-second deadlines. Dropped requests send `$/cancelRequest`. Closing attempts
 `didClose`, `shutdown` (300 ms), and `exit`, with a 200 ms exit grace period, then
 terminates and reaps the server and joins its I/O threads. On Unix the server has
@@ -239,7 +241,7 @@ python3 tools/languages_smoke.py
 Unit tests live with the source, including a controlled stdio server for protocol
 ordering, Unicode positions, stale diagnostics, missing executables, and shutdown.
 The explicit rust-analyzer test checks actual hover, definition, and diagnostics;
-the PTY script also checks completion, documentation resolution, early acceptance,
+the PTY script also checks document/workspace symbol pickers, completion, documentation resolution, early acceptance,
 undo, cross-file navigation, return jumps, missing-server behavior, and terminal
 restoration. Source tests cover completion import edits, stale replies, invalid
 coordinates, cancellation, popup clipping, and protocol ordering.

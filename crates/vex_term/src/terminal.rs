@@ -156,6 +156,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             if let Some(job) = app.take_picker_job() {
                 runtime.submit_picker(job);
             }
+            if let Some(job) = app.take_symbol_job() {
+                runtime.submit_symbols(job);
+            }
             if let Some(job) = app.take_preview_job() {
                 runtime.submit_preview(job);
             }
@@ -163,6 +166,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
         }
         let timeout = app
             .completion_deadline()
+            .into_iter()
+            .chain(app.symbol_deadline())
+            .min()
             .map_or(Duration::from_millis(100), |deadline| {
                 deadline
                     .saturating_duration_since(Instant::now())
@@ -190,6 +196,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Files(result)) => {
                     redraw |= app.handle_picker_result(result)
                 }
+                AppEvent::Background(BackgroundEvent::Symbols(result)) => {
+                    redraw |= app.handle_symbol_result(result)
+                }
                 AppEvent::Background(BackgroundEvent::Preview(result)) => {
                     redraw |= app.handle_preview_result(result)
                 }
@@ -204,6 +213,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(job) = app.take_picker_job() {
                 runtime.submit_picker(job);
+            }
+            if let Some(job) = app.take_symbol_job() {
+                runtime.submit_symbols(job);
             }
             if let Some(job) = app.take_preview_job() {
                 runtime.submit_preview(job);

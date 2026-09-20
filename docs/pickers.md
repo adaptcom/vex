@@ -1,4 +1,4 @@
-# Key groups and file picker
+# Key groups and pickers
 
 Normal and select modes have named prefix groups: `g` (Goto), Space, `[` (Previous),
 `]` (Next), and Ctrl-w / Space-w ([Window](windows.md)). Pressing a prefix displays its available continuations, using the
@@ -68,6 +68,48 @@ Opening another file requires saving current changes first unless another pane
 still displays that buffer; an error leaves the picker open. Successful opens add
 the origin to the existing Ctrl-o jump list. Already displayed files reuse their
 buffer and undo history; files without an open view are loaded from disk.
+
+## Symbol pickers
+
+Space-s (`:symbol_picker`) opens document symbols, and Space-S
+(`:workspace_symbol_picker`) searches workspace symbols. Both work in normal and
+select modes, following the [Helix bindings](https://docs.helix-editor.com/keymap.html#space-mode).
+They use the current named file's language server, including rust-analyzer for
+Rust, and report unavailable or unsupported services inside the picker.
+
+The document picker requests an outline once, flattens nested symbols with their
+container names, and filters names and containers locally using the existing
+fuzzy matcher. Workspace typing cancels the previous request and waits 150 ms
+before sending the current query. The server owns workspace search semantics and
+ordering; the empty query requests its initial list. This searches the active
+server's workspace, not a combined index of every configured language.
+
+Both use the same two floating boxes, bold titles, grey selection, and navigation
+keys as the file picker. Entries show symbol kind and line; workspace entries
+also show the file path. The preview scrolls to the selected symbol, marks its
+line number, and retains syntax coloring. Open files use their current buffer
+snapshots, including unsaved text; other files are read on the preview worker.
+Symbol previews read at most 8 MiB and display at most 200 lines / 64 KiB around
+the destination. Parsing uses the existing syntax budgets and may fall back to
+plain text.
+
+Enter jumps in the focused pane and records the origin for Ctrl-o. Unsaved text
+is protected by the same rules as definition jumps. Escape or Ctrl-c dismisses
+without moving the cursor; focus loss also cancels symbol requests. Early Enter
+waits for the current results before subsequent editing keys are dispatched.
+Query generations, document revisions, and request identities reject stale
+server replies, rankings, and previews. Unsupported requests, errors, and empty
+results release any pending acceptance.
+
+Symbol parsing accepts both hierarchical `DocumentSymbol` and flat
+`SymbolInformation` results, following the
+[document-symbol protocol](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/language/documentSymbol.md).
+Workspace symbols require a resolved local-file location; lazy resolution is
+not advertised, as allowed by the
+[workspace-symbol protocol](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/workspace/symbol.md).
+At most 16,384 entries / 4 MiB are retained and 512 matches displayed. Limited
+responses are marked; narrower workspace queries can request different results.
+Ranking shares the file-picker worker, and previews share its preview worker.
 
 ## Discovery and visibility
 

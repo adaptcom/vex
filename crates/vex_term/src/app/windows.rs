@@ -254,6 +254,17 @@ impl App {
         self.replace_window_buffer(prepared)
     }
 
+    pub(super) fn snapshot_for_path(&self, path: &Path) -> Option<vex_core::Snapshot> {
+        if self.files.target() == Some(path) {
+            return Some(self.editor.document().snapshot());
+        }
+        self.windows
+            .buffers
+            .values()
+            .find(|buffer| buffer.files.target() == Some(path))
+            .map(|buffer| buffer.editor.document().snapshot())
+    }
+
     pub(super) fn open_window_definition(
         &mut self,
         location: &vex_lsp::Location,

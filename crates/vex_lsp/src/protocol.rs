@@ -70,7 +70,7 @@ pub fn file_path(uri: &str) -> io::Result<PathBuf> {
     url::Url::parse(uri)
         .map_err(io::Error::other)?
         .to_file_path()
-        .map_err(|_| io::Error::other("definition is not a local file"))
+        .map_err(|_| io::Error::other("location is not a local file"))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -188,7 +188,7 @@ pub(crate) fn hover_text(value: &Value) -> String {
     output.trim().to_owned()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Location {
     pub path: PathBuf,
     pub position: Position,

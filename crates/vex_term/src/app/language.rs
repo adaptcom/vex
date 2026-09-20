@@ -87,9 +87,11 @@ impl App {
     /// Called after dispatch and drawing. Only shared snapshots and small
     /// metadata cross this boundary; JSON and UTF-16 work run on the service.
     pub fn take_lsp_update(&mut self) -> Option<vex_lsp::Update> {
+        self.invalidate_symbol_picker();
         self.poll_completion(Instant::now());
         let action = self.editor.take_language_action();
         if !self.language.enabled {
+            self.fail_symbol_picker("language services are not enabled in this frontend");
             if action.is_some() {
                 self.fail("language services are not enabled in this frontend");
             }
@@ -158,22 +160,28 @@ impl App {
                 kind: RequestKind::Completion(CompletionTrigger::Invoked),
                 automatic: false,
             }),
-            _ => self.take_completion_request(),
+            _ => self
+                .take_symbol_request(Instant::now())
+                .map(|kind| super::completion::Request {
+                    kind,
+                    automatic: false,
+                })
+                .or_else(|| self.take_completion_request()),
         };
         if let Some(super::completion::Request { kind, automatic }) = requested {
             if automatic && self.completion_options().is_none() {
                 self.dismiss_language_help();
             } else if document.is_none() {
-                self.fail_completion(
+                self.fail_language_request(
                     "language services require a named file with a configured language server"
                         .into(),
                 );
             } else if self.language.status == "unavailable" {
-                self.fail_completion(
+                self.fail_language_request(
                     "language server is unavailable; use :lsp-restart to retry".into(),
                 );
             } else if self.editor.document().text().len_bytes() > vex_lsp::MAX_DOCUMENT_BYTES {
-                self.fail_completion("document exceeds the initial 8 MiB LSP limit".into());
+                self.fail_language_request("document exceeds the initial 8 MiB LSP limit".into());
             } else {
                 self.language.cancel();
                 if matches!(kind, RequestKind::Completion(_)) {
@@ -245,7 +253,7 @@ impl App {
                 if failed {
                     self.language.completion = None;
                     self.language.cancel();
-                    self.fail_completion(message);
+                    self.fail_language_request(message);
                 }
             }
             Event::Diagnostics {
@@ -288,17 +296,27 @@ impl App {
                     }
                     Ok(Answer::Definition(None)) => self.message = "no definition found".into(),
                     Ok(Answer::Definition(Some(location))) => {
-                        if let Err(error) = self.open_definition(location) {
+                        if let Err(error) = self.open_location(location) {
                             self.fail(error);
                         }
                     }
                     Ok(Answer::Completion(items)) => self.receive_completions(items),
+                    Ok(Answer::Symbols(symbols)) => self.receive_symbols(symbols),
                     Ok(Answer::CompletionResolved(item)) => self.receive_resolved_completion(item),
-                    Err(error) => self.fail_completion(error),
+                    Err(error) => self.fail_language_request(error),
                 }
             }
         }
         true
+    }
+
+    fn fail_language_request(&mut self, error: String) {
+        if self.fail_symbol_picker(&error) {
+            self.cancel_language_request();
+            self.clear_message();
+        } else {
+            self.fail_completion(error);
+        }
     }
 
     pub(super) fn completion_options(&self) -> Option<&CompletionOptions> {
@@ -351,16 +369,21 @@ impl App {
         Ok(())
     }
 
-    fn open_definition(&mut self, location: vex_lsp::Location) -> io::Result<()> {
+    pub(super) fn open_location(&mut self, location: vex_lsp::Location) -> io::Result<()> {
         let origin = self
             .files
             .target()
             .map(|path| (path.to_path_buf(), self.language_cursor()));
         if self.files.target() == Some(location.path.as_path()) {
             let offset = vex_lsp::offset(self.editor.document().text(), location.position)
-                .ok_or_else(|| io::Error::other("invalid definition position"))?;
+                .ok_or_else(|| io::Error::other("invalid symbol position"))?;
             self.move_to(offset)?;
         } else {
+            if self.snapshot_for_path(&location.path).is_none()
+                && !std::fs::metadata(&location.path)?.is_file()
+            {
+                return Err(io::Error::other("symbol location is not a regular file"));
+            }
             let offset = self.open_window_definition(&location)?;
             self.move_to(offset)?;
         }

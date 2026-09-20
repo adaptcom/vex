@@ -45,9 +45,25 @@ def main():
             terminal.expect_screen(b"other.rs")
             terminal.send(b"\x0f")  # Ctrl-o: return to the saved origin.
             terminal.expect_screen(b"main.rs")
+            terminal.expect_screen(b"1E")  # Wait for the reopened workspace to finish indexing/checking.
+            terminal.send(b" smain")
+            terminal.expect_screen(b"Document symbols")
+            terminal.expect_screen(b"main  [function]")
+            terminal.send(b"\r")
+            terminal.expect_screen(b"2:4")
+            terminal.send(b"\x0f")
+            terminal.expect_screen(b"2:39")
+            terminal.send(b" Sanswer")
+            terminal.expect_screen(b"Workspace symbols")
+            terminal.expect_screen(b"answer  [function]")
+            terminal.send(b"\r")
+            terminal.expect_screen(b"other.rs")
+            terminal.expect_screen(b"1:8")
+            terminal.send(b"\x0f")
+            terminal.expect_screen(b"main.rs")
             terminal.send(b":q\r")
             terminal.finish()
-        print("PASS: real rust-analyzer diagnostics, hover, cross-file definition, jump back, shutdown")
+        print("PASS: real rust-analyzer diagnostics, hover, definitions, document/workspace symbols, jump back, shutdown")
 
         # Keep the declaration outside the final viewport, so seeing its name
         # verifies the completion list rather than the underlying document.
@@ -137,7 +153,8 @@ def main():
                 terminal.start()
                 terminal.expect_screen(b"RA:unavailable")
                 terminal.send(b"i// editing works\x03")
-                terminal.expect_screen(b"NOR [+]")
+                terminal.expect_screen(b"NOR")
+                terminal.expect_screen(b"main.rs [+]")
                 terminal.send(b":q!\r")
                 terminal.finish()
         finally:

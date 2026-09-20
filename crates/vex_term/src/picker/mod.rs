@@ -5,6 +5,7 @@ pub(crate) mod files;
 mod fuzzy;
 mod ignore;
 mod preview;
+pub(crate) mod symbols;
 
 pub(crate) use preview::Preview;
 
@@ -86,6 +87,7 @@ pub(crate) struct Picker<T> {
     pub matched: usize,
     pub total: usize,
     pub title: String,
+    pub noun: &'static str,
     pub notice: String,
     pub preview: Preview,
 }
@@ -102,6 +104,7 @@ impl<T: Eq> Picker<T> {
             matched: 0,
             total: 0,
             title,
+            noun: "files",
             notice: String::new(),
             preview: Preview::default(),
         }
@@ -194,7 +197,7 @@ impl<T: Eq> Picker<T> {
             top,
             right,
             bottom,
-            &format!(" Files · {} ", self.title),
+            &format!(" {} ", self.title),
         );
         if let Some(preview_left) = layout.preview_left() {
             let title = self.selected().map_or_else(
@@ -269,18 +272,12 @@ impl<T: Eq> Picker<T> {
             self.top = self.selected + 1 - rows;
         }
         if self.items.is_empty() {
-            label(
-                frame,
-                x + 1,
-                y + 2,
-                right - x - 1,
-                if self.pending {
-                    "Scanning / matching…"
-                } else {
-                    "No matching files"
-                },
-                Style::Gutter,
-            );
+            let message = if self.pending {
+                "Loading / matching…".into()
+            } else {
+                format!("No matching {}", self.noun)
+            };
+            label(frame, x + 1, y + 2, right - x - 1, &message, Style::Gutter);
         }
         for (offset, item) in self.items.iter().enumerate().skip(self.top).take(rows) {
             let row = y + 2 + (offset - self.top) as u16;
@@ -325,11 +322,12 @@ impl<T: Eq> Picker<T> {
             self.notice.clone()
         } else {
             format!(
-                " {}/{} matches · {} files{} · ↑↓ move · Enter open · Esc close",
+                " {}/{} matches · {} {}{} · ↑↓ move · Enter open · Esc close",
                 self.items.len(),
                 self.matched,
                 self.total,
-                if self.pending { " · scanning" } else { "" }
+                self.noun,
+                if self.pending { " · loading" } else { "" }
             )
         };
         label(frame, x, bottom - 1, right - x, &status, Style::Status);

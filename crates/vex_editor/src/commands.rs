@@ -435,7 +435,21 @@ commands! {
         Ok(())
     }
 
-    /// Return to the location before the last successful file or definition jump.
+    /// Open a searchable picker of symbols in the current document using its language server.
+    fn symbol_picker(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.application_action = Some(crate::ApplicationAction::DocumentSymbols);
+        Ok(())
+    }
+
+    /// Search workspace symbols using the current document's language server.
+    fn workspace_symbol_picker(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.application_action = Some(crate::ApplicationAction::WorkspaceSymbols);
+        Ok(())
+    }
+
+    /// Return to the location before the last successful file, definition, or symbol jump.
     fn jump_back(ctx) {
         ctx.editor.finish_undo_group();
         ctx.editor.language_action = Some(crate::LanguageAction::JumpBack);

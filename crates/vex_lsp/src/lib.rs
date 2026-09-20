@@ -4,6 +4,7 @@
 mod completion;
 mod executor;
 mod protocol;
+mod symbols;
 mod transport;
 
 pub use completion::{CompletionItem, Completions};
@@ -21,6 +22,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+pub use symbols::{Symbol, Symbols};
 use vex_core::{CharOffset, Revision, Snapshot};
 use vex_editor::{Language, background::Cancellation};
 
@@ -81,6 +83,8 @@ pub struct Document {
 pub enum RequestKind {
     Hover,
     Definition,
+    DocumentSymbols,
+    WorkspaceSymbols(String),
     Completion(CompletionTrigger),
     ResolveCompletion(Box<CompletionItem>),
 }
@@ -112,6 +116,7 @@ pub struct Diagnostic {
 pub enum Answer {
     Hover(String),
     Definition(Option<Location>),
+    Symbols(Symbols),
     Completion(Completions),
     CompletionResolved(CompletionItem),
 }
@@ -403,13 +408,14 @@ async fn session(
                 "publishDiagnostics":{"versionSupport":true},
                 "hover":{"contentFormat":["plaintext"]},
                 "definition":{"linkSupport":true},
+                "documentSymbol":{"hierarchicalDocumentSymbolSupport":true,"symbolKind":{"valueSet":(1..=26).collect::<Vec<_>>()}},
                 "completion":{"contextSupport":true,"completionItem":{
                     "snippetSupport":false,"insertReplaceSupport":true,
                     "documentationFormat":["plaintext"],
                     "resolveSupport":{"properties":["documentation","detail","additionalTextEdits"]}
                 }}
             },
-            "workspace":{"configuration":true}, "window":{"workDoneProgress":false}
+            "workspace":{"configuration":true,"symbol":{"symbolKind":{"valueSet":(1..=26).collect::<Vec<_>>()}}}, "window":{"workDoneProgress":false}
         }
     }), Duration::from_secs(30))?;
     let initialized = poll_fn(|cx| {
@@ -519,6 +525,8 @@ async fn session(
                         let result = result.and_then(|value| match request.kind {
                             RequestKind::Hover => Ok(Answer::Hover(protocol::hover_text(&value))),
                             RequestKind::Definition => protocol::definition(&value).map(Answer::Definition).map_err(|e| e.to_string()),
+                            RequestKind::DocumentSymbols => symbols::parse(&value, Some(&document.path)).map(Answer::Symbols),
+                            RequestKind::WorkspaceSymbols(_) => symbols::parse(&value, None).map(Answer::Symbols),
                             RequestKind::Completion(_) => completion::parse(value, document.snapshot.text(), request.position, capabilities["completionProvider"]["resolveProvider"] == true).map(Answer::Completion),
                             RequestKind::ResolveCompletion(item) => completion::resolve(&item, value, document.snapshot.text(), request.position).map(Answer::CompletionResolved),
                         });
@@ -603,30 +611,37 @@ fn start_request(
     let (method, capability) = match &request.kind {
         RequestKind::Hover => ("textDocument/hover", "hoverProvider"),
         RequestKind::Definition => ("textDocument/definition", "definitionProvider"),
+        RequestKind::DocumentSymbols => ("textDocument/documentSymbol", "documentSymbolProvider"),
+        RequestKind::WorkspaceSymbols(_) => ("workspace/symbol", "workspaceSymbolProvider"),
         RequestKind::Completion(_) => ("textDocument/completion", "completionProvider"),
         RequestKind::ResolveCompletion(_) => ("completionItem/resolve", "completionProvider"),
     };
-    let result = if capabilities[capability] != true && !capabilities[capability].is_object() {
-        Err("language server does not support this request".into())
-    } else if let Some(position) = position(document.snapshot.text(), request.position) {
+    let result = (|| {
+        if capabilities[capability] != true && !capabilities[capability].is_object() {
+            return Err("language server does not support this request".into());
+        }
         let params = match &request.kind {
+            RequestKind::DocumentSymbols => json!({"textDocument":{"uri":uri}}),
+            RequestKind::WorkspaceSymbols(query) => json!({"query":query}),
             RequestKind::ResolveCompletion(item) => item.raw.clone(),
-            RequestKind::Completion(trigger) => {
-                let context = match trigger {
-                    CompletionTrigger::Invoked => json!({"triggerKind":1}),
-                    CompletionTrigger::Character(ch) => {
-                        json!({"triggerKind":2,"triggerCharacter":ch.to_string()})
-                    }
-                    CompletionTrigger::Incomplete => json!({"triggerKind":3}),
-                };
-                json!({"textDocument":{"uri":uri},"position":position,"context":context})
+            kind => {
+                let position = position(document.snapshot.text(), request.position)
+                    .ok_or("invalid request position")?;
+                let mut params = json!({"textDocument":{"uri":uri},"position":position});
+                if let RequestKind::Completion(trigger) = kind {
+                    params["context"] = match trigger {
+                        CompletionTrigger::Invoked => json!({"triggerKind":1}),
+                        CompletionTrigger::Character(ch) => {
+                            json!({"triggerKind":2,"triggerCharacter":ch.to_string()})
+                        }
+                        CompletionTrigger::Incomplete => json!({"triggerKind":3}),
+                    };
+                }
+                params
             }
-            _ => json!({"textDocument":{"uri":uri},"position":position}),
         };
         transport.request(executor, method, params, Duration::from_secs(10))
-    } else {
-        Err("invalid request position".into())
-    };
+    })();
     match result {
         Ok(response) => *pending = Some((request, response)),
         Err(message) => emit(Event::Answer {
@@ -722,7 +737,7 @@ while True:
     params = value.get('params')
     if method == 'initialize':
         if HANG_INITIALIZE: continue
-        send({'id':value['id'],'result':{'capabilities':{'positionEncoding':'utf-16','textDocumentSync':{'openClose':True,'change':2,'save':True},'hoverProvider':True,'definitionProvider':True,'completionProvider':{'resolveProvider':True,'triggerCharacters':['.',':','.',None,'..','\n']}}}})
+        send({'id':value['id'],'result':{'capabilities':{'positionEncoding':'utf-16','textDocumentSync':{'openClose':True,'change':2,'save':True},'hoverProvider':True,'definitionProvider':True,'documentSymbolProvider':True,'workspaceSymbolProvider':{},'completionProvider':{'resolveProvider':True,'triggerCharacters':['.',':','.',None,'..','\n']}}}})
         send({'id':'configuration','method':'workspace/configuration','params':{'items':[{'section':'rust-analyzer'}]}})
     elif method == 'textDocument/didOpen':
         uri = params['textDocument']['uri']; version = params['textDocument']['version']
@@ -736,6 +751,14 @@ while True:
         send({'id':value['id'],'result':{'contents':{'kind':'plaintext','value':'fn example() -> u32'}}})
     elif method == 'textDocument/definition':
         send({'id':value['id'],'result':[{'targetUri':uri,'targetRange':{'start':{'line':0,'character':0},'end':{'line':0,'character':4}},'targetSelectionRange':{'start':{'line':0,'character':3},'end':{'line':0,'character':4}}}]})
+    elif method == 'textDocument/documentSymbol':
+        assert set(params) == {'textDocument'}
+        span = {'start':{'line':0,'character':3},'end':{'line':0,'character':4}}
+        send({'id':value['id'],'result':[{'name':'outer','kind':2,'range':span,'selectionRange':span,'children':[{'name':'inner','kind':12,'range':span,'selectionRange':span}]}]})
+    elif method == 'workspace/symbol':
+        assert set(params) == {'query'}
+        if params['query'] == 'hold': continue
+        send({'id':value['id'],'result':[{'name':params['query'],'kind':12,'containerName':'outer','location':{'uri':uri,'range':{'start':{'line':0,'character':3},'end':{'line':0,'character':4}}}}]})
     elif method == 'textDocument/completion':
         send({'id':value['id'],'result':{'isIncomplete':False,'items':[{'label':'xray','data':{'ticket':7},'insertText':'xray'}]}})
     elif method == 'completionItem/resolve':
@@ -881,6 +904,97 @@ while True:
         fs::create_dir(source.join(".git")).unwrap();
         assert_eq!(root(&file, Language::Rust), source);
         assert_eq!(root(&file, Language::TypeScript), source);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbols_sync_before_requests_and_superseded_workspace_queries_cancel() {
+        let directory = tempfile::tempdir().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let service = Service::with_program(mock(directory.path(), false), move |event| {
+            let _ = sender.send(event);
+        })
+        .unwrap();
+        let mut text = TextDocument::from("a🦀x\n");
+        let mut doc = document(directory.path().join("symbols.rs"), &text);
+        service.update(Update {
+            document: Some(doc.clone()),
+            request: Some(request(1, RequestKind::DocumentSymbols, 0)),
+        });
+        let Event::Answer {
+            result: Ok(Answer::Symbols(symbols)),
+            ..
+        } = until(&receiver, |event| {
+            matches!(event, Event::Answer { id: 1, .. })
+        })
+        else {
+            panic!("missing outline")
+        };
+        assert_eq!(symbols.items.len(), 2);
+        assert_eq!(symbols.items[1].container, "outer");
+        assert_eq!(symbols.items[1].location.path, doc.path);
+        let edit = text
+            .transaction([vex_core::Edit::new(CharOffset(0)..CharOffset(0), "new")])
+            .unwrap();
+        text.apply(
+            edit,
+            &mut SelectionSet::single(vex_core::Selection::cursor(CharOffset(0))),
+        )
+        .unwrap();
+        doc.snapshot = text.snapshot();
+        service.update(Update {
+            document: Some(doc.clone()),
+            request: Some(request(2, RequestKind::WorkspaceSymbols("hold".into()), 0)),
+        });
+        // Diagnostics prove didChange was processed before the following request.
+        until(
+            &receiver,
+            |event| matches!(event, Event::Diagnostics { revision, .. } if *revision == doc.snapshot.revision()),
+        );
+        service.update(Update {
+            document: Some(doc.clone()),
+            request: Some(request(3, RequestKind::WorkspaceSymbols("界".into()), 0)),
+        });
+        let Event::Answer {
+            result: Ok(Answer::Symbols(symbols)),
+            ..
+        } = until(&receiver, |event| {
+            matches!(event, Event::Answer { id: 3, .. })
+        })
+        else {
+            panic!("missing workspace symbols")
+        };
+        assert_eq!(symbols.items[0].name, "界");
+        drop(service);
+        let messages: Vec<Value> = fs::read_to_string(directory.path().join("messages.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let methods: Vec<_> = messages
+            .iter()
+            .filter_map(|message| message["method"].as_str())
+            .collect();
+        assert!(
+            methods
+                .iter()
+                .position(|method| *method == "textDocument/didChange")
+                .unwrap()
+                < methods
+                    .iter()
+                    .position(|method| *method == "workspace/symbol")
+                    .unwrap()
+        );
+        assert!(methods.contains(&"$/cancelRequest"));
+        let init = &messages
+            .iter()
+            .find(|message| message["method"] == "initialize")
+            .unwrap()["params"]["capabilities"];
+        assert_eq!(
+            init["textDocument"]["documentSymbol"]["hierarchicalDocumentSymbolSupport"],
+            true
+        );
+        assert!(init["workspace"]["symbol"].get("resolveSupport").is_none());
     }
 
     #[cfg(unix)]

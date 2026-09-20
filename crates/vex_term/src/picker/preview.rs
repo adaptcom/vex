@@ -10,6 +10,8 @@ use vex_editor::HighlightSpan;
 pub(crate) struct Preview {
     pub text: String,
     pub highlights: Arc<[HighlightSpan]>,
+    pub line_offset: Option<usize>,
+    pub focus_line: Option<usize>,
 }
 
 impl Preview {
@@ -24,10 +26,39 @@ impl Preview {
     /// endings, tabs, and Unicode graphemes. No parsing happens while drawing.
     pub fn paint(&self, frame: &mut Frame, x: u16, y: u16, width: u16, rows: usize) {
         let width = usize::from(width.min(frame.width().saturating_sub(x)));
+        let gutter = if self.line_offset.is_some() && width > 8 {
+            7
+        } else {
+            0
+        };
         let rows = rows.min(usize::from(frame.height().saturating_sub(y)));
         let mut byte = 0;
         let mut highlight_index = 0;
         for (row, line) in self.text.split_inclusive('\n').take(rows).enumerate() {
+            if gutter > 0 {
+                super::label(
+                    frame,
+                    x,
+                    y + row as u16,
+                    gutter as u16,
+                    &format!(
+                        "{:>5} {}",
+                        self.line_offset.unwrap() + row + 1,
+                        if self.focus_line == Some(row) {
+                            '>'
+                        } else {
+                            ' '
+                        }
+                    ),
+                    if self.focus_line == Some(row) {
+                        Style::Selection
+                    } else {
+                        Style::Gutter
+                    },
+                );
+            }
+            let x = x + gutter as u16;
+            let width = width - gutter;
             let mut column = 0;
             for (offset, grapheme) in line.trim_end_matches(['\r', '\n']).grapheme_indices(true) {
                 if column >= width {
@@ -90,6 +121,7 @@ mod tests {
                 },
             ]
             .into(),
+            ..Preview::default()
         };
         let mut frame = Frame::default();
         frame.reset(24, 4).unwrap();

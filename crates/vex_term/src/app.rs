@@ -371,6 +371,14 @@ impl App {
                 self.open_file_picker();
                 Ok(())
             }
+            Some(ApplicationAction::DocumentSymbols) => {
+                self.open_symbol_picker(false);
+                Ok(())
+            }
+            Some(ApplicationAction::WorkspaceSymbols) => {
+                self.open_symbol_picker(true);
+                Ok(())
+            }
             Some(ApplicationAction::HalfPageUp(count)) => self
                 .scroll_half_page(false, count)
                 .map_err(io::Error::other),

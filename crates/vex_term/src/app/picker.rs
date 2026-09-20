@@ -1,27 +1,50 @@
-//! Application lifecycle for the reusable file picker and key-prefix hints.
+//! Application lifecycle for shared file/symbol pickers and key-prefix hints.
 
 use super::App;
 use crate::{
     input,
     picker::{
-        self, Action, Layout, Picker, Preview,
+        self, Action, Entry, Item, Layout, Picker, Preview,
         files::{FileJob, FileResult, PreviewJob, PreviewResult},
+        symbols::SymbolJob,
     },
     screen::{Frame, Style},
 };
 use crossterm::event::{Event, KeyEventKind};
-use std::{io, path::PathBuf};
+use std::{io, path::PathBuf, sync::Arc};
 use vex_editor::background::Cancellation;
 
+mod symbols;
+
+#[derive(Clone, PartialEq, Eq)]
+enum Target {
+    File(PathBuf),
+    Symbol(vex_lsp::Location),
+}
+
+impl Target {
+    fn path(&self) -> &PathBuf {
+        match self {
+            Self::File(path) => path,
+            Self::Symbol(location) => &location.path,
+        }
+    }
+}
+
+enum Source {
+    Files(Option<PathBuf>, PathBuf),
+    Symbols(symbols::Source),
+}
+
 struct Active {
-    view: Picker<PathBuf>,
+    view: Picker<Target>,
     session: u64,
     revision: u64,
-    source: (Option<PathBuf>, PathBuf),
+    source: Source,
     cancellation: Cancellation,
     preview_cancel: Cancellation,
     preview_request: u64,
-    preview_path: Option<PathBuf>,
+    preview_target: Option<Target>,
     accept_pending: bool,
 }
 
@@ -38,6 +61,7 @@ pub(super) struct State {
     next_session: u64,
     file_job: Option<FileJob>,
     preview_job: Option<PreviewJob>,
+    symbol_job: Option<SymbolJob>,
 }
 
 impl App {
@@ -49,6 +73,7 @@ impl App {
                 return;
             }
         };
+        self.close_picker();
         self.dismiss_language_help();
         self.keys.cancel();
         self.prompt = None;
@@ -57,32 +82,39 @@ impl App {
         }
         self.picker.next_session += 1;
         self.picker.active = Some(Active {
-            view: Picker::new("discovering project…".into()),
+            view: Picker::new("Files · discovering project…".into()),
             session: self.picker.next_session,
             revision: 0,
-            source: (self.files.target().map(PathBuf::from), cwd),
+            source: Source::Files(self.files.target().map(PathBuf::from), cwd),
             cancellation: Cancellation::default(),
             preview_cancel: Cancellation::default(),
             preview_request: 0,
-            preview_path: None,
+            preview_target: None,
             accept_pending: false,
         });
         self.submit_picker_query();
     }
 
     fn submit_picker_query(&mut self) {
+        if self.symbol_picker_active() {
+            self.submit_symbol_query();
+            return;
+        }
         let active = self.picker.active.as_mut().unwrap();
         active.cancellation.cancel();
         active.preview_cancel.cancel();
         active.cancellation = Cancellation::default();
         active.revision += 1;
-        active.preview_path = None;
+        active.preview_target = None;
         active.accept_pending = false;
         self.picker.preview_job = None;
+        let Source::Files(origin, cwd) = &active.source else {
+            unreachable!()
+        };
         self.picker.file_job = Some(FileJob {
             session: active.session,
             revision: active.revision,
-            source: Some(active.source.clone()),
+            source: Some((origin.clone(), cwd.clone())),
             query: active.view.query.text().into(),
             cancellation: active.cancellation.clone(),
         });
@@ -92,42 +124,58 @@ impl App {
         let Some(active) = &mut self.picker.active else {
             return;
         };
-        let path = Layout::new(self.size.0, self.size.1)
+        let target = Layout::new(self.size.0, self.size.1)
             .preview_left()
             .is_some()
             .then(|| active.view.selected().map(|entry| entry.value.clone()))
             .flatten();
-        if path == active.preview_path {
+        if target == active.preview_target {
             return;
         }
         active.preview_cancel.cancel();
         active.preview_cancel = Cancellation::default();
         active.preview_request += 1;
-        active.preview_path = path.clone();
-        active.view.preview = if path.is_some() {
+        active.preview_target = target.clone();
+        active.view.preview = if target.is_some() {
             Preview::plain("Loading preview…")
         } else {
             Preview::default()
         };
-        self.picker.preview_job = path.map(|path| PreviewJob {
-            session: active.session,
-            request: active.preview_request,
-            path,
-            cancellation: active.preview_cancel.clone(),
+        let session = active.session;
+        let request = active.preview_request;
+        let cancellation = active.preview_cancel.clone();
+        self.picker.preview_job = target.map(|target| PreviewJob {
+            session,
+            request,
+            snapshot: match &target {
+                Target::Symbol(_) => self.snapshot_for_path(target.path()),
+                _ => None,
+            },
+            position: match &target {
+                Target::Symbol(location) => Some(location.position),
+                _ => None,
+            },
+            path: target.path().clone(),
+            cancellation,
         });
     }
 
     fn close_picker(&mut self) {
         if let Some(active) = self.picker.active.take() {
-            self.picker.file_job = Some(FileJob {
-                session: active.session,
-                revision: active.revision,
-                source: None,
-                query: String::new(),
-                cancellation: Cancellation::default(),
-            });
+            if matches!(active.source, Source::Symbols(_)) {
+                self.cancel_language_request();
+            } else {
+                self.picker.file_job = Some(FileJob {
+                    session: active.session,
+                    revision: active.revision,
+                    source: None,
+                    query: String::new(),
+                    cancellation: Cancellation::default(),
+                });
+            }
         }
         self.picker.preview_job = None;
+        self.picker.symbol_job = None;
     }
 
     pub(crate) fn take_picker_job(&mut self) -> Option<FileJob> {
@@ -135,6 +183,10 @@ impl App {
     }
     pub(crate) fn take_preview_job(&mut self) -> Option<PreviewJob> {
         self.picker.preview_job.take()
+    }
+
+    pub(crate) fn take_symbol_job(&mut self) -> Option<SymbolJob> {
+        self.picker.symbol_job.take()
     }
 
     /// Early Enter waits for the current ranking, preserving later editing keys
@@ -150,6 +202,7 @@ impl App {
     }
 
     pub(super) fn handle_picker_input(&mut self, event: &Event) -> Option<bool> {
+        self.invalidate_symbol_picker();
         let active = self.picker.active.as_mut()?;
         let action = match event {
             Event::Paste(text) => {
@@ -165,6 +218,7 @@ impl App {
                     usize::from(Layout::new(self.size.0, self.size.1).rows()),
                 )
             }
+            Event::FocusLost if matches!(active.source, Source::Symbols(_)) => Action::Cancel,
             Event::Resize(..) | Event::FocusGained | Event::FocusLost => return None,
             _ => return Some(false),
         };
@@ -188,14 +242,27 @@ impl App {
         let Some(active) = &mut self.picker.active else {
             return false;
         };
-        if active.session != result.session
+        if !matches!(active.source, Source::Files(..))
+            || active.session != result.session
             || active.revision != result.revision
             || active.cancellation.is_cancelled()
         {
             return false;
         }
-        active.view.title = result.root.display().to_string();
-        active.view.replace(result.items);
+        active.view.title = format!("Files · {}", result.root.display());
+        active.view.replace(
+            result
+                .items
+                .into_iter()
+                .map(|item| Item {
+                    entry: Arc::new(Entry {
+                        label: item.entry.label.clone(),
+                        value: Target::File(item.entry.value.clone()),
+                    }),
+                    matched: item.matched,
+                })
+                .collect(),
+        );
         active.view.matched = result.matched;
         active.view.total = result.scanned;
         active.view.pending = result.scanning;
@@ -216,7 +283,7 @@ impl App {
         };
         if active.session != result.session
             || active.preview_request != result.request
-            || active.preview_path.as_ref() != Some(&result.path)
+            || active.preview_target.as_ref().map(Target::path) != Some(&result.path)
             || active.preview_cancel.is_cancelled()
         {
             return false;
@@ -226,7 +293,7 @@ impl App {
     }
 
     fn accept_picker(&mut self) {
-        let Some(path) = self
+        let Some(target) = self
             .picker
             .active
             .as_ref()
@@ -234,11 +301,15 @@ impl App {
             .map(|entry| entry.value.clone())
         else {
             if let Some(active) = &mut self.picker.active {
-                active.view.notice = "No matching files · Esc close".into();
+                active.view.notice = format!("No matching {} · Esc close", active.view.noun);
             }
             return;
         };
-        match self.open_picked_file(path) {
+        let result = match target {
+            Target::File(path) => self.open_picked_file(path),
+            Target::Symbol(location) => self.open_location(location),
+        };
+        match result {
             Ok(()) => {
                 self.close_picker();
                 self.clear_message();

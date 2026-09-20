@@ -2,6 +2,7 @@
 //! independent services have typed completions and explicit delivery policies.
 
 use crate::picker::files::{FileJob, FileResult, FileWorker, PreviewJob, PreviewResult};
+use crate::picker::symbols::{SymbolJob, SymbolResult};
 use crossterm::event::{self, Event};
 use std::{
     collections::{HashMap, VecDeque},
@@ -30,6 +31,7 @@ pub(crate) enum BackgroundEvent {
     Search(SearchResult),
     Syntax(Vec<SyntaxResult>),
     Files(FileResult),
+    Symbols(SymbolResult),
     Preview(PreviewResult),
 }
 
@@ -86,7 +88,7 @@ impl EventQueue {
             let slot = match &result {
                 BackgroundEvent::Search(_) => 0,
                 BackgroundEvent::Syntax(_) => 1,
-                BackgroundEvent::Files(_) => 2,
+                BackgroundEvent::Files(_) | BackgroundEvent::Symbols(_) => 2,
                 BackgroundEvent::Preview(_) => 3,
             };
             state.background[slot] = Some(result);
@@ -240,9 +242,17 @@ impl SyntaxBuffers {
     }
 }
 
-impl Job for FileJob {
+enum PickerJob {
+    Files(FileJob),
+    Symbols(SymbolJob),
+}
+
+impl Job for PickerJob {
     fn cancellation(&self) -> Cancellation {
-        self.cancellation.clone()
+        match self {
+            Self::Files(job) => job.cancellation.clone(),
+            Self::Symbols(job) => job.cancellation.clone(),
+        }
     }
 }
 impl Job for PreviewJob {
@@ -369,7 +379,7 @@ pub(crate) struct Runtime {
     search: Option<SearchWorker>,
     syntax: Option<LatestWorker<SyntaxBatch>>,
     lsp: Option<vex_lsp::Service>,
-    files: Option<LatestWorker<FileJob>>,
+    files: Option<LatestWorker<PickerJob>>,
     preview: Option<LatestWorker<PreviewJob>>,
     input: Option<JoinHandle<()>>,
 }
@@ -386,11 +396,17 @@ impl Runtime {
         let lsp = vex_lsp::Service::start(move |event| queue.lsp(event))?;
         let queue = events.clone();
         let mut file_state = FileWorker::default();
-        let files = LatestWorker::spawn("vex-files", events.clone(), move |job| {
-            file_state.run(job, |result| {
-                queue.background(BackgroundEvent::Files(result))
-            });
-            None
+        let files = LatestWorker::spawn("vex-picker", events.clone(), move |job| match job {
+            PickerJob::Files(job) => {
+                file_state.run(job, |result| {
+                    queue.background(BackgroundEvent::Files(result))
+                });
+                None
+            }
+            PickerJob::Symbols(job) => {
+                file_state = FileWorker::default();
+                job.run().map(BackgroundEvent::Symbols)
+            }
         })?;
         let preview = LatestWorker::spawn("vex-preview", events.clone(), |job: PreviewJob| {
             job.run().map(BackgroundEvent::Preview)
@@ -440,7 +456,10 @@ impl Runtime {
     }
 
     pub(crate) fn submit_picker(&self, job: FileJob) {
-        self.files.as_ref().unwrap().submit(job);
+        self.files.as_ref().unwrap().submit(PickerJob::Files(job));
+    }
+    pub(crate) fn submit_symbols(&self, job: SymbolJob) {
+        self.files.as_ref().unwrap().submit(PickerJob::Symbols(job));
     }
     pub(crate) fn submit_preview(&self, job: PreviewJob) {
         self.preview.as_ref().unwrap().submit(job);
@@ -499,6 +518,9 @@ mod tests {
             }
             AppEvent::Background(BackgroundEvent::Files(result)) => {
                 app.handle_picker_result(result);
+            }
+            AppEvent::Background(BackgroundEvent::Symbols(result)) => {
+                app.handle_symbol_result(result);
             }
             AppEvent::Background(BackgroundEvent::Preview(result)) => {
                 app.handle_preview_result(result);

@@ -41,6 +41,7 @@ and calls that existing dispatcher.
 | `K`, `gd`, Ctrl-o | Hover, go to definition, return from a definition jump |
 | `]d`, `[d` | Next/previous diagnostic, with counts and wrapping |
 | Space-f, Space-k | Open file picker / show hover |
+| Space-s, Space-S | Open document / workspace symbol picker |
 | Ctrl-w, Space-w | Enter [window mode](windows.md) to split, focus, swap, and close panes |
 | Escape | Cancel a prefix/picker/prompt; otherwise enter normal mode |
 | `:` in normal/select mode | Open the command prompt |
