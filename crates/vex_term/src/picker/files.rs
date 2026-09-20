@@ -770,7 +770,7 @@ mod tests {
                 "User",
                 Highlight::Type,
             ),
-            ("view.tsx", "const view = <div />", "div", Highlight::Type),
+            ("view.tsx", "const view = <div />", "div", Highlight::Tag),
         ] {
             let path = directory.path().join(name);
             fs::write(&path, source).unwrap();

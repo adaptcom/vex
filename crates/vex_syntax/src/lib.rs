@@ -37,6 +37,10 @@ const MAX_CACHED_RANGES: usize = 128;
 pub enum Highlight {
     Keyword,
     Type,
+    BuiltinType,
+    Constructor,
+    Tag,
+    Namespace,
     Function,
     Constant,
     String,
@@ -45,6 +49,8 @@ pub enum Highlight {
     Punctuation,
     Attribute,
     Variable,
+    BuiltinVariable,
+    Parameter,
     Property,
     Label,
     Escape,
@@ -52,22 +58,31 @@ pub enum Highlight {
     Emphasis,
     Strong,
     Link,
+    LinkUrl,
+    Raw,
 }
 
 impl Highlight {
     fn from_capture(name: &str) -> Option<Self> {
         match name {
+            "type.builtin" => return Some(Self::BuiltinType),
+            "variable.builtin" => return Some(Self::BuiltinVariable),
+            "variable.parameter" => return Some(Self::Parameter),
             "string.escape" => return Some(Self::Escape),
             "text.title" => return Some(Self::Heading),
             "text.emphasis" => return Some(Self::Emphasis),
             "text.strong" => return Some(Self::Strong),
-            "text.uri" | "text.reference" => return Some(Self::Link),
-            "text.literal" => return Some(Self::String),
+            "text.uri" => return Some(Self::LinkUrl),
+            "text.reference" => return Some(Self::Link),
+            "text.literal" => return Some(Self::Raw),
             _ => {}
         }
         Some(match name.split('.').next()? {
             "keyword" => Self::Keyword,
-            "type" | "constructor" | "tag" => Self::Type,
+            "type" => Self::Type,
+            "constructor" => Self::Constructor,
+            "tag" => Self::Tag,
+            "namespace" => Self::Namespace,
             "function" => Self::Function,
             "constant" | "number" | "boolean" => Self::Constant,
             "string" => Self::String,
@@ -623,12 +638,14 @@ mod tests {
             ),
             (
                 Language::JavaScript,
-                "const count = 42; function greet() { return \"hello\"; }",
+                "const count = 42; function greet() { return \"hello\"; } console.log(new User());",
                 &[
                     ("const", Keyword),
                     ("42", Constant),
                     ("greet", Function),
                     ("hello", String),
+                    ("console", BuiltinVariable),
+                    ("User", Constructor),
                 ],
             ),
             (
@@ -636,7 +653,7 @@ mod tests {
                 "const view = <div title=\"hello\">text</div>;",
                 &[
                     ("const", Keyword),
-                    ("div", Type),
+                    ("div", Tag),
                     ("title", Attribute),
                     ("hello", String),
                 ],
@@ -647,7 +664,7 @@ mod tests {
                 &[
                     ("interface", Keyword),
                     ("User", Type),
-                    ("string", Type),
+                    ("string", BuiltinType),
                     ("const", Keyword),
                     ("42", Constant),
                 ],
@@ -657,8 +674,9 @@ mod tests {
                 "const View = (props: { name: string }) => <div title=\"hello\">{props.name}</div>;",
                 &[
                     ("const", Keyword),
-                    ("string", Type),
-                    ("div", Type),
+                    ("string", BuiltinType),
+                    ("div", Tag),
+                    ("props", Parameter),
                     ("title", Attribute),
                     ("hello", String),
                 ],
@@ -670,11 +688,11 @@ mod tests {
                     ("Heading", Heading),
                     ("bold", Strong),
                     ("italic", Emphasis),
-                    ("code", String),
+                    ("code", Raw),
                     ("link", Link),
-                    ("file.md", Link),
-                    ("literal", String),
-                    ("echo", String),
+                    ("file.md", LinkUrl),
+                    ("literal", Raw),
+                    ("echo", Raw),
                 ],
             ),
         ];
@@ -855,9 +873,9 @@ mod tests {
         for (needle, expected) in [
             ("fn", Highlight::Keyword),
             ("greet", Highlight::Function),
-            ("名字", Highlight::Variable),
-            ("str", Highlight::Type),
-            ("u32", Highlight::Type),
+            ("名字", Highlight::Parameter),
+            ("str", Highlight::BuiltinType),
+            ("u32", Highlight::BuiltinType),
             ("comment", Highlight::Comment),
             ("let", Highlight::Keyword),
             ("界", Highlight::String),

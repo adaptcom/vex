@@ -525,14 +525,14 @@ def main():
         with Terminal([binary, str(rust_path)]) as terminal:
             terminal.start()
             # Completion must wake an idle terminal without another input event.
-            terminal.expect(b"\x1b[38;5;13m")
+            terminal.expect(b"\x1b[38;5;1m")
             mark = terminal.send(b"i")
             terminal.expect(b"INS", mark)
             mark = terminal.send(b"//\x1b")
             terminal.expect(b"NOR", mark)
             terminal.expect(b"\x1b[38;5;8m", mark)  # Entire line becomes a comment.
             mark = terminal.send(b"u")
-            terminal.expect(b"\x1b[38;5;13m", mark)  # Undo produces fresh keywords.
+            terminal.expect(b"\x1b[38;5;1m", mark)  # Undo produces fresh keywords.
             terminal.send(b":q\r")
             terminal.finish()
             assert rust_path.read_text() == 'fn main() { let message = "界"; }\n'

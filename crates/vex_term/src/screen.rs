@@ -48,6 +48,14 @@ pub enum Style {
 }
 
 impl Style {
+    fn syntax(self) -> Option<Highlight> {
+        match self {
+            Self::Syntax(highlight) => Some(highlight),
+            Self::PrimaryCursor(highlight) | Self::InsertCursor(highlight) => highlight,
+            _ => None,
+        }
+    }
+
     fn bold(self) -> bool {
         matches!(
             self,
@@ -57,7 +65,8 @@ impl Style {
                 | Self::MatchingBracket(_)
                 | Self::MatchingSelection
                 | Self::MatchingSecondaryCursor
-        ) || matches!(self, Self::Markup(attributes) if attributes.contains(Attributes::STRONG))
+        ) || matches!(self.syntax(), Some(Highlight::Heading | Highlight::Strong))
+            || matches!(self, Self::Markup(attributes) if attributes.contains(Attributes::STRONG))
     }
 
     fn reversed(self) -> bool {
@@ -68,7 +77,13 @@ impl Style {
         matches!(
             self,
             Self::MatchingBracket(_) | Self::MatchingSelection | Self::MatchingSecondaryCursor
-        ) || matches!(self, Self::Markup(attributes) if attributes.contains(Attributes::LINK))
+        ) || matches!(self.syntax(), Some(Highlight::Link | Highlight::LinkUrl))
+            || matches!(self, Self::Markup(attributes) if attributes.contains(Attributes::LINK))
+    }
+
+    fn italic(self) -> bool {
+        self.syntax() == Some(Highlight::Emphasis)
+            || matches!(self, Self::Markup(attributes) if attributes.contains(Attributes::EMPHASIS))
     }
 
     fn colors(self) -> (Color, Color) {
@@ -91,24 +106,7 @@ impl Style {
                     (Reset, Reset)
                 }
             }
-            Self::Syntax(highlight) => (
-                match highlight {
-                    Highlight::Keyword | Highlight::Heading => Magenta,
-                    Highlight::Type | Highlight::Property => Cyan,
-                    Highlight::Function => Blue,
-                    Highlight::Constant
-                    | Highlight::Attribute
-                    | Highlight::Escape
-                    | Highlight::Strong => Yellow,
-                    Highlight::String => Green,
-                    Highlight::Comment => DarkGrey,
-                    Highlight::Operator => Red,
-                    Highlight::Punctuation | Highlight::Variable => Reset,
-                    Highlight::Label | Highlight::Link => DarkCyan,
-                    Highlight::Emphasis => Cyan,
-                },
-                Reset,
-            ),
+            Self::Syntax(highlight) => (syntax_color(highlight), Reset),
             Self::Gutter => (DarkGrey, Reset),
             Self::GitAdded => (Green, Reset),
             Self::GitModified => (Yellow, Reset),
@@ -130,6 +128,26 @@ impl Style {
             Self::PickerMatch => (Yellow, Reset),
             Self::PickerSelectedMatch => (DarkYellow, Grey),
         }
+    }
+}
+
+/// Approximate Helix's github_light syntax with the terminal's base 16 palette.
+/// Regular ANSI colors suit light backgrounds; dark yellow stands in for orange
+/// and the theme's blue shades share the terminal's blue. Plain text inherits
+/// the terminal foreground. No RGB or extended palette colors are imposed.
+/// https://github.com/helix-editor/helix/blob/master/runtime/themes/github_light.toml
+fn syntax_color(highlight: Highlight) -> Color {
+    use Highlight::*;
+    match highlight {
+        Keyword | BuiltinVariable | Label => Color::DarkRed,
+        Type | Namespace | Parameter => Color::DarkYellow,
+        BuiltinType | Constant | Escape | Heading | Raw | String | Operator | Property | Link => {
+            Color::DarkBlue
+        }
+        Function | Constructor => Color::DarkMagenta,
+        Tag => Color::DarkGreen,
+        Comment => Color::DarkGrey,
+        Punctuation | Attribute | Variable | Emphasis | Strong | LinkUrl => Color::Reset,
     }
 }
 
@@ -400,31 +418,30 @@ impl Renderer {
                             })
                         )?;
                     }
+                    if last_style.is_some_and(Style::italic) != cell.style.italic() {
+                        queue!(
+                            self.output,
+                            SetAttribute(if cell.style.italic() {
+                                Attribute::Italic
+                            } else {
+                                Attribute::NoItalic
+                            })
+                        )?;
+                    }
                     let attributes = |style: Option<Style>| match style {
                         Some(Style::Markup(attributes)) => attributes,
                         _ => vex_syntax::markup::Attributes::default(),
                     };
                     let (before, after) = (attributes(last_style), attributes(Some(cell.style)));
-                    if before != after {
-                        for (flag, enabled, disabled) in [
-                            (Attributes::EMPHASIS, Attribute::Italic, Attribute::NoItalic),
-                            (
-                                Attributes::STRIKE,
-                                Attribute::CrossedOut,
-                                Attribute::NotCrossedOut,
-                            ),
-                        ] {
-                            if before.contains(flag) != after.contains(flag) {
-                                queue!(
-                                    self.output,
-                                    SetAttribute(if after.contains(flag) {
-                                        enabled
-                                    } else {
-                                        disabled
-                                    })
-                                )?;
-                            }
-                        }
+                    if before.contains(Attributes::STRIKE) != after.contains(Attributes::STRIKE) {
+                        queue!(
+                            self.output,
+                            SetAttribute(if after.contains(Attributes::STRIKE) {
+                                Attribute::CrossedOut
+                            } else {
+                                Attribute::NotCrossedOut
+                            })
+                        )?;
                     }
                     last_style = Some(cell.style);
                 }
@@ -523,6 +540,34 @@ mod tests {
             "\x1b[29m",
         ] {
             assert!(output.contains(escape), "missing {escape:?}: {output:?}");
+        }
+        // Source Markdown uses the same attributes as popup Markdown. Moving
+        // onto a token with the cursor must preserve them; plain cells clear them.
+        for (highlight, enabled, disabled) in [
+            (Highlight::Strong, "\x1b[1m", "\x1b[22m"),
+            (Highlight::Heading, "\x1b[1m", "\x1b[22m"),
+            (Highlight::Emphasis, "\x1b[3m", "\x1b[23m"),
+            (Highlight::Link, "\x1b[4m", "\x1b[24m"),
+            (Highlight::LinkUrl, "\x1b[4m", "\x1b[24m"),
+        ] {
+            for style in [
+                Style::Syntax(highlight),
+                Style::PrimaryCursor(Some(highlight)),
+                Style::InsertCursor(Some(highlight)),
+            ] {
+                let frame = renderer.frame(3, 1).unwrap();
+                frame.put(0, 0, "a", style);
+                frame.put(1, 0, "b", Style::Text);
+                // Include the plain neighbor in each diff, even when only the
+                // first cell's attributes changed from the preceding frame.
+                renderer.invalidate();
+                let mut output = Vec::new();
+                renderer.present(&mut output).unwrap();
+                let output = String::from_utf8(output).unwrap();
+                let glyph = output.find('a').unwrap();
+                assert!(output[..glyph].contains(enabled), "{style:?}: {output:?}");
+                assert!(output[glyph..].contains(disabled), "{style:?}: {output:?}");
+            }
         }
     }
 

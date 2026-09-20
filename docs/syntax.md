@@ -32,6 +32,27 @@ The same language selection controls [language servers](lsp.md) for named files;
 The terminal honors a nonempty `NO_COLOR` environment variable, which suppresses
 all colors, including syntax and selection colors.
 
+The syntax palette approximates Helix's
+[`github_light` theme](https://github.com/helix-editor/helix/blob/master/runtime/themes/github_light.toml)
+using the terminal's built-in 16 colors and default foreground/background:
+
+| Syntax | Terminal color |
+|---|---|
+| Keywords, builtin variables, lifetime labels | Red |
+| Functions and constructors | Magenta |
+| Types, namespaces, and parameters | Dark yellow (orange/brown approximation) |
+| Builtin types, constants, strings, escapes, operators, properties, headings, and raw Markdown | Blue |
+| Tags | Green |
+| Comments | Bright black / grey |
+| Variables, punctuation, attributes, ordinary Markdown text | Default foreground |
+
+These use the regular ANSI color slots; comments use bright black. The terminal's
+palette determines the actual shades, without RGB or extended palette colors.
+Markdown headings and strong emphasis are bold, emphasis is italic, and links
+are underlined. Link text is blue; URLs inherit the default foreground. Cursor
+cells preserve these syntax attributes. The same palette applies to file
+previews and Git diff text.
+
 ## Indentation
 
 On opening a buffer or reloading it from disk, Vex samples up to 1,000 lines and
