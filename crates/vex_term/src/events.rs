@@ -670,6 +670,9 @@ impl Runtime {
     pub(crate) fn update_lsp(&self, update: vex_lsp::Update) {
         self.lsp.as_ref().unwrap().update(update);
     }
+    pub(crate) fn update_lsp_workspace(&self, update: vex_lsp::WorkspaceUpdate) {
+        self.lsp.as_ref().unwrap().update_workspace(update);
+    }
 
     pub(crate) fn submit_picker(&self, job: FileJob) {
         self.files.as_ref().unwrap().submit(PickerJob::Files(job));
@@ -985,6 +988,98 @@ mod tests {
         assert!(job.run().is_none());
         assert!(!app.input_waiting());
         assert_eq!(app.editor.document().text(), "foo\n");
+    }
+
+    #[test]
+    fn rename_preparation_prompt_submission_and_workspace_delivery_preserve_queued_key_order() {
+        use vex_lsp::{
+            Answer, Position, Range, RequestKind,
+            workspace_edit::{DocumentEdit, SynchronizedDocument, TextEdit, WorkspaceEdit},
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("main.rs");
+        std::fs::write(&path, "foo\n").unwrap();
+        let mut app = App::open(Some(&path), (100, 24)).unwrap();
+        app.enable_lsp();
+        app.take_lsp_update();
+        press(&mut app, " r");
+        let update = app.take_lsp_update().unwrap();
+        let document = update.document.unwrap();
+        let events = EventQueue::default();
+        events.terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
+        for ch in "bar".chars() {
+            events.terminal(key(KeyCode::Char(ch)));
+        }
+        events.terminal(key(KeyCode::Enter));
+        events.terminal(key(KeyCode::Char('u')));
+        assert!(events.next(Duration::ZERO, app.input_waiting()).is_none());
+        events.lsp(vex_lsp::Event::Answer {
+            epoch: document.epoch,
+            revision: document.snapshot.revision(),
+            id: update.request.unwrap().id,
+            result: Ok(Answer::RenamePrepared("foo".into())),
+        });
+        let mut rename = None;
+        while let Some(event) = events.next(Duration::ZERO, app.input_waiting()) {
+            deliver(&mut app, event);
+            if let Some(update) = app.take_lsp_update()
+                && let Some(request) = update.request
+            {
+                rename = Some(request);
+            }
+        }
+        let request = rename.unwrap();
+        assert!(matches!(&request.kind,RequestKind::Rename { name, .. } if name == "bar"));
+        assert!(app.input_waiting());
+        assert_eq!(app.editor.document().text(), "foo\n");
+        events.lsp(vex_lsp::Event::Answer {
+            epoch: document.epoch,
+            revision: document.snapshot.revision(),
+            id: request.id,
+            result: Ok(Answer::WorkspaceEdit {
+                edit: WorkspaceEdit {
+                    documents: vec![DocumentEdit {
+                        path: document.path.clone(),
+                        version: Some(0),
+                        edits: vec![TextEdit {
+                            range: Range {
+                                start: Position {
+                                    line: 0,
+                                    character: 0,
+                                },
+                                end: Position {
+                                    line: 0,
+                                    character: 3,
+                                },
+                            },
+                            new_text: "bar".into(),
+                        }],
+                    }],
+                },
+                versions: vec![SynchronizedDocument {
+                    path: document.path,
+                    version: 0,
+                    document: document.snapshot.id(),
+                    revision: document.snapshot.revision(),
+                }],
+            }),
+        });
+        let event = events.next(Duration::ZERO, app.input_waiting()).unwrap();
+        deliver(&mut app, event);
+        assert!(events.next(Duration::ZERO, app.input_waiting()).is_none());
+        events.background(BackgroundEvent::WorkspaceEdit(
+            app.take_workspace_edit().unwrap().run().unwrap(),
+        ));
+        let event = events.next(Duration::ZERO, app.input_waiting()).unwrap();
+        deliver(&mut app, event);
+        assert_eq!(app.editor.document().text(), "bar\n");
+        let event = events.next(Duration::ZERO, app.input_waiting()).unwrap();
+        deliver(&mut app, event);
+        assert_eq!(app.editor.document().text(), "foo\n");
+        assert!(!app.input_waiting());
     }
 
     #[test]

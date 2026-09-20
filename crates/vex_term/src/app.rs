@@ -27,6 +27,7 @@ pub(crate) use navigation::{Job as LocationNavigationJob, Result as LocationNavi
 mod picker;
 mod prompt;
 mod reload;
+mod rename;
 mod status;
 mod windows;
 pub mod workspace;
@@ -34,6 +35,9 @@ pub(crate) use workspace::{Job as WorkspaceEditJob, Result as WorkspaceEditResul
 
 enum PromptKind {
     Command,
+    Rename {
+        context: workspace::Context,
+    },
     Search {
         operation: SearchPrompt,
         viewport: Viewport,
@@ -61,6 +65,7 @@ impl ActivePrompt {
     fn prefix(&self) -> &'static str {
         match self.kind {
             PromptKind::Command => ":",
+            PromptKind::Rename { .. } => "rename-to:",
             PromptKind::Search { operation, .. } => operation.label(),
         }
     }
@@ -90,6 +95,7 @@ pub struct App {
     jump_navigation: jumps::State,
     navigation: navigation::State,
     workspace: workspace::State,
+    rename: rename::State,
 }
 
 impl App {
@@ -132,6 +138,7 @@ impl App {
             jump_navigation: jumps::State::default(),
             navigation: navigation::State::default(),
             workspace: workspace::State::default(),
+            rename: rename::State::default(),
         }
     }
 
@@ -731,6 +738,7 @@ impl App {
             }
             Key::Enter => {
                 if prompt.input.text().is_empty()
+                    && !matches!(prompt.kind, PromptKind::Rename { .. })
                     && let Some(text) = self.prompt_history.last(prompt.register)
                 {
                     prompt.input.insert(&text);
@@ -741,6 +749,9 @@ impl App {
                         .push(prompt.register, prompt.input.text());
                 }
                 match prompt.kind {
+                    PromptKind::Rename { context } => {
+                        self.submit_rename(context, prompt.input.text())
+                    }
                     PromptKind::Command => {
                         if let Err(error) = self.execute(prompt.input.text()) {
                             self.fail(error);
@@ -768,11 +779,13 @@ impl App {
                 }
             }
             Key::Up | Key::Ctrl('p') | Key::Down | Key::Ctrl('n') => {
-                if let Some(text) = self.prompt_history.step(
-                    prompt.register,
-                    &mut prompt.history_position,
-                    matches!(key, Key::Up | Key::Ctrl('p')),
-                ) {
+                if !matches!(prompt.kind, PromptKind::Rename { .. })
+                    && let Some(text) = self.prompt_history.step(
+                        prompt.register,
+                        &mut prompt.history_position,
+                        matches!(key, Key::Up | Key::Ctrl('p')),
+                    )
+                {
                     prompt.input.replace(&text);
                     self.preview_search(&prompt);
                 }

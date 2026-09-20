@@ -66,6 +66,7 @@ pub enum LanguageAction {
     Implementation,
     References,
     DocumentHighlights,
+    Rename,
     Completion,
     NextDiagnostic(usize),
     PreviousDiagnostic(usize),

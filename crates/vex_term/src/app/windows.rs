@@ -845,6 +845,24 @@ impl App {
             .collect()
     }
 
+    pub(super) fn lsp_workspace_documents(&self) -> std::sync::Arc<[vex_lsp::WorkspaceDocument]> {
+        std::iter::once((&self.editor, &self.files))
+            .chain(
+                self.windows
+                    .buffers
+                    .values()
+                    .map(|buffer| (&buffer.editor, &buffer.files)),
+            )
+            .filter_map(|(editor, files)| {
+                files.target().map(|path| vex_lsp::WorkspaceDocument {
+                    path: path.into(),
+                    snapshot: editor.document().snapshot(),
+                    language: editor.language(),
+                })
+            })
+            .collect()
+    }
+
     pub(super) fn capture_workspace_buffers(
         &self,
     ) -> std::sync::Arc<[super::workspace::CapturedDocument]> {

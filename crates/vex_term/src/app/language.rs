@@ -57,6 +57,19 @@ impl App {
         self.language.force = true;
     }
 
+    /// Only workspace application schedules this full catalog capture. Normal
+    /// keystrokes keep their constant-size active-document update path.
+    pub(crate) fn take_lsp_workspace_update(&mut self) -> Option<vex_lsp::WorkspaceUpdate> {
+        if !std::mem::take(&mut self.workspace.synchronize) || !self.language.enabled {
+            return None;
+        }
+        let epoch = self.language.document.as_ref()?.epoch;
+        Some(vex_lsp::WorkspaceUpdate {
+            epoch,
+            documents: self.lsp_workspace_documents(),
+        })
+    }
+
     pub(super) fn language_waiting(&self) -> bool {
         self.language
             .pending
@@ -65,13 +78,14 @@ impl App {
     }
 
     pub(super) fn dismiss_language_help(&mut self) {
-        self.language.cancel();
+        self.cancel_language_request();
         self.language.popup = None;
         self.completion.clear();
     }
 
     pub(super) fn cancel_language_request(&mut self) {
         self.language.cancel();
+        self.rename.clear();
     }
 
     pub(super) fn restart_language_server(&mut self) {
@@ -105,7 +119,7 @@ impl App {
                 || pending.selections != *self.editor.selections()
                 || pending.mode != self.editor.mode()
         }) {
-            self.language.cancel();
+            self.cancel_language_request();
         }
         let language = self.editor.language();
         let server = language.and_then(Language::server);
@@ -121,6 +135,7 @@ impl App {
         };
         if identity_changed {
             self.language.cancel();
+            self.rename.clear();
             self.completion.clear();
             self.language.completion = None;
             self.language.epoch += 1;
@@ -173,12 +188,17 @@ impl App {
                 kind: RequestKind::DocumentHighlights,
                 automatic: false,
             }),
+            Some(LanguageAction::Rename) => Some(super::completion::Request {
+                kind: self.prepare_rename_request(),
+                automatic: false,
+            }),
             Some(LanguageAction::Completion) => Some(super::completion::Request {
                 kind: RequestKind::Completion(CompletionTrigger::Invoked),
                 automatic: false,
             }),
             _ => self
-                .take_symbol_request(Instant::now())
+                .take_rename_request()
+                .or_else(|| self.take_symbol_request(Instant::now()))
                 .map(|kind| super::completion::Request {
                     kind,
                     automatic: false,
@@ -215,7 +235,10 @@ impl App {
                     cancellation: cancellation.clone(),
                     waiting: matches!(
                         kind,
-                        RequestKind::Navigation(_) | RequestKind::DocumentHighlights
+                        RequestKind::Navigation(_)
+                            | RequestKind::DocumentHighlights
+                            | RequestKind::PrepareRename { .. }
+                            | RequestKind::Rename { .. }
                     ),
                 });
                 request = Some(vex_lsp::Request {
@@ -322,6 +345,10 @@ impl App {
                     Ok(Answer::Completion(items)) => self.receive_completions(items),
                     Ok(Answer::Symbols(symbols)) => self.receive_symbols(symbols),
                     Ok(Answer::CompletionResolved(item)) => self.receive_resolved_completion(item),
+                    Ok(Answer::RenamePrepared(name)) => self.receive_rename_preparation(name),
+                    Ok(Answer::WorkspaceEdit { edit, versions }) => {
+                        self.receive_rename_edit(edit, versions)
+                    }
                     Err(error) => self.fail_language_request(error),
                 }
             }
@@ -330,6 +357,7 @@ impl App {
     }
 
     fn fail_language_request(&mut self, error: String) {
+        self.rename.clear();
         if self.fail_symbol_picker(&error) {
             self.cancel_language_request();
             self.clear_message();

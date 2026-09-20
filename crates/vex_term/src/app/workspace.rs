@@ -45,7 +45,7 @@ impl Context {
         })
     }
 
-    fn current(&self, app: &App) -> bool {
+    pub(super) fn current(&self, app: &App) -> bool {
         self.origin.document == app.editor.document().id()
             && self.origin.bookmark.revision() == app.editor.document().revision()
             && self.origin.selections.as_ref() == app.editor.selections()
@@ -58,6 +58,7 @@ impl Context {
 pub(super) struct State {
     pending: Option<(Context, Cancellation)>,
     job: Option<Job>,
+    pub(super) synchronize: bool,
 }
 
 impl Drop for State {
@@ -266,6 +267,7 @@ impl App {
             .and_then(|changes| self.commit_workspace_edit(changes))
         {
             Ok(count) => {
+                self.workspace.synchronize |= count > 0;
                 self.dismiss_language_help();
                 self.invalidate_completion();
                 self.refresh_git();

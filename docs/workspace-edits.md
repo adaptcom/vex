@@ -1,10 +1,20 @@
 # Workspace text edits
 
-The shared workspace-edit path is implemented as a prerequisite for LSP rename,
-code actions, and formatting. Those commands and server-initiated `applyEdit`
-are not enabled yet. The transport continues to reject `workspace/applyEdit`;
-connecting it requires ordered replies and request-time synchronization of all
-participating buffers.
+LSP rename (`Space-r`) uses the shared workspace-edit path. Code actions,
+formatting, and server-initiated `applyEdit` are not enabled yet. The transport
+continues to reject `workspace/applyEdit`; connecting it requires ordered frontend
+delivery and replies tied to application results.
+
+Before rename preparation and submission, the LSP worker synchronizes captured
+open buffers belonging to its configured languages and workspace, including
+hidden unsaved buffers. Unchanged snapshots are not resent. Wire versions are
+tracked separately from editor revisions and accompany the response. The capture
+is limited to 4,096 named buffers and synchronization to 64 MiB in total, with
+the existing 8 MiB limit per document. Unrelated dirty buffers remain protected:
+an edit targeting unsynchronized unsaved text fails the entire batch.
+After application, the latest catalog snapshots are synchronized through a
+separate service mailbox before following requests. This includes newly loaded
+buffers; ordinary cursor requests cannot coalesce away that synchronization.
 
 `App::workspace_edit_context` captures the origin and named buffers' immutable
 text and view state before a request. `App::begin_workspace_edit` accepts a parsed

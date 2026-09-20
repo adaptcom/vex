@@ -134,6 +134,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
     if let Some(update) = app.take_lsp_update() {
         runtime.update_lsp(update);
     }
+    if let Some(update) = app.take_lsp_workspace_update() {
+        runtime.update_lsp_workspace(update);
+    }
     let mut renderer = Renderer::default();
     let mut output = io::stdout();
     let mut redraw = true;
@@ -153,6 +156,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
         if let Some(update) = app.take_lsp_update() {
             runtime.update_lsp(update);
             redraw = true;
+        }
+        if let Some(update) = app.take_lsp_workspace_update() {
+            runtime.update_lsp_workspace(update);
         }
         if let Some(batch) = app.take_git_batch(Instant::now()) {
             runtime.submit_git(batch);
@@ -309,6 +315,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(update) = app.take_lsp_update() {
                 runtime.update_lsp(update);
+            }
+            if let Some(update) = app.take_lsp_workspace_update() {
+                runtime.update_lsp_workspace(update);
             }
             if let Some(batch) = app.take_git_batch(Instant::now()) {
                 runtime.submit_git(batch);

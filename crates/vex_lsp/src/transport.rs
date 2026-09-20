@@ -7,22 +7,90 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
-    future::Future,
+    collections::{HashMap, VecDeque},
+    future::{Future, poll_fn},
     io::{self, BufReader, Read},
     path::Path,
     pin::Pin,
     process::{Child, Command, Stdio},
-    sync::{
-        Arc, Mutex,
-        mpsc::{self, SyncSender},
-    },
+    sync::{Arc, Condvar, Mutex, mpsc::TrySendError},
     task::{Context, Poll, Waker},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 type Reply = Result<Value, String>;
+
+#[derive(Default)]
+struct Outgoing {
+    messages: VecDeque<Value>,
+    replies: VecDeque<Value>,
+    closed: bool,
+}
+
+#[derive(Default)]
+struct OutboxInner {
+    queue: Mutex<Outgoing>,
+    ready: Condvar,
+    writable: Mutex<Option<Waker>>,
+}
+
+/// Server-request replies have separate bounded capacity and take precedence
+/// over queued client messages. A batch of didOpen messages cannot prevent a
+/// configuration reply or block the reader that resolves request futures.
+#[derive(Clone, Default)]
+struct Outbox(Arc<OutboxInner>);
+
+impl Outbox {
+    fn try_send(&self, value: Value) -> Result<(), TrySendError<Value>> {
+        self.push(value, false)
+    }
+    fn reply(&self, value: Value) -> Result<(), TrySendError<Value>> {
+        self.push(value, true)
+    }
+    fn push(&self, value: Value, reply: bool) -> Result<(), TrySendError<Value>> {
+        let mut queue = self.0.queue.lock().unwrap();
+        if queue.closed {
+            return Err(TrySendError::Disconnected(value));
+        }
+        let (messages, limit) = if reply {
+            (&mut queue.replies, 32)
+        } else {
+            (&mut queue.messages, 8)
+        };
+        if messages.len() == limit {
+            return Err(TrySendError::Full(value));
+        }
+        messages.push_back(value);
+        self.0.ready.notify_one();
+        Ok(())
+    }
+    fn recv(&self) -> Option<Value> {
+        let mut queue = self.0.queue.lock().unwrap();
+        loop {
+            if queue.closed {
+                return None;
+            }
+            if let Some(value) = queue.replies.pop_front() {
+                return Some(value);
+            }
+            if let Some(value) = queue.messages.pop_front() {
+                if let Some(waker) = self.0.writable.lock().unwrap().take() {
+                    waker.wake()
+                }
+                return Some(value);
+            }
+            queue = self.0.ready.wait(queue).unwrap();
+        }
+    }
+    fn close(&self) {
+        self.0.queue.lock().unwrap().closed = true;
+        self.0.ready.notify_one();
+        if let Some(waker) = self.0.writable.lock().unwrap().take() {
+            waker.wake()
+        }
+    }
+}
 #[derive(Default)]
 struct Slot {
     result: Option<Reply>,
@@ -52,7 +120,7 @@ pub(crate) struct Response {
     id: u64,
     slot: Arc<Mutex<Slot>>,
     pending: Arc<Mutex<Pending>>,
-    writer: SyncSender<Value>,
+    writer: Outbox,
     executor: Executor,
     deadline: Instant,
     complete: bool,
@@ -89,7 +157,7 @@ impl Drop for Response {
 
 pub(crate) struct Transport {
     child: Child,
-    writer: Option<SyncSender<Value>>,
+    writer: Option<Outbox>,
     pending: Arc<Mutex<Pending>>,
     reader_thread: Option<JoinHandle<()>>,
     writer_thread: Option<JoinHandle<()>>,
@@ -132,16 +200,18 @@ impl Transport {
         let stdout = transport.child.stdout.take().unwrap();
         let mut stderr = transport.child.stderr.take().unwrap();
         let notify = Arc::new(notify);
-        let (writer, outgoing) = mpsc::sync_channel::<Value>(8);
+        let writer = Outbox::default();
+        let outgoing = writer.clone();
         transport.writer = Some(writer.clone());
         let pending = transport.pending.clone();
         let failed = notify.clone();
         transport.writer_thread = Some(thread::Builder::new().name("vex-lsp-write".into()).spawn(
             move || {
-                while let Ok(value) = outgoing.recv() {
+                while let Some(value) = outgoing.recv() {
                     if let Err(error) = write_message(&mut stdin, &value) {
                         pending.lock().unwrap().fail(error.to_string());
                         failed(json!({"transportError":error.to_string()}));
+                        outgoing.close();
                         break;
                     }
                 }
@@ -163,7 +233,7 @@ impl Transport {
                             };
                             let mut response = response;
                             response["jsonrpc"] = json!("2.0"); response["id"] = id.clone();
-                            writer.try_send(response).map_err(io::Error::other)?;
+                            writer.reply(response).map_err(io::Error::other)?;
                         } else if matches!(method, "textDocument/publishDiagnostics" | "window/showMessage") {
                             notify(value);
                         }
@@ -222,6 +292,64 @@ impl Transport {
         self.send(message)
     }
 
+    /// Wait for bounded queue capacity without blocking the service executor.
+    /// Register before trying the queue so a concurrent dequeue cannot lose a wake.
+    async fn send_wait(
+        &self,
+        executor: &Executor,
+        message: Value,
+        interrupted: impl Fn(&Context<'_>) -> bool,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut message = Some(message);
+        poll_fn(|cx| {
+            if interrupted(cx) {
+                return Poll::Ready(Err("language request superseded or cancelled".into()));
+            }
+            if let Some(error) = &self.pending.lock().unwrap().failure {
+                return Poll::Ready(Err(error.clone()));
+            }
+            if Instant::now() >= deadline {
+                return Poll::Ready(Err("language server output queue timed out".into()));
+            }
+            executor.deadline(deadline);
+            enqueue(self.writer.as_ref().unwrap(), &mut message, cx)
+        })
+        .await
+    }
+
+    pub async fn notify_wait(
+        &self,
+        executor: &Executor,
+        method: &str,
+        params: Value,
+        interrupted: impl Fn(&Context<'_>) -> bool,
+    ) -> Result<(), String> {
+        self.send_wait(
+            executor,
+            json!({"jsonrpc":"2.0", "method":method,"params":params}),
+            interrupted,
+        )
+        .await
+    }
+
+    pub async fn request_wait(
+        &mut self,
+        executor: &Executor,
+        method: &str,
+        params: Value,
+        interrupted: impl Fn(&Context<'_>) -> bool,
+    ) -> Result<Response, String> {
+        let (mut response, message) =
+            self.prepare_request(executor, method, params, Duration::from_secs(10));
+        if let Err(error) = self.send_wait(executor, message, interrupted).await {
+            response.complete = true; // The request was never enqueued.
+            return Err(error);
+        }
+        response.deadline = Instant::now() + Duration::from_secs(10);
+        Ok(response)
+    }
+
     pub fn request(
         &mut self,
         executor: &Executor,
@@ -229,6 +357,21 @@ impl Transport {
         params: Value,
         timeout: Duration,
     ) -> Result<Response, String> {
+        let (mut response, message) = self.prepare_request(executor, method, params, timeout);
+        if let Err(error) = self.send(message) {
+            response.complete = true;
+            return Err(error);
+        }
+        Ok(response)
+    }
+
+    fn prepare_request(
+        &mut self,
+        executor: &Executor,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> (Response, Value) {
         self.next_id += 1;
         let slot = Arc::new(Mutex::new(Slot::default()));
         self.pending
@@ -249,8 +392,7 @@ impl Transport {
         if !params.is_null() {
             message["params"] = params;
         }
-        self.send(message)?;
-        Ok(response)
+        (response, message)
     }
 
     pub async fn shutdown(&mut self, executor: &Executor, uri: Option<&str>) {
@@ -305,12 +447,81 @@ impl Drop for Transport {
         if let Some(thread) = self.reader_thread.take() {
             let _ = thread.join();
         }
-        self.writer.take();
+        if let Some(writer) = self.writer.take() {
+            writer.close();
+        }
         if let Some(thread) = self.writer_thread.take() {
             let _ = thread.join();
         }
         if let Some(thread) = self.stderr_thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+fn enqueue(
+    writer: &Outbox,
+    message: &mut Option<Value>,
+    cx: &Context<'_>,
+) -> Poll<Result<(), String>> {
+    *writer.0.writable.lock().unwrap() = Some(cx.waker().clone());
+    match writer.try_send(message.take().expect("polled completed send")) {
+        Ok(()) => Poll::Ready(Ok(())),
+        Err(TrySendError::Full(value)) => {
+            *message = Some(value);
+            Poll::Pending
+        }
+        Err(TrySendError::Disconnected(_)) => {
+            Poll::Ready(Err("language server output queue closed".into()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_queue_yields_and_wakes_without_losing_or_reordering_messages() {
+        let writer = Outbox::default();
+        for i in 0..8 {
+            writer.try_send(json!(i)).unwrap();
+        }
+        // Replies must remain available even when client messages fill the queue.
+        writer.reply(json!("configuration reply")).unwrap();
+        assert_eq!(writer.recv().unwrap(), json!("configuration reply"));
+        let executor = Executor::default();
+        let mut message = Some(json!(8));
+        let mut polls = 0;
+        executor
+            .run(poll_fn(|cx| {
+                polls += 1;
+                let result = enqueue(&writer, &mut message, cx);
+                if polls == 1 {
+                    assert!(result.is_pending());
+                    // Dequeue and wake during poll to exercise the missed-wake race.
+                    assert_eq!(writer.recv().unwrap(), json!(0));
+                }
+                result
+            }))
+            .unwrap();
+        assert_eq!(polls, 2);
+        for i in 1..9 {
+            assert_eq!(writer.recv().unwrap(), json!(i));
+        }
+        for _ in 0..32 {
+            writer.reply(json!(null)).unwrap();
+        }
+        assert!(matches!(
+            writer.reply(json!(null)),
+            Err(TrySendError::Full(_))
+        ));
+        writer.close();
+        let mut message = Some(json!(9));
+        assert!(
+            executor
+                .run(poll_fn(|cx| enqueue(&writer, &mut message, cx)))
+                .is_err()
+        );
     }
 }

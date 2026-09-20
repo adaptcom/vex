@@ -268,6 +268,7 @@ impl Default for Keymap {
                 (vec![Char(' '), Char('s')], "symbol_picker"),
                 (vec![Char(' '), Char('S')], "workspace_symbol_picker"),
                 (vec![Char(' '), Char('k')], "hover"),
+                (vec![Char(' '), Char('r')], "rename_symbol"),
                 (vec![Char(' '), Char('c')], "toggle_comments"),
                 (vec![Char(' '), Char('C')], "toggle_block_comments"),
                 (vec![Ctrl('c')], "toggle_comments"),
@@ -1075,6 +1076,7 @@ mod tests {
                 ("gi", crate::LanguageAction::Implementation),
                 ("gr", crate::LanguageAction::References),
                 (" h", crate::LanguageAction::DocumentHighlights),
+                (" r", crate::LanguageAction::Rename),
             ] {
                 let mut editor = Editor::new(Document::from("name"));
                 if mode == Mode::Select {

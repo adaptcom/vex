@@ -803,6 +803,15 @@ commands! {
         Ok(())
     }
 
+    /// Rename the symbol under the primary cursor through its language server.
+    /// Opens a prompt prefilled with the current name. Workspace edits preserve
+    /// unsaved buffers and create a separate undo step in each changed buffer.
+    fn rename_symbol(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_language_action(crate::LanguageAction::Rename);
+        Ok(())
+    }
+
     /// Move to the next diagnostic, wrapping and honoring the repeat count.
     fn goto_next_diagnostic(ctx) {
         ctx.editor.finish_undo_group();

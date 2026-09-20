@@ -5,9 +5,12 @@ mod completion;
 mod executor;
 mod navigation;
 mod protocol;
+mod rename;
 mod symbols;
 mod transport;
+mod workspace;
 pub mod workspace_edit;
+pub use workspace::{WorkspaceDocument, WorkspaceUpdate};
 
 pub use completion::{CompletionItem, Completions};
 use executor::Executor;
@@ -26,7 +29,7 @@ use std::{
     time::{Duration, Instant},
 };
 pub use symbols::{Symbol, Symbols};
-use vex_core::{CharOffset, Revision, Snapshot};
+use vex_core::{CharOffset, Revision, Selection, Snapshot};
 use vex_editor::{Language, background::Cancellation};
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 << 20;
@@ -91,6 +94,14 @@ pub enum RequestKind {
     WorkspaceSymbols(String),
     Completion(CompletionTrigger),
     ResolveCompletion(Box<CompletionItem>),
+    PrepareRename {
+        selection: Selection,
+        documents: Arc<[WorkspaceDocument]>,
+    },
+    Rename {
+        name: String,
+        documents: Arc<[WorkspaceDocument]>,
+    },
 }
 
 #[derive(Debug)]
@@ -124,6 +135,11 @@ pub enum Answer {
     Symbols(Symbols),
     Completion(Completions),
     CompletionResolved(CompletionItem),
+    RenamePrepared(String),
+    WorkspaceEdit {
+        edit: workspace_edit::WorkspaceEdit,
+        versions: Vec<workspace_edit::SynchronizedDocument>,
+    },
 }
 
 #[derive(Debug)]
@@ -153,6 +169,7 @@ pub enum Event {
 #[derive(Default)]
 struct InboxState {
     update: Option<Update>,
+    workspace: Option<WorkspaceUpdate>,
     update_started: Option<Instant>,
     update_due: Option<Instant>,
     last_epoch: Option<u64>,
@@ -166,6 +183,50 @@ struct InboxState {
 struct Inbox(Arc<Mutex<InboxState>>);
 
 impl Inbox {
+    fn update_workspace(&self, update: WorkspaceUpdate) {
+        let mut state = self.0.lock().unwrap();
+        state.workspace = Some(update);
+        Self::wake(&mut state);
+    }
+    fn take_workspace(&self, epoch: u64) -> Option<WorkspaceUpdate> {
+        let mut state = self.0.lock().unwrap();
+        if state
+            .workspace
+            .as_ref()
+            .is_some_and(|update| update.epoch < epoch)
+        {
+            state.workspace = None;
+        }
+        state
+            .workspace
+            .as_ref()
+            .is_some_and(|update| update.epoch == epoch)
+            .then(|| state.workspace.take().unwrap())
+    }
+    fn session_interrupted(&self, cx: &Context<'_>, epoch: u64) -> bool {
+        let mut state = self.0.lock().unwrap();
+        state.waker = Some(cx.waker().clone());
+        state.stopped
+            || state.failure.is_some()
+            || state
+                .update
+                .as_ref()
+                .is_some_and(|update| update.document.as_ref().map(|doc| doc.epoch) != Some(epoch))
+    }
+    fn interrupted(&self, cx: &Context<'_>, document: &Document, token: &Cancellation) -> bool {
+        let mut state = self.0.lock().unwrap();
+        state.waker = Some(cx.waker().clone());
+        state.stopped
+            || state.failure.is_some()
+            || token.is_cancelled()
+            || state.update.as_ref().is_some_and(|update| {
+                !update.document.as_ref().is_some_and(|newer| {
+                    newer.epoch == document.epoch
+                        && newer.snapshot.id() == document.snapshot.id()
+                        && newer.snapshot.revision() == document.snapshot.revision()
+                }) || update.request.is_some()
+            })
+    }
     fn wake(state: &mut InboxState) {
         if let Some(waker) = state.waker.take() {
             waker.wake();
@@ -241,6 +302,7 @@ impl Inbox {
 
 enum Input {
     Update(Update),
+    Workspace(WorkspaceUpdate),
     Wire(Value),
     Failed(String),
     Stop,
@@ -288,6 +350,9 @@ impl Service {
 
     pub fn update(&self, update: Update) {
         self.inbox.update(update);
+    }
+    pub fn update_workspace(&self, update: WorkspaceUpdate) {
+        self.inbox.update_workspace(update);
     }
     pub fn stop(&self) {
         self.inbox.stop();
@@ -398,9 +463,16 @@ async fn session(
     let root_uri = file_uri(&root).map_err(|e| e.to_string())?;
     let uri = file_uri(&document.path).map_err(|e| e.to_string())?;
     let notifications = inbox.clone();
+    let active_uri = uri.clone();
     let mut transport =
         transport::Transport::start(program, server.arguments, &root, move |value| {
-            notifications.wire(value)
+            // This session currently publishes diagnostics for its active file.
+            // Additional didOpen notifications must not flood the bounded inbox.
+            if value["method"] != "textDocument/publishDiagnostics"
+                || value["params"]["uri"] == active_uri
+            {
+                notifications.wire(value)
+            }
         })
         .map_err(|e| e.to_string())?;
     let mut initialize = transport.request(executor, "initialize", json!({
@@ -417,6 +489,7 @@ async fn session(
                 "implementation":{"linkSupport":true},
                 "references":{},
                 "documentHighlight":{},
+                "rename":{"prepareSupport":true},
                 "documentSymbol":{"hierarchicalDocumentSymbolSupport":true,"symbolKind":{"valueSet":(1..=26).collect::<Vec<_>>()}},
                 "completion":{"contextSupport":true,"completionItem":{
                     "snippetSupport":false,"insertReplaceSupport":true,
@@ -424,7 +497,7 @@ async fn session(
                     "resolveSupport":{"properties":["documentation","detail","additionalTextEdits"]}
                 }}
             },
-            "workspace":{"configuration":true,"symbol":{"symbolKind":{"valueSet":(1..=26).collect::<Vec<_>>()}}}, "window":{"workDoneProgress":false}
+            "workspace":{"configuration":true,"workspaceEdit":{"documentChanges":true,"failureHandling":"textOnlyTransactional"},"symbol":{"symbolKind":{"valueSet":(1..=26).collect::<Vec<_>>()}}}, "window":{"workDoneProgress":false}
         }
     }), Duration::from_secs(30))?;
     let initialized = poll_fn(|cx| {
@@ -464,7 +537,8 @@ async fn session(
     transport.notify("initialized", json!({}))?;
     let mut version = 0i32;
     let mut opened = false;
-    let mut pending: Option<(Request, transport::Response)> = None;
+    let mut pending: Option<PendingRequest> = None;
+    let mut workspace = workspace::Workspace::default();
     let result = async {
         // Initialization may be slow; use the newest snapshot before didOpen.
         let latest = {
@@ -486,15 +560,20 @@ async fn session(
         let mut positions = protocol::Positions::new(document.snapshot.text());
         emit(Event::Capabilities { epoch, completion: CompletionOptions::from_capabilities(&capabilities) });
         emit(Event::Status { epoch, message: format!("{} ready", server.command), failed: false });
+        if let Some(update) = inbox.take_workspace(epoch) {
+            workspace.synchronize(&transport, executor, &document, version, &root, &update.documents,
+                |cx| inbox.session_interrupted(cx, epoch)).await?;
+        }
         if let Some(request) = initial_request.take() {
-            start_request(&mut transport, executor, &capabilities, &uri, &document, request, &mut pending, emit);
+            start_request(&mut transport, executor, &capabilities, &uri, &document, version, &root, &mut workspace, inbox, request, &mut pending, emit).await;
         }
         loop {
             let input = poll_fn(|cx| {
                 // Register the inbox waker even while waiting for a reply, so
                 // edits, cancellation, and shutdown never wait for that reply.
                 if inbox.stopped(cx) { return Poll::Ready(Input::Stop) }
-                if let Some((request, response)) = &mut pending {
+                if let Some(update) = inbox.take_workspace(epoch) { return Poll::Ready(Input::Workspace(update)) }
+                if let Some(PendingRequest { request, response, .. }) = &mut pending {
                     if request.cancellation.is_cancelled() { return Poll::Ready(Input::Answer(Err("cancelled".into()))) }
                     if let Poll::Ready(answer) = Pin::new(response).poll(cx) { return Poll::Ready(Input::Answer(answer)) }
                 }
@@ -503,6 +582,10 @@ async fn session(
             match input {
                 Input::Stop => return Ok(None),
                 Input::Failed(error) => return Err(error),
+                Input::Workspace(update) => {
+                    workspace.synchronize(&transport, executor, &document, version, &root, &update.documents,
+                        |cx| inbox.session_interrupted(cx, epoch)).await?;
+                }
                 Input::Update(update) => {
                     if update.document.as_ref().map(|doc| doc.epoch) != Some(epoch) { return Ok(Some(update)) }
                     let newer = update.document.unwrap();
@@ -510,26 +593,26 @@ async fn session(
                     let mut synced = document.snapshot.clone();
                     if newer.saved != document.saved
                         && let Some(saved) = &newer.saved_snapshot {
-                            synchronize(&transport, &uri, &mut version, &mut synced, saved)?;
+                            synchronize(&transport, executor, inbox, &uri, &mut version, &mut synced, saved).await?;
                             let save = &capabilities["textDocumentSync"]["save"];
                             if save == true || save.is_object() {
                                 let mut params = json!({"textDocument":{"uri":uri}});
                                 if save["includeText"] == true { params["text"] = json!(saved.text().to_string()); }
-                                transport.notify("textDocument/didSave", params)?;
+                                transport.notify_wait(executor, "textDocument/didSave", params, |cx| inbox.stopped(cx)).await?;
                             }
                     }
-                    synchronize(&transport, &uri, &mut version, &mut synced, &newer.snapshot)?;
+                    synchronize(&transport, executor, inbox, &uri, &mut version, &mut synced, &newer.snapshot).await?;
                     if newer.snapshot.revision() != document.snapshot.revision() {
                         pending.take();
                         positions = protocol::Positions::new(newer.snapshot.text());
                     }
                     document = newer;
                     if let Some(request) = update.request {
-                        start_request(&mut transport, executor, &capabilities, &uri, &document, request, &mut pending, emit);
+                        start_request(&mut transport, executor, &capabilities, &uri, &document, version, &root, &mut workspace, inbox, request, &mut pending, emit).await;
                     }
                 }
                 Input::Answer(result) => {
-                    let (request, _) = pending.take().unwrap();
+                    let PendingRequest { request, versions, .. } = pending.take().unwrap();
                     if !request.cancellation.is_cancelled() {
                         let result = result.and_then(|value| match request.kind {
                             RequestKind::Hover => Ok(Answer::Hover(protocol::hover_text(&value))),
@@ -539,6 +622,8 @@ async fn session(
                             RequestKind::WorkspaceSymbols(_) => symbols::parse(&value, None).map(Answer::Symbols),
                             RequestKind::Completion(_) => completion::parse(value, document.snapshot.text(), request.position, capabilities["completionProvider"]["resolveProvider"] == true).map(Answer::Completion),
                             RequestKind::ResolveCompletion(item) => completion::resolve(&item, value, document.snapshot.text(), request.position).map(Answer::CompletionResolved),
+                            RequestKind::PrepareRename { selection, .. } => rename::placeholder(&value, &document.snapshot, selection, request.position, &positions, &request.cancellation).map(Answer::RenamePrepared),
+                            RequestKind::Rename { .. } => workspace_edit::parse(&value, &request.cancellation).map(|edit| Answer::WorkspaceEdit { edit, versions }),
                         });
                         emit(Event::Answer { epoch, revision: document.snapshot.revision(), id: request.id, result });
                     }
@@ -574,8 +659,10 @@ async fn session(
     result.map_err(|error| transport.error_context(&error))
 }
 
-fn synchronize(
+async fn synchronize(
     transport: &transport::Transport,
+    executor: &Executor,
+    inbox: &Inbox,
     uri: &str,
     version: &mut i32,
     current: &mut Snapshot,
@@ -587,10 +674,11 @@ fn synchronize(
     if next.text().len_bytes() > MAX_DOCUMENT_BYTES {
         return Err("document exceeds the initial 8 MiB LSP limit".into());
     }
-    *version = version
+    let next_version = version
         .checked_add(1)
         .ok_or("LSP document version exhausted")?;
-    transport.notify("textDocument/didChange", json!({"textDocument":{"uri":uri,"version":version},"contentChanges":[{"text":next.text().to_string()}]}))?;
+    transport.notify_wait(executor, "textDocument/didChange", json!({"textDocument":{"uri":uri,"version":next_version},"contentChanges":[{"text":next.text().to_string()}]}), |cx| inbox.stopped(cx)).await?;
+    *version = next_version;
     *current = next.clone();
     Ok(())
 }
@@ -603,15 +691,25 @@ fn check_size(document: &Document) -> Result<(), String> {
     }
 }
 
+struct PendingRequest {
+    request: Request,
+    response: transport::Response,
+    versions: Vec<workspace_edit::SynchronizedDocument>,
+}
+
 #[allow(clippy::too_many_arguments)]
-fn start_request(
+async fn start_request(
     transport: &mut transport::Transport,
     executor: &Executor,
     capabilities: &Value,
     uri: &str,
     document: &Document,
+    version: i32,
+    root: &Path,
+    workspace: &mut workspace::Workspace,
+    inbox: &Inbox,
     request: Request,
-    pending: &mut Option<(Request, transport::Response)>,
+    pending: &mut Option<PendingRequest>,
     emit: &impl Fn(Event),
 ) {
     pending.take();
@@ -629,10 +727,52 @@ fn start_request(
         RequestKind::WorkspaceSymbols(_) => ("workspace/symbol", "workspaceSymbolProvider"),
         RequestKind::Completion(_) => ("textDocument/completion", "completionProvider"),
         RequestKind::ResolveCompletion(_) => ("completionItem/resolve", "completionProvider"),
+        RequestKind::PrepareRename { .. } => ("textDocument/prepareRename", "renameProvider"),
+        RequestKind::Rename { .. } => ("textDocument/rename", "renameProvider"),
     };
-    let result = (|| {
+    let mut versions = Vec::new();
+    let result = async {
         if capabilities[capability] != true && !capabilities[capability].is_object() {
             return Err("language server does not support this request".into());
+        }
+        if let RequestKind::Rename { name, .. } = &request.kind {
+            rename::name(name)?;
+            if name.is_empty() {
+                return Err("rename name is empty".into());
+            }
+        }
+        if let RequestKind::PrepareRename { documents, .. }
+        | RequestKind::Rename { documents, .. } = &request.kind
+        {
+            workspace::validate_origin(document, documents)?;
+            versions = workspace
+                .synchronize(
+                    transport,
+                    executor,
+                    document,
+                    version,
+                    root,
+                    documents,
+                    |cx| inbox.interrupted(cx, document, &request.cancellation),
+                )
+                .await?;
+        }
+        if let RequestKind::PrepareRename { selection, .. } = &request.kind
+            && capabilities["renameProvider"]["prepareProvider"] != true
+        {
+            let name = rename::fallback(
+                &document.snapshot,
+                *selection,
+                request.position,
+                &request.cancellation,
+            )?;
+            emit(Event::Answer {
+                epoch: document.epoch,
+                revision: document.snapshot.revision(),
+                id: request.id,
+                result: Ok(Answer::RenamePrepared(name)),
+            });
+            return Ok(None);
         }
         let params = match &request.kind {
             RequestKind::DocumentSymbols => json!({"textDocument":{"uri":uri}}),
@@ -644,6 +784,9 @@ fn start_request(
                 let mut params = json!({"textDocument":{"uri":uri},"position":position});
                 if matches!(kind, RequestKind::Navigation(Navigation::References)) {
                     params["context"] = json!({"includeDeclaration": true});
+                }
+                if let RequestKind::Rename { name, .. } = kind {
+                    params["newName"] = json!(name);
                 }
                 if let RequestKind::Completion(trigger) = kind {
                     params["context"] = match trigger {
@@ -657,10 +800,23 @@ fn start_request(
                 params
             }
         };
-        transport.request(executor, method, params, Duration::from_secs(10))
-    })();
+        transport
+            .request_wait(executor, method, params, |cx| {
+                inbox.interrupted(cx, document, &request.cancellation)
+            })
+            .await
+            .map(Some)
+    }
+    .await;
     match result {
-        Ok(response) => *pending = Some((request, response)),
+        Ok(Some(response)) => {
+            *pending = Some(PendingRequest {
+                request,
+                response,
+                versions,
+            })
+        }
+        Ok(None) => {}
         Err(message) => emit(Event::Answer {
             epoch: document.epoch,
             revision: document.snapshot.revision(),

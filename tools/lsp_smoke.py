@@ -101,6 +101,56 @@ def main():
             terminal.finish()
         print("PASS: real rust-analyzer references picker, type/implementation ranges, document reference selections and edits")
 
+        # Rename must use the unsaved declaration in a hidden buffer, while
+        # leaving disk writes and each buffer's undo history under user control.
+        rename_source = "mod other;\nfn main() { let _: bool = other::answer(); }\n"
+        declaration = "pub fn answer() -> u32 { 42 }\n"
+        other_file = project / "src/other.rs"
+        main_file.write_text(rename_source)
+        other_file.write_text(declaration)
+        with Terminal([binary, str(main_file)]) as terminal:
+            terminal.start()
+            terminal.resize(180, 24)
+            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"1E")
+            terminal.send(b":e " + os.fsencode(other_file) + b"\r")
+            terminal.expect_screen(b"other.rs")
+            terminal.send(b"ggO// unsaved")
+            terminal.expect_screen(b"INS")
+            terminal.send(b"\x1b")
+            terminal.expect_screen(b"NOR")
+            terminal.send(b":e " + os.fsencode(main_file) + b"\r")
+            terminal.expect_screen(b"main.rs")
+            terminal.expect_screen(b"1E")
+            terminal.send(b"/answer\r r")
+            terminal.expect_screen(b"rename-to:answer")
+            terminal.send(b"\x15result\r")  # Ctrl-u replaces the prefilled name.
+            terminal.expect_screen(b"updated 2 buffer(s)")
+            assert main_file.read_text() == rename_source
+            assert other_file.read_text() == declaration
+            terminal.send(b"gd")  # Same server must now know the hidden new name.
+            terminal.expect_screen(b"other.rs")
+            terminal.expect_screen(b"pub fn result")
+            terminal.expect_screen(b"// unsaved")
+            terminal.send(b"\x0f")
+            terminal.expect_screen(b"main.rs")
+            terminal.send(b":w\r")
+            terminal.expect_screen(b"wrote")
+            assert main_file.read_text() == rename_source.replace("answer", "result")
+            terminal.send(b":e " + os.fsencode(other_file) + b"\r")
+            terminal.expect_screen(b"pub fn result")
+            terminal.expect_screen(b"// unsaved")
+            terminal.send(b"u:w\r")
+            terminal.expect_screen(b"wrote")
+            assert other_file.read_text() == "// unsaved\n" + declaration
+            terminal.send(b"U:w\r")
+            terminal.expect_screen(b"pub fn result")
+            terminal.expect_screen(b"wrote")
+            assert other_file.read_text() == "// unsaved\n" + declaration.replace("answer", "result")
+            terminal.send(b":q\r")
+            terminal.finish()
+        print("PASS: real rust-analyzer rename prompt, hidden unsaved buffer synchronization, per-buffer undo/redo and explicit saves")
+
         # Keep the declaration outside the final viewport, so seeing its name
         # verifies the completion list rather than the underlying document.
         source = "/// Returns the completion probe.\nfn vex_completion_target() -> u32 { 42 }\n" + "\n" * 30 + "fn main() { vex_com"

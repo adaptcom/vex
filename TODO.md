@@ -84,8 +84,10 @@ selections, and measure operations that could affect input latency.
   edits; respect revisions and undo boundaries.
   The shared workspace-edit path now prepares text and every pane's selections on
   a worker, preflights the whole batch, and preserves per-buffer undo and unsaved
-  text. Next: synchronize captured buffers with the server, then connect rename
-  preparation/prompts, code-action resolution/execution, and range formatting.
+  text. Rename now synchronizes captured buffers with the server, uses
+  `prepareRename` where available, and opens a prefilled prompt. Its edits stay
+  unsaved with per-buffer undo, cancellation, and stale-result guards.
+  Next: code-action resolution/execution and range formatting.
 - [ ] Document/workspace diagnostic pickers (`<space>d`/`D`) and first/last
   diagnostic jumps (`[D`/`]D`). Retain diagnostics beyond the active document.
 - [ ] Scrollable hover documentation and signature help.

@@ -39,6 +39,7 @@ protocol failures, and request errors leave editing and saving available.
 | `gi` / `:goto_implementation` | Jump to an implementation, or pick among several |
 | `gr` / `:goto_reference` | Find references across files, including the declaration |
 | `Space-h` / `:select_references_to_symbol_under_cursor` | Select related occurrences in the current document |
+| `Space-r` / `:rename_symbol` | Rename the symbol across files through a prefilled prompt |
 | `Space-s` / `:symbol_picker` | Pick a symbol from the current document |
 | `Space-S` / `:workspace_symbol_picker` | Search symbols across the active server's workspace |
 | `Ctrl-o` / `:jump_backward` | Move backward through the current pane's jump history |
@@ -90,13 +91,48 @@ from the existing 8 MiB active-document LSP limit.
 Language services maintain one active document session. Switching focus between
 views of the same file keeps the session and cancels cursor-specific requests.
 Focusing a different file changes the session. Diagnostics, hover, and completion
-are shown in the focused pane; multi-buffer server reuse remains future work.
+are shown in the focused pane. Rename synchronizes other captured buffers into
+that session; retaining server sessions when switching files remains future work.
 
 Project discovery uses the nearest configured marker (`.marksman.toml`,
 `.shellcheckrc`, or a TypeScript/JavaScript project manifest), falling back to the
 repository root and then the file's directory. Rust retains the outermost
 `Cargo.toml` within the repository to include workspace members. Discovery never
 crosses a `.git` boundary.
+
+## Rename
+
+`Space-r` asks the server to prepare a rename when it supports `prepareRename`,
+then opens `rename-to:` on the shared prompt line. The server's placeholder or
+range supplies the current name. Without preparation support, Vex uses the
+primary selection or word under the cursor. Ctrl-u clears the prefilled name;
+Enter submits and Escape/Ctrl-c cancels. Empty submission cancels without
+reusing command/search history. Names are limited to one line and 4,096 bytes;
+the server validates language-specific naming rules.
+
+The LSP worker first synchronizes captured buffers for this server's languages
+inside its project root, including unsaved hidden buffers. JSON conversion and
+protocol work stay off the UI thread. Buffers with unchanged snapshots are not
+resent; snapshots and wire versions accompany the resulting edits. The normal
+8 MiB limit applies per document, with 4,096 captured buffers and 64 MiB of
+participating text per request.
+
+After application, a separate coalesced snapshot update synchronizes changed
+hidden buffers before subsequent requests. Cursor movement and cancellation do
+not discard that update. Ordinary keystrokes still submit only the active buffer.
+
+The [workspace-edit worker](workspace-edits.md) prepares all text and view
+selections. Application validates the entire batch before changing any buffer.
+Focus stays in the original pane, edits remain unsaved, and each affected buffer
+gets one undo step. Previously unopened files become hidden buffers. Use the
+buffer picker to visit and save them. An invalid range, stale snapshot, or
+unsynchronized dirty buffer rejects the entire batch. File creation/renaming/
+deletion and confirmation-required annotations are currently unsupported.
+
+Preparation, server requests, and edit delivery preserve subsequent key order;
+resize and background events continue while waiting. Escape/Ctrl-c cancel when
+next in input order. The editable prompt does not block the event loop. Changing
+its original document, revision, mode, selection, or pane invalidates submission.
 
 ## Completion
 
@@ -191,8 +227,10 @@ synchronization, requests, diagnostics, and shutdown independently of terminal
 drawing. It implements the relevant parts of
 [LSP 3.17](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/).
 Servers receive their default configuration. Rust-analyzer includes its usual workspace
-loading and Cargo checks. Project roots use the registry rules described above. Settings and workspace-edit requests receive explicit responses; workspace
-edits and dynamic capability registration are not supported.
+loading and Cargo checks. Project roots use the registry rules described above.
+Settings and server-initiated workspace-edit requests receive explicit responses;
+`workspace/applyEdit` and dynamic capability registration are not supported.
+Rename response edits support versioned text changes with whole-batch validation.
 
 A small, safe `Future` executor runs one service future on a dedicated thread.
 That future waits concurrently for editor updates, protocol notifications, and
@@ -201,6 +239,12 @@ earliest registered deadline provide sleeping and wakeups. There is no Tokio,
 general task scheduler, or OS async I/O driver. Three additional threads own
 stdin writes, stdout reads, and bounded stderr capture for the active server.
 All blocking pipe I/O stays outside `Future::poll`.
+
+The output queue holds eight client messages. Synchronization and requests await
+capacity with a waker and a ten-second deadline; no polling or blocking send runs
+in the executor. Server-request replies have a separate bounded queue of 32 and
+are written first, so synchronization traffic cannot crowd out configuration
+responses or block the reader. Client document notifications retain FIFO order.
 
 The UI sends cheap rope snapshots through a latest-update mailbox. Routine edits
 debounce for 20 ms, with a 100 ms maximum batching delay; submitted requests and
@@ -227,7 +271,7 @@ retain their separate latest-result slots. Input and ready services alternate so
 diagnostic traffic cannot starve editing. Server failures are displayed in the
 editor instead of terminating the terminal session.
 
-Initialization has a 30-second deadline; hover, definition, symbol, completion, and resolve requests have
+Initialization has a 30-second deadline; interactive requests have
 10-second deadlines. Dropped requests send `$/cancelRequest`. Closing attempts
 `didClose`, `shutdown` (300 ms), and `exit`, with a 200 ms exit grace period, then
 terminates and reaps the server and joins its I/O threads. On Unix the server has
@@ -239,7 +283,8 @@ handles. This prevents inherited pipes from holding the reader joins open.
 One server session is active at a time; changing file identity, Save As, or
 explicit restart starts a new session. Documents above 8 MiB stay editable but
 do not start language services. Frames are limited to 32 MiB, headers to 8 KiB,
-outgoing messages to eight queued values, incoming service notifications and UI
+outgoing client messages to eight queued values and server-request replies to 32,
+incoming service notifications and UI
 LSP events to 128 each, diagnostics to 512, and retained stderr to 8 KiB. An
 overloaded transport reports an error and can be restarted.
 
@@ -249,11 +294,12 @@ Their diagnostics are mapped to the
 latest synchronized snapshot on a best-effort basis; freshness cannot be proven
 without a version. Any subsequent edit clears them. Versioned stale results are
 still rejected, and results from old language sessions are always discarded.
-Full document sync, full line-index rebuilds, and JSON encoding still cost work proportional to
-document size on the service thread. File loading, including definition jumps,
-remains synchronous.
+Full document sync, full line-index rebuilds, and JSON encoding still cost work
+proportional to document size on the service thread. Definition/type/implementation/
+reference destinations and workspace-edit files load on workers; some older
+symbol-jump paths still load synchronously.
 
-Signature help, references, rename, formatting, code actions,
+Signature help, formatting, code actions,
 semantic tokens, multi-buffer server reuse, and configurable server settings are
 future work.
 

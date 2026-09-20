@@ -967,3 +967,32 @@ cargo test -p vex_editor --release --locked benchmark_external_edit_delivery -- 
 ```
 
 See [workspace edit behavior and remaining integration work](workspace-edits.md).
+
+## Rename submission
+
+The UI captures shared ropes and view metadata; buffer-to-string conversion,
+server synchronization, UTF-16 conversion, and edit preparation run on workers.
+A local release microbenchmark timed `rename_symbol` plus `take_lsp_update`,
+using one named buffer, three views, and 500 submissions per case:
+
+| Document size | Selections per view | Median submission | Sample p95 |
+|---|---:|---:|---:|
+| 1 MiB | 1 | 0.875 µs | 1.000 µs |
+| 1 MiB | 1,000 | 4.167 µs | 6.084 µs |
+| 8 MiB | 1 | 0.625 µs | 0.667 µs |
+| 8 MiB | 1,000 | 2.625 µs | 2.875 µs |
+
+These short, warmed measurements are sensitive to allocator/cache noise; the
+larger file is not inherently faster. They exclude setup, cancellation/destruction,
+drawing, service wakeup, JSON/pipe I/O, server latency, and edit preparation and
+application. Capture still scales with the number of open buffers, views, and
+selections. This measures UI submission, not end-to-end rename latency.
+
+Protocol tests synchronize 160 buffers through an eight-message output queue,
+check that unchanged snapshots are not resent, and verify shutdown interrupts
+an output-capacity wait when the server stops reading. Server-request replies
+have separate bounded capacity so synchronization cannot crowd them out.
+
+```sh
+cargo test -p vex_term --release --locked benchmark_rename_submission -- --ignored --nocapture
+```

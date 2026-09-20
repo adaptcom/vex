@@ -44,7 +44,9 @@ detection, `:language text` for plain text, or `:language auto` to restore
 filename/shebang detection. See [syntax support and adding languages](docs/syntax.md).
 With the configured server on `PATH`, named files also get diagnostics, Space-k for
 hover, `gd` / `gy` / `gi` for definitions, types, and implementations, `gr` for
-references, and Space-h to select related occurrences in the document. Use
+references, Space-h to select related occurrences in the document, and Space-r
+to rename a symbol across files. Rename preserves unsaved buffers and leaves
+changes unsaved, with undo in each affected buffer. Use
 `Ctrl-o` to jump back and `]d` / `[d` to navigate diagnostics. See [language services and setup](docs/lsp.md).
 Tracked files show live Git gutter markers, including unsaved changes, with
 Helix-style bars and deletion overlines. See [Git gutter behavior](docs/git.md).
