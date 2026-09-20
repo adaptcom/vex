@@ -210,8 +210,10 @@ Soft wrapping is not implemented yet.
 
 The interactive loop can open, search, select, edit, undo groups, and save.
 Search, syntax, file picking, and Rust language services run through a shared event
-queue. Rust completion uses `Ctrl-x` in insert mode, with a cursor-anchored menu
-and documentation panel; see [language services](docs/lsp.md#completion).
+queue. Rust completion opens automatically after two identifier characters and
+a 100 ms pause, or immediately on server trigger characters and `Ctrl-x`.
+The menu and documentation panel sit next to the cursor; see
+[language services](docs/lsp.md#completion) for controls and session settings.
 Multiple buffers, registers, more picker providers, and more syntax languages
 remain upcoming milestones. Further layout
 work can address cold indexing and updates near the beginning of a huge line.

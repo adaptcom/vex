@@ -144,25 +144,26 @@ impl App {
 
     /// Handle one event. Return whether the screen may have changed.
     pub fn handle(&mut self, event: Event) -> bool {
+        self.handle_at(event, std::time::Instant::now())
+    }
+
+    fn handle_at(&mut self, event: Event, now: std::time::Instant) -> bool {
         if let Some(redraw) = self.handle_picker_input(&event) {
             return redraw;
         }
         if let Some(redraw) = self.handle_completion_input(&event) {
             return redraw;
         }
-        let refresh = self.refresh_completion_on_input(&event);
+        let typing = self.completion_typing(&event);
         let redraw = self.handle_document_input(event);
-        if refresh
-            && self.editor.mode() == Mode::Insert
-            && let Err(error) = self.editor.execute("completion", 1)
-        {
-            self.fail(error);
+        if let Some(typing) = typing {
+            self.schedule_completion(typing, now);
         }
         redraw
     }
 
     fn handle_document_input(&mut self, event: Event) -> bool {
-        if matches!(&event, Event::Paste(_))
+        if matches!(&event, Event::Paste(_) | Event::FocusLost)
             || matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
         {
             self.dismiss_language_help();
@@ -457,6 +458,12 @@ macro_rules! commands {
 }
 
 commands! {
+    /// Show or configure automatic completion for this session: on, off, delay MS (0..10000), or min-length N (1..256). Defaults to on, 100 ms, and 2 characters; Ctrl-x always remains available.
+    fn auto_completion(app, argument, force) ["auto-completion"] {
+        if force { return Err(io::Error::other("auto-completion does not accept !")); }
+        app.configure_completion(argument)
+    }
+
     /// Restart rust-analyzer for the current Rust file after an error or configuration change.
     fn restart_lsp(app, argument, force) ["lsp-restart"] {
         if !argument.is_empty() || force { return Err(io::Error::other("lsp-restart takes no arguments")); }

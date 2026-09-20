@@ -6,10 +6,10 @@ use crate::{
     render::Viewport,
     screen::{Frame, Style},
 };
-use std::{collections::VecDeque, io, path::PathBuf};
+use std::{collections::VecDeque, io, path::PathBuf, time::Instant};
 use vex_core::{CharOffset, DocumentId, Revision, SelectionSet, motion};
 use vex_editor::{Editor, Language, LanguageAction, Mode, background::Cancellation};
-use vex_lsp::{Answer, Diagnostic, Event, RequestKind};
+use vex_lsp::{Answer, CompletionOptions, CompletionTrigger, Diagnostic, Event, RequestKind};
 
 struct Pending {
     id: u64,
@@ -32,6 +32,7 @@ pub(super) struct State {
     diagnostic_revision: Option<(DocumentId, Revision)>,
     popup: Option<String>,
     status: &'static str,
+    completion: Option<CompletionOptions>,
     jumps: VecDeque<(PathBuf, CharOffset)>,
     pub(super) saved: u64,
     pub(super) saved_snapshot: Option<vex_core::Snapshot>,
@@ -70,7 +71,7 @@ impl App {
     pub(super) fn dismiss_language_help(&mut self) {
         self.language.cancel();
         self.language.popup = None;
-        self.completion = Default::default();
+        self.completion.clear();
     }
 
     pub(super) fn cancel_language_request(&mut self) {
@@ -81,6 +82,7 @@ impl App {
         self.dismiss_language_help();
         self.language.epoch += 1;
         self.language.document = None;
+        self.language.completion = None;
         self.language.force = true;
         self.language.diagnostics.clear();
         self.message = "restarting rust-analyzer".into();
@@ -89,7 +91,7 @@ impl App {
     /// Called after dispatch and drawing. Only shared snapshots and small
     /// metadata cross this boundary; JSON and UTF-16 work run on the service.
     pub fn take_lsp_update(&mut self) -> Option<vex_lsp::Update> {
-        self.invalidate_completion();
+        self.poll_completion(Instant::now());
         let action = self.editor.take_language_action();
         if !self.language.enabled {
             if action.is_some() {
@@ -118,7 +120,8 @@ impl App {
         };
         if identity_changed {
             self.language.cancel();
-            self.completion = Default::default();
+            self.completion.clear();
+            self.language.completion = None;
             self.language.epoch += 1;
             self.language.diagnostics.clear();
             self.language.popup = None;
@@ -143,14 +146,25 @@ impl App {
                 .cloned(),
         });
         let mut request = None;
-        let kind = match action {
-            Some(LanguageAction::Hover) => Some(RequestKind::Hover),
-            Some(LanguageAction::Definition) => Some(RequestKind::Definition),
-            Some(LanguageAction::Completion) => Some(RequestKind::Completion),
+        let requested = match action {
+            Some(LanguageAction::Hover) => Some(super::completion::Request {
+                kind: RequestKind::Hover,
+                automatic: false,
+            }),
+            Some(LanguageAction::Definition) => Some(super::completion::Request {
+                kind: RequestKind::Definition,
+                automatic: false,
+            }),
+            Some(LanguageAction::Completion) => Some(super::completion::Request {
+                kind: RequestKind::Completion(CompletionTrigger::Invoked),
+                automatic: false,
+            }),
             _ => self.take_completion_request(),
         };
-        if let Some(kind) = kind {
-            if document.is_none() {
+        if let Some(super::completion::Request { kind, automatic }) = requested {
+            if automatic && self.completion_options().is_none() {
+                self.dismiss_language_help();
+            } else if document.is_none() {
                 self.fail_completion(
                     "language services require a named Rust file; save with :w PATH.rs".into(),
                 );
@@ -162,8 +176,8 @@ impl App {
                 self.fail_completion("document exceeds the initial 8 MiB LSP limit".into());
             } else {
                 self.language.cancel();
-                if matches!(kind, RequestKind::Completion) {
-                    self.begin_completion();
+                if matches!(kind, RequestKind::Completion(_)) {
+                    self.begin_completion(automatic);
                 }
                 self.language.next_request += 1;
                 let cancellation = Cancellation::default();
@@ -181,7 +195,9 @@ impl App {
                     position: self.language_cursor(),
                     cancellation,
                 });
-                self.message = "waiting for rust-analyzer...".into();
+                if !automatic {
+                    self.message = "waiting for rust-analyzer...".into();
+                }
             }
         }
         match action {
@@ -205,6 +221,12 @@ impl App {
 
     pub fn handle_lsp_event(&mut self, event: Event) -> bool {
         match event {
+            Event::Capabilities { epoch, completion } => {
+                if epoch != self.language.epoch || self.language.document.is_none() {
+                    return false;
+                }
+                self.language.completion = completion;
+            }
             Event::Status {
                 epoch,
                 message,
@@ -221,6 +243,7 @@ impl App {
                     "starting"
                 };
                 if failed {
+                    self.language.completion = None;
                     self.language.cancel();
                     self.fail_completion(message);
                 }
@@ -276,6 +299,21 @@ impl App {
             }
         }
         true
+    }
+
+    pub(super) fn completion_options(&self) -> Option<&CompletionOptions> {
+        if !self.language.enabled
+            || self.language.status != "ready"
+            || self.editor.language() != Some(Language::Rust)
+            || self.editor.document().text().len_bytes() > vex_lsp::MAX_DOCUMENT_BYTES
+            || !self.language.document.as_ref().is_some_and(|document| {
+                document.snapshot.id() == self.editor.document().id()
+                    && self.files.target() == Some(document.path.as_path())
+            })
+        {
+            return None;
+        }
+        self.language.completion.as_ref()
     }
 
     fn current_language_revision(&self, epoch: u64, revision: Revision) -> bool {

@@ -39,8 +39,12 @@ buffers. Multiple definition results currently choose the first result.
 
 ## Completion
 
-In insert mode, `Ctrl-x` invokes the documented `completion` command. The first
-version supports a single caret in a named Rust file. Suggestions appear in a
+In insert mode, completion opens automatically after typing at least two
+identifier characters and pausing for 100 ms. Characters advertised by the server
+(such as `.` and `:` with rust-analyzer) request completion immediately, even with
+an empty prefix. `Ctrl-x` invokes the documented `completion` command immediately
+at any prefix length. Completion supports a single caret in a named Rust file.
+Suggestions appear in a
 bordered menu next to the cursor, above it when there is more room there. A
 separate documentation box appears beside the menu when space permits. Selected
 rows use the shared grey palette; drawing keeps the insertion cursor visible.
@@ -59,7 +63,36 @@ to normal mode without inserting a suggestion. Typing identifier characters or
 backspacing before selecting requests a fresh list for the new text. This also
 handles incomplete server lists. `Ctrl-x` explicitly refreshes an open menu.
 The bindings are [Helix-inspired](https://docs.helix-editor.com/keymap.html#completion-menu);
-temporary insertion previews and automatic triggering are not implemented.
+temporary insertion previews are not implemented.
+
+Automatic requests start only after the server is ready and advertises completion
+support. They show no loading box, waiting message, empty-result message, or
+request-error message. Until suggestions arrive, Tab, arrows, and Return retain
+their normal editing behavior. Choosing a suggestion makes acceptance explicit;
+errors during acceptance are reported normally. Manual requests retain their
+loading and error feedback.
+
+Typing resets the automatic deadline and cancels obsolete requests. An open
+unselected menu refreshes on identifier typing and Backspace; automatic refreshes
+use the same delay, while manual sessions refresh immediately. Incomplete lists
+are re-requested with the LSP incomplete-list trigger. Movement, paste, focus
+loss, mode changes, dismissal, and buffer changes cancel pending automatic work.
+Closing a menu leaves it closed until another eligible edit or `Ctrl-x`.
+
+Configure this editor session with these commands (settings survive file changes
+and server restarts, but are not saved to disk):
+
+| Command | Effect |
+|---|---|
+| `:auto-completion` | Show the current settings |
+| `:auto-completion on` / `off` | Enable/disable automatic requests; Ctrl-x remains available |
+| `:auto-completion delay 250` | Set the typing delay in milliseconds, from 0 to 10000 |
+| `:auto-completion min-length 3` | Set the prefix threshold, from 1 to 256 characters |
+
+The existing terminal event loop waits until the next completion deadline and
+checks it even without new input. Completion requests use the existing LSP
+service; no extra timer thread is needed. Server trigger characters and trigger
+contexts follow the [LSP completion protocol](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/language/completion.md).
 
 The LSP service filters candidates using the current word as a case-insensitive
 subsequence of `filterText` (or the label), retaining the server's `sortText`
@@ -111,7 +144,7 @@ stdin writes, stdout reads, and bounded stderr capture for the active server.
 All blocking pipe I/O stays outside `Future::poll`.
 
 The UI sends cheap rope snapshots through a latest-update mailbox. Routine edits
-debounce for 20 ms, with a 100 ms maximum batching delay; explicit requests and
+debounce for 20 ms, with a 100 ms maximum batching delay; submitted requests and
 session changes wake immediately. Text is serialized on the service thread.
 `didOpen`, full-content `didChange`, `didSave` when supported, and `didClose` are
 sent in order. Full replacement is supported even when the server advertises

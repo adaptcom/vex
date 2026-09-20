@@ -32,6 +32,7 @@ and calls that existing dispatcher.
 | `o`, `O` | Open lines below/above selections and enter insert mode |
 | Enter in insert mode | Split the line and copy indentation before the caret |
 | Backspace, Ctrl-h in insert mode | Delete the preceding grapheme |
+| Ctrl-x in insert mode | Request completion immediately; automatic completion also opens after typing |
 | `v` | Enter select mode |
 | `d`, `c` | Delete/change the selection |
 | `x` | Select lines |

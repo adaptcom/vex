@@ -87,6 +87,49 @@ def main():
             terminal.finish()
         print("PASS: real rust-analyzer completion, documentation resolution, rejection, early accept/save, undo, shutdown")
 
+        auto_source = (
+            "fn vex_completion_target() -> u32 { 42 }\n" + "\n" * 30
+            + 'fn main() {\n    let _ = 12345;\n    let _ = "hello";\n}\n'
+        )
+        main_file.write_text(auto_source)
+        with Terminal([binary, str(main_file)]) as terminal:
+            terminal.start()
+            terminal.resize(140, 24)
+            terminal.expect_screen(b"RA:ready")
+            terminal.send(b"/12345\rcvex_co")
+            # Fresh typing retries if rust-analyzer is still indexing. No Ctrl-x
+            # or further keypress is needed for the timer to display the menu.
+            for attempt in range(3):
+                mark = terminal.send(b"m")
+                try:
+                    terminal.expect(b"Complete", mark)
+                    terminal.expect_screen(b"vex_completion_target")
+                    break
+                except AssertionError:
+                    if attempt == 2:
+                        raise
+                    terminal.send(b"\x7f")
+            terminal.send(b"\t\r\x13")
+            terminal.expect_screen(b"wrote")
+            assert "vex_completion_target" in main_file.read_text().split("fn main()", 1)[1]
+            terminal.send(b'\x03/"hello"\ra')
+            for attempt in range(3):
+                mark = terminal.send(b".")
+                try:
+                    terminal.expect(b"Complete", mark)
+                    break
+                except AssertionError:
+                    if attempt == 2:
+                        raise
+                    terminal.send(b"\x7f")
+            # The server may rank many methods above len on the first page.
+            # Narrow the menu and verify it refreshes after further typing.
+            terminal.send(b"le")
+            terminal.expect_screen(b" len ")
+            terminal.send(b"\x03\x03:q!\r")
+            terminal.finish()
+        print("PASS: automatic completion after idle, acceptance, and server-triggered member completion")
+
         original = os.environ.get("VEX_RUST_ANALYZER")
         os.environ["VEX_RUST_ANALYZER"] = str(project / "missing-server")
         try:

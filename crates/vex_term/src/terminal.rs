@@ -140,6 +140,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 "terminated by signal",
             ));
         }
+        // Deadline processing also runs after an idle wait, so automatic
+        // completion never depends on another terminal event arriving.
+        if let Some(update) = app.take_lsp_update() {
+            runtime.update_lsp(update);
+            redraw = true;
+        }
         if redraw {
             let (width, height) = app.size();
             app.paint(renderer.frame(width, height)?)?;
@@ -155,10 +161,14 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             redraw = false;
         }
-        let Some(mut event) = runtime
-            .events
-            .next(Duration::from_millis(100), app.input_waiting())
-        else {
+        let timeout = app
+            .completion_deadline()
+            .map_or(Duration::from_millis(100), |deadline| {
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(100))
+            });
+        let Some(mut event) = runtime.events.next(timeout, app.input_waiting()) else {
             continue;
         };
         let started = Instant::now();

@@ -26,6 +26,45 @@ use vex_editor::background::Cancellation;
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 << 20;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionTrigger {
+    Invoked,
+    Character(char),
+    Incomplete,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompletionOptions {
+    pub trigger_characters: Vec<char>,
+}
+
+impl CompletionOptions {
+    fn from_capabilities(capabilities: &Value) -> Option<Self> {
+        let provider = &capabilities["completionProvider"];
+        if !provider.is_object() {
+            return None;
+        }
+        let mut trigger_characters = Vec::new();
+        for value in provider["triggerCharacters"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(64)
+        {
+            let Some(text) = value.as_str() else { continue };
+            let mut chars = text.chars();
+            if let Some(ch) = chars.next()
+                && !ch.is_control()
+                && chars.next().is_none()
+                && !trigger_characters.contains(&ch)
+            {
+                trigger_characters.push(ch);
+            }
+        }
+        Some(Self { trigger_characters })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Document {
     pub epoch: u64,
@@ -41,7 +80,7 @@ pub struct Document {
 pub enum RequestKind {
     Hover,
     Definition,
-    Completion,
+    Completion(CompletionTrigger),
     ResolveCompletion(Box<CompletionItem>),
 }
 
@@ -78,6 +117,10 @@ pub enum Answer {
 
 #[derive(Debug)]
 pub enum Event {
+    Capabilities {
+        epoch: u64,
+        completion: Option<CompletionOptions>,
+    },
     Status {
         epoch: u64,
         message: String,
@@ -325,7 +368,7 @@ async fn session(
                 "publishDiagnostics":{"versionSupport":true},
                 "hover":{"contentFormat":["plaintext"]},
                 "definition":{"linkSupport":true},
-                "completion":{"completionItem":{
+                "completion":{"contextSupport":true,"completionItem":{
                     "snippetSupport":false,"insertReplaceSupport":true,
                     "documentationFormat":["plaintext"],
                     "resolveSupport":{"properties":["documentation","detail","additionalTextEdits"]}
@@ -391,6 +434,7 @@ async fn session(
         }}))?;
         opened = true;
         let mut positions = protocol::Positions::new(document.snapshot.text());
+        emit(Event::Capabilities { epoch, completion: CompletionOptions::from_capabilities(&capabilities) });
         emit(Event::Status { epoch, message: "rust-analyzer ready".into(), failed: false });
         if let Some(request) = initial_request.take() {
             start_request(&mut transport, executor, &capabilities, &uri, &document, request, &mut pending, emit);
@@ -440,7 +484,7 @@ async fn session(
                         let result = result.and_then(|value| match request.kind {
                             RequestKind::Hover => Ok(Answer::Hover(protocol::hover_text(&value))),
                             RequestKind::Definition => protocol::definition(&value).map(Answer::Definition).map_err(|e| e.to_string()),
-                            RequestKind::Completion => completion::parse(value, document.snapshot.text(), request.position, capabilities["completionProvider"]["resolveProvider"] == true).map(Answer::Completion),
+                            RequestKind::Completion(_) => completion::parse(value, document.snapshot.text(), request.position, capabilities["completionProvider"]["resolveProvider"] == true).map(Answer::Completion),
                             RequestKind::ResolveCompletion(item) => completion::resolve(&item, value, document.snapshot.text(), request.position).map(Answer::CompletionResolved),
                         });
                         emit(Event::Answer { epoch, revision: document.snapshot.revision(), id: request.id, result });
@@ -523,7 +567,7 @@ fn start_request(
     let (method, capability) = match &request.kind {
         RequestKind::Hover => ("textDocument/hover", "hoverProvider"),
         RequestKind::Definition => ("textDocument/definition", "definitionProvider"),
-        RequestKind::Completion => ("textDocument/completion", "completionProvider"),
+        RequestKind::Completion(_) => ("textDocument/completion", "completionProvider"),
         RequestKind::ResolveCompletion(_) => ("completionItem/resolve", "completionProvider"),
     };
     let result = if capabilities[capability] != true && !capabilities[capability].is_object() {
@@ -531,8 +575,15 @@ fn start_request(
     } else if let Some(position) = position(document.snapshot.text(), request.position) {
         let params = match &request.kind {
             RequestKind::ResolveCompletion(item) => item.raw.clone(),
-            RequestKind::Completion => {
-                json!({"textDocument":{"uri":uri},"position":position,"context":{"triggerKind":1}})
+            RequestKind::Completion(trigger) => {
+                let context = match trigger {
+                    CompletionTrigger::Invoked => json!({"triggerKind":1}),
+                    CompletionTrigger::Character(ch) => {
+                        json!({"triggerKind":2,"triggerCharacter":ch.to_string()})
+                    }
+                    CompletionTrigger::Incomplete => json!({"triggerKind":3}),
+                };
+                json!({"textDocument":{"uri":uri},"position":position,"context":context})
             }
             _ => json!({"textDocument":{"uri":uri},"position":position}),
         };
@@ -621,7 +672,7 @@ while True:
     params = value.get('params')
     if method == 'initialize':
         if HANG_INITIALIZE: continue
-        send({'id':value['id'],'result':{'capabilities':{'positionEncoding':'utf-16','textDocumentSync':{'openClose':True,'change':2,'save':True},'hoverProvider':True,'definitionProvider':True,'completionProvider':{'resolveProvider':True}}}})
+        send({'id':value['id'],'result':{'capabilities':{'positionEncoding':'utf-16','textDocumentSync':{'openClose':True,'change':2,'save':True},'hoverProvider':True,'definitionProvider':True,'completionProvider':{'resolveProvider':True,'triggerCharacters':['.',':','.',None,'..','\n']}}}})
         send({'id':'configuration','method':'workspace/configuration','params':{'items':[{'section':'rust-analyzer'}]}})
     elif method == 'textDocument/didOpen':
         uri = params['textDocument']['uri']; version = params['textDocument']['version']
@@ -665,6 +716,16 @@ while True:
             document: Some(doc.clone()),
             request: None,
         });
+        let Event::Capabilities {
+            completion: Some(options),
+            ..
+        } = until(&receiver, |event| {
+            matches!(event, Event::Capabilities { .. })
+        })
+        else {
+            panic!("missing completion capabilities")
+        };
+        assert_eq!(options.trigger_characters, ['.', ':']);
         let initial = until(&receiver, |event| {
             matches!(event, Event::Diagnostics { .. })
         });
@@ -688,7 +749,11 @@ while True:
         );
         service.update(Update {
             document: Some(doc.clone()),
-            request: Some(request(4, RequestKind::Completion, 3)),
+            request: Some(request(
+                4,
+                RequestKind::Completion(CompletionTrigger::Invoked),
+                3,
+            )),
         });
         let Event::Answer {
             result: Ok(Answer::Completion(mut list)),
@@ -722,6 +787,19 @@ while True:
         assert_eq!(item.documentation, "Resolved docs");
         assert_eq!(item.additional_edits.len(), 1);
         assert!(item.resolved);
+        for (id, trigger) in [
+            (6, CompletionTrigger::Character('.')),
+            (7, CompletionTrigger::Incomplete),
+        ] {
+            service.update(Update {
+                document: Some(doc.clone()),
+                request: Some(request(id, RequestKind::Completion(trigger), 3)),
+            });
+            until(
+                &receiver,
+                |event| matches!(event, Event::Answer { id: answer, .. } if *answer == id),
+            );
+        }
         let stalled = request(3, RequestKind::Hover, 0);
         let cancellation = stalled.cancellation.clone();
         service.update(Update {
@@ -772,6 +850,23 @@ while True:
             .filter_map(|message| message["method"].as_str())
             .collect();
         assert_eq!(methods[0], "initialize");
+        assert_eq!(
+            messages[0]["params"]["capabilities"]["textDocument"]["completion"]["contextSupport"],
+            true
+        );
+        let contexts: Vec<_> = messages
+            .iter()
+            .filter(|message| message["method"] == "textDocument/completion")
+            .map(|message| message["params"]["context"].clone())
+            .collect();
+        assert_eq!(
+            contexts,
+            vec![
+                json!({"triggerKind":1}),
+                json!({"triggerKind":2,"triggerCharacter":"."}),
+                json!({"triggerKind":3})
+            ]
+        );
         assert_eq!(
             messages[0]["params"]["capabilities"]["textDocument"]["completion"]["completionItem"]["snippetSupport"],
             false
