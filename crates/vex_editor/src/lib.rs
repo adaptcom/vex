@@ -169,6 +169,7 @@ pub enum BufferAction {
 pub enum WindowAction {
     SplitVertical,
     SplitHorizontal,
+    Equalize,
     Rotate,
     FocusLeft,
     FocusDown,

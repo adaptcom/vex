@@ -148,6 +148,8 @@ selections, and measure operations that could affect input latency.
   Scroll the pane under the pointer without changing focus/selections; drag
   vertical dividers or horizontal status boundaries with nested minimum sizes.
   Coalesce mouse bursts and cancel stale drags after focus loss or resizing.
+- [x] `Ctrl-w =` / `Space w =` equalizes all split widths and heights, including
+  repeated splits and nested layouts, while retaining focus and selections.
 - [ ] Extend mouse input with click-to-focus/cursor placement, text selection,
   horizontal scrolling, and picker/completion/code-action navigation.
 - [ ] Picker split-open (Ctrl-s/Ctrl-v), preview toggle (Ctrl-t), first/last result

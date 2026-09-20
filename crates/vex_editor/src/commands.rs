@@ -573,6 +573,12 @@ commands! {
         Ok(())
     }
 
+    /// Equalize all split widths and heights, respecting minimum pane sizes. Preserve focus and selections; counts are ignored.
+    fn equalize_splits(ctx) {
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::Equalize, ctx.count.get()));
+        Ok(())
+    }
+
     /// Focus the window to the left.
     fn jump_view_left(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::FocusLeft, ctx.count.get()));

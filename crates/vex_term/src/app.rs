@@ -465,6 +465,7 @@ impl App {
                     | "help"
                     | "h"
                     | "mouse"
+                    | "equalize_splits"
             )
         {
             return Err(io::Error::other(

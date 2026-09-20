@@ -10,6 +10,7 @@ and file operations handled by the terminal frontend.
 |---|---|
 | `v`, Ctrl-v | Split vertically; focus a shared view on the right |
 | `s`, Ctrl-s | Split horizontally; focus a shared view below |
+| `=` | Equalize all split widths and heights |
 | `w`, Ctrl-w | Focus the next window in layout order |
 | `h j k l`, arrows, Ctrl-h/j/k/l | Focus left/down/up/right |
 | `H J K L` | Swap the current window left/down/up/right |
@@ -18,9 +19,9 @@ and file operations handled by the terminal frontend.
 | `f`, `F` | Open selected filenames in horizontal/vertical splits |
 
 Counts before the prefix repeat focus, rotation, and swap operations. Split and
-close commands operate once. Outside this prefix, Ctrl-s records a jump checkpoint
-in normal/select mode or an undo checkpoint in insert mode. Use `:w` to save and
-`:q` to close a pane.
+close commands operate once; equalizing ignores counts. Outside this prefix,
+Ctrl-s records a jump checkpoint in normal/select mode or an undo checkpoint in
+insert mode. Use `:w` to save and `:q` to close a pane.
 
 Each pane has independent selections, editing mode, preferred columns, and scroll
 position. Views of the same file share text, undo history, language settings,
@@ -50,6 +51,12 @@ Ratios survive terminal resizing; each branch accounts for the minimum sizes of
 all its nested panes. A temporarily constrained ratio returns when space allows.
 Dragging preserves keyboard focus and selections, and stops on release, focus
 loss, terminal resize, or keyboard input.
+
+`Ctrl-w =` (or `Space w =`, command `equalize_splits`) balances all columns and
+rows, including repeated splits in the same direction and nested layouts. It
+preserves focus, selections, and pane order. Minimum sizes still apply; terminal
+cell rounding can leave a one-cell difference. Equal sizes are retained across
+terminal resizing until a divider is dragged again.
 
 Mouse support is enabled by default. `:mouse off` returns mouse handling to the
 terminal; `:mouse on` enables it again, and `:mouse` reports the session setting.

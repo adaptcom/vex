@@ -40,17 +40,18 @@ impl Rect {
     }
 }
 
-/// An exact fraction preserves cell positions during dragging and proportions
-/// on terminal resize. Layout clamping does not overwrite the preferred ratio.
+/// An exact fraction preserves dragged proportions. Equal sizing balances runs
+/// of panes on the same axis, including after terminal resizing. Clamping does
+/// not overwrite either preference.
 #[derive(Clone, Copy, Debug)]
-struct Ratio {
-    first: u16,
-    total: u16,
+enum Ratio {
+    Fraction { first: u16, total: u16 },
+    Equal,
 }
 
 impl Default for Ratio {
     fn default() -> Self {
-        Self { first: 1, total: 2 }
+        Self::Fraction { first: 1, total: 2 }
     }
 }
 
@@ -61,6 +62,24 @@ enum Node {
 }
 
 impl Node {
+    /// A perpendicular split shares this axis's space and counts as one pane.
+    fn parallel_panes(&self, axis: Axis) -> u16 {
+        match self {
+            Self::Split(own_axis, _, a, b) if *own_axis == axis => {
+                a.parallel_panes(axis) + b.parallel_panes(axis)
+            }
+            _ => 1,
+        }
+    }
+
+    fn equalize(&mut self) {
+        if let Self::Split(_, ratio, a, b) = self {
+            *ratio = Ratio::Equal;
+            a.equalize();
+            b.equalize();
+        }
+    }
+
     fn minimum(&self) -> (u16, u16) {
         match self {
             Self::Leaf(_) => (MIN_WIDTH, MIN_HEIGHT),
@@ -85,8 +104,20 @@ impl Node {
             Axis::Vertical => (rect.width.saturating_sub(1), aw, bw),
             Axis::Horizontal => (rect.height, ah, bh),
         };
-        let preferred =
-            (u32::from(available) * u32::from(ratio.first) / u32::from(ratio.total)) as u16;
+        let preferred = match *ratio {
+            Ratio::Fraction { first, total } => {
+                (u32::from(available) * u32::from(first) / u32::from(total)) as u16
+            }
+            Ratio::Equal => {
+                let a = u32::from(first.parallel_panes(*axis));
+                let b = u32::from(second.parallel_panes(*axis));
+                let gap = u32::from(*axis == Axis::Vertical);
+                // Share pane space plus one separator per pane, then remove
+                // the trailing separator from this subtree's extent.
+                (((u32::from(available) + 2 * gap) * a / (a + b)).saturating_sub(gap) as u16)
+                    .min(available)
+            }
+        };
         let extent = if available >= min_a + min_b {
             preferred.clamp(min_a, available - min_b)
         } else {
@@ -238,6 +269,12 @@ impl Default for Layout {
 }
 
 impl Layout {
+    /// Balance every split without changing its topology or focused pane.
+    pub fn equalize(&mut self) {
+        self.root.equalize();
+        self.generation += 1;
+    }
+
     pub fn begin_resize(&self, size: (u16, u16), x: u16, y: u16) -> Option<Resize> {
         let minimum = self.root.minimum();
         if size.0 < minimum.0 || size.1 < minimum.1 {
@@ -290,7 +327,7 @@ impl Layout {
         let Node::Split(_, ratio, _, _) = node else {
             return false;
         };
-        *ratio = Ratio { first, total };
+        *ratio = Ratio::Fraction { first, total };
         handle.current = first;
         true
     }
@@ -432,6 +469,81 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equalization_balances_parallel_runs_regardless_of_split_order_and_terminal_size() {
+        for axis in [Axis::Vertical, Axis::Horizontal] {
+            for split_first in [false, true] {
+                let mut layout = Layout::default();
+                layout.equalize(); // A single pane is unchanged.
+                for _ in 0..3 {
+                    let id = layout.split(axis, (160, 48)).unwrap();
+                    layout.active = if split_first { 0 } else { id };
+                }
+                let active = layout.active;
+                let ids = layout.ids();
+                layout.equalize();
+                for size in [(51, 12), (122, 30), (123, 31), (124, 32), (160, 48)] {
+                    let panes = layout.visible(size).0;
+                    assert_eq!(panes.len(), 4);
+                    let extents: Vec<_> = panes
+                        .iter()
+                        .map(|(_, rect)| match axis {
+                            Axis::Vertical => rect.width,
+                            Axis::Horizontal => rect.height,
+                        })
+                        .collect();
+                    assert!(extents.iter().max().unwrap() - extents.iter().min().unwrap() <= 1);
+                    let total: u16 = extents.iter().sum();
+                    assert_eq!(
+                        total,
+                        if axis == Axis::Vertical {
+                            size.0 - 3
+                        } else {
+                            size.1
+                        }
+                    );
+                    layout.equalize();
+                    assert_eq!(layout.visible(size).0, panes);
+                }
+                assert_eq!(layout.visible((2, 2)).0.len(), 1);
+                layout.equalize();
+                assert_eq!(layout.visible((160, 48)).0.len(), 4);
+                assert_eq!(layout.active, active);
+                assert_eq!(layout.ids(), ids);
+            }
+        }
+    }
+
+    #[test]
+    fn equalization_resets_dragged_nested_splits_and_invalidates_old_handles() {
+        let size = (122, 30);
+        let mut layout = Layout::default();
+        layout.active = layout.split(Axis::Vertical, size).unwrap();
+        layout.active = layout.split(Axis::Vertical, size).unwrap();
+        layout.active = layout.split(Axis::Horizontal, size).unwrap();
+        layout.active = layout.split(Axis::Horizontal, size).unwrap();
+        let mut drag = layout.begin_resize(size, 60, 1).unwrap();
+        assert!(layout.resize(&mut drag, 20, 1));
+        let upper = layout.visible(size).0[2].1;
+        let mut nested = layout
+            .begin_resize(size, upper.x + 1, upper.height - 1)
+            .unwrap();
+        assert!(layout.resize(&mut nested, upper.x + 1, 21));
+        layout.equalize();
+        assert!(!layout.resize(&mut drag, 55, 1));
+        assert!(!layout.resize(&mut nested, 100, 20));
+        let panes = layout.visible(size).0;
+        assert!(panes.iter().all(|(_, rect)| rect.width == 40));
+        assert_eq!(panes[0].1.height, 30);
+        assert_eq!(panes[1].1.height, 30);
+        assert!(panes[2..].iter().all(|(_, rect)| rect.height == 10));
+        let tiny = layout.visible((38, 9)).0;
+        assert_eq!(tiny.len(), 5);
+        assert!(tiny.iter().all(|(_, rect)| rect.width == MIN_WIDTH));
+        assert!(tiny[2..].iter().all(|(_, rect)| rect.height == MIN_HEIGHT));
+        assert_eq!(layout.visible(size).0, panes);
+    }
 
     #[test]
     fn drag_ratios_preserve_exact_cells_and_restore_after_small_resizes() {

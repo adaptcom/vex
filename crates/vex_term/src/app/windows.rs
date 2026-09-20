@@ -1215,6 +1215,11 @@ impl App {
         match action {
             SplitVertical => self.split_window(Axis::Vertical),
             SplitHorizontal => self.split_window(Axis::Horizontal),
+            Equalize => {
+                self.cancel_mouse_drag();
+                self.windows.layout.equalize();
+                Ok(())
+            }
             Close => self.close_window(false),
             Only => self.only_window(false),
             OpenHorizontal => self.open_selected_files(Axis::Horizontal),
@@ -1499,6 +1504,52 @@ mod tests {
             KeyCode::Char(key),
             KeyModifiers::CONTROL,
         )));
+    }
+
+    #[test]
+    fn window_equalize_bindings_restore_both_axes_and_preserve_views() {
+        for select in [false, true] {
+            for space_prefix in [false, true] {
+                let mut app =
+                    App::from_document(Document::from("abcdefgh\n".repeat(100).as_str()), (81, 22));
+                app.execute("vsplit").unwrap();
+                app.execute("hsplit").unwrap();
+                press(&mut app, if select { "vll" } else { "ll" });
+                let active = app.windows.layout.active;
+                let view = app.editor.active_view();
+                let selections = app.editor.selections().clone();
+                let mode = app.editor.mode();
+                let revision = app.editor.document().revision();
+                let size = app.window_area();
+                let mut vertical = app.windows.layout.begin_resize(size, 40, 5).unwrap();
+                app.windows.layout.resize(&mut vertical, 55, 5);
+                let mut horizontal = app.windows.layout.begin_resize(size, 60, 9).unwrap();
+                app.windows.layout.resize(&mut horizontal, 60, 13);
+                press(&mut app, "9");
+                if space_prefix {
+                    press(&mut app, " w");
+                } else {
+                    ctrl(&mut app, 'w');
+                }
+                press(&mut app, "=");
+                let panes = app.windows.layout.visible(size).0;
+                assert_eq!(panes[0].1.width, 40);
+                assert_eq!(panes[1].1.width, 40);
+                assert_eq!(panes[1].1.height, 10);
+                assert_eq!(panes[2].1.height, 11);
+                assert_eq!(app.windows.layout.active, active);
+                assert_eq!(app.editor.active_view(), view);
+                assert_eq!(app.editor.selections(), &selections);
+                assert_eq!(app.editor.mode(), mode);
+                assert_eq!(app.editor.document().revision(), revision);
+                assert!(!app.error, "{}", app.message);
+                let frame = draw(&mut app);
+                assert_eq!(frame.row_text(0).chars().nth(40), Some('│'));
+                assert_eq!(frame.style_at(41, 9), Some(Style::StatusBorder));
+                app.execute("equalize_splits").unwrap();
+                assert_eq!(app.windows.layout.visible(size).0, panes);
+            }
+        }
     }
 
     #[test]

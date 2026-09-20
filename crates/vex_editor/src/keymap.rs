@@ -375,6 +375,7 @@ impl Default for Keymap {
                     (Ctrl('v'), "vsplit"),
                     (Char('s'), "hsplit"),
                     (Ctrl('s'), "hsplit"),
+                    (Char('='), "equalize_splits"),
                     (Char('f'), "goto_file_hsplit"),
                     (Char('F'), "goto_file_vsplit"),
                     (Char('q'), "wclose"),
@@ -1143,6 +1144,7 @@ mod tests {
                 for (key, expected) in [
                     (Key::Char('v'), WindowAction::SplitVertical),
                     (Key::Ctrl('s'), WindowAction::SplitHorizontal),
+                    (Key::Char('='), WindowAction::Equalize),
                     (Key::Left, WindowAction::FocusLeft),
                     (Key::Ctrl('q'), WindowAction::Close),
                     (Key::Char('L'), WindowAction::SwapRight),

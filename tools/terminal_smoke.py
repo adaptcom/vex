@@ -418,10 +418,13 @@ def main():
             terminal.expect(b"\x1b[?1006h", mark)
             terminal.send(b"\x1b[<64;10;5M")
             terminal.expect_screen_idle("row 000", row=0)
+            terminal.send(b"\x17=")  # Ctrl-w = equalizes both dragged split axes.
+            terminal.expect_screen_idle("│", row=0, column=40)
+            terminal.expect_screen_idle("─", row=9, column=41)
             terminal.send(b":qa\r")
             terminal.finish()
         assert pages.read_text() == page_source
-        print("PASS: SGR mouse scrolling, inactive panes, both split drags, runtime toggle, and cleanup")
+        print("PASS: SGR mouse scrolling, inactive panes, both split drags, equalization, runtime toggle, and cleanup")
 
         copied_path = Path(directory) / "copied selections.txt"
         copied_path.write_text("a1\nb2\nc3\n")
