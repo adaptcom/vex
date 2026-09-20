@@ -22,6 +22,7 @@ pub mod background;
 pub mod commands;
 mod error;
 mod keymap;
+mod register;
 mod search;
 mod syntax;
 mod views;
@@ -29,6 +30,7 @@ mod views;
 pub use commands::{Command, CommandContext};
 pub use error::Error;
 pub use keymap::{Binding, Dispatch, Key, KeyHandler, KeyHints, Keymap};
+pub use register::YankRegister;
 pub use search::{SearchCancellation, SearchCompletion, SearchJob, SearchResult, SearchStatus};
 pub use syntax::{SyntaxJob, SyntaxResult, SyntaxWorker};
 pub use vex_core::search::Direction as SearchDirection;
@@ -92,6 +94,7 @@ pub enum WindowAction {
 #[derive(Debug)]
 pub struct Editor {
     document: Document,
+    yank_register: YankRegister,
     selections: SelectionSet,
     mode: Mode,
     preferred_columns: Option<Vec<usize>>,
@@ -107,6 +110,12 @@ pub struct Editor {
 
 impl Editor {
     pub fn new(document: Document) -> Self {
+        Self::with_yank_register(document, YankRegister::default())
+    }
+
+    /// Create a document editor using a session's shared internal yank register.
+    /// Cloning the handle shares text across buffers without copying it.
+    pub fn with_yank_register(document: Document, yank_register: YankRegister) -> Self {
         let first = document.text().line(0);
         let len = first.len_chars();
         let newline = if len >= 2 && first.char(len - 2) == '\r' && first.char(len - 1) == '\n' {
@@ -122,6 +131,7 @@ impl Editor {
         let views = views::Views::new(document.revision());
         Self {
             document,
+            yank_register,
             selections,
             mode: Mode::Normal,
             preferred_columns: None,
@@ -138,6 +148,11 @@ impl Editor {
 
     pub fn document(&self) -> &Document {
         &self.document
+    }
+
+    /// Share this editor's register with another buffer in the same session.
+    pub fn yank_register(&self) -> YankRegister {
+        self.yank_register.clone()
     }
     pub fn selections(&self) -> &SelectionSet {
         &self.selections

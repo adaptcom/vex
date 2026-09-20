@@ -107,7 +107,7 @@ impl App {
             } else {
                 let document = vex_core::Document::default();
                 let files = FileState::scratch(&document);
-                let mut editor = Editor::new(document);
+                let mut editor = Editor::with_yank_register(document, self.editor.yank_register());
                 editor.set_background_search(true);
                 editor.execute("insert_mode", 1).map_err(io::Error::other)?;
                 self.git_write.drafts.insert(
@@ -140,7 +140,7 @@ impl App {
                 )))
                 .map_err(io::Error::other)?;
             self.editor
-                .execute("delete_selection", 1)
+                .execute("delete_selection_without_yank", 1)
                 .map_err(io::Error::other)?;
             self.editor.finish_undo_group();
             self.files = FileState::scratch(self.editor.document());
@@ -385,7 +385,7 @@ impl App {
             return Ok(Prepared::Existing(id));
         }
         let (document, files) = FileState::load(Some(path))?;
-        let mut editor = Editor::new(document);
+        let mut editor = Editor::with_yank_register(document, self.editor.yank_register());
         editor.set_language(Language::detect(files.path(), editor.document().text()));
         editor.set_background_search(true);
         editor.set_background_syntax(true);
@@ -904,6 +904,61 @@ mod tests {
             KeyCode::Char(key),
             KeyModifiers::CONTROL,
         )));
+    }
+
+    #[test]
+    fn yank_survives_replacing_buffers_and_is_isolated_between_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        let target = dir.path().join("target.txt");
+        std::fs::write(&source, "cat dog").unwrap();
+        std::fs::write(&target, "xy").unwrap();
+        let mut app = App::open(Some(&source), (80, 24)).unwrap();
+        app.editor
+            .set_selections(SelectionSet::single(Selection::new(
+                CharOffset(0),
+                CharOffset(3),
+            )))
+            .unwrap();
+        press(&mut app, "y");
+        assert!(!app.is_dirty());
+        app.open_window_file(&target).unwrap();
+        press(&mut app, "p");
+        assert!(!app.error, "{}", app.message);
+        assert_eq!(app.editor.document().text(), "xcaty");
+        press(&mut app, "u");
+        app.open_window_file(&source).unwrap();
+        press(&mut app, "P");
+        assert_eq!(app.editor.document().text(), "catcat dog");
+
+        let mut other = App::open(Some(&target), (80, 24)).unwrap();
+        press(&mut other, "p");
+        assert!(other.error);
+        assert_eq!(other.editor.document().text(), "xy");
+    }
+
+    #[test]
+    fn cuts_and_replacement_share_the_register_across_existing_split_buffers() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        std::fs::write(&target, "dog").unwrap();
+        let mut app = App::from_document(Document::from("cat"), (80, 24));
+        press(&mut app, "y");
+        app.execute("vsplit").unwrap();
+        app.open_window_file(&target).unwrap();
+        press(&mut app, "p");
+        assert_eq!(app.editor.document().text(), "dcog");
+        press(&mut app, "u");
+        press(&mut app, "d");
+        assert_eq!(app.editor.document().text(), "og");
+        app.execute("jump_view_left").unwrap();
+        press(&mut app, "R");
+        assert_eq!(app.editor.document().text(), "dat");
+        app.execute("jump_view_right").unwrap();
+        press(&mut app, "P");
+        assert_eq!(app.editor.document().text(), "dog");
+        press(&mut app, "u");
+        assert_eq!(app.editor.document().text(), "og");
     }
 
     #[test]

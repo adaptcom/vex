@@ -654,8 +654,37 @@ commands! {
     /// Insert the context's pasted text at all carets as a separate undo step; requires insert mode.
     fn insert_paste(ctx) { insert(ctx, false) }
 
-    /// Delete selected text atomically, leaving normal-mode cursors at the edit locations.
+    /// Copy selections to the shared internal register, retaining their order and leaving select mode. Does not edit text or undo history.
+    fn yank(ctx) {
+        let values = crate::register::capture(ctx.editor);
+        ctx.editor.yank_register.write(values);
+        ctx.editor.finish_undo_group();
+        ctx.editor.mode = Mode::Normal;
+        normalize(ctx.editor)
+    }
+
+    /// Paste the internal register after selections, selecting the inserted text in normal mode. Newline-terminated yanks paste below the selected lines; counts repeat each fragment in one undo step.
+    /// Fragments pair with selections in document order; extra destinations repeat the last fragment. Uses the destination's line endings without changing the register.
+    fn paste_after(ctx) { crate::register::paste(ctx, crate::register::Paste::After) }
+
+    /// Paste the internal register before selections, selecting the inserted text in normal mode. Newline-terminated yanks paste above the selected lines; counts repeat each fragment in one undo step.
+    /// Fragments pair with selections in document order; extra destinations repeat the last fragment. Uses the destination's line endings without changing the register.
+    fn paste_before(ctx) { crate::register::paste(ctx, crate::register::Paste::Before) }
+
+    /// Replace selections with the internal register in one undo step, selecting the replacements in normal mode. Counts repeat each fragment; replacement leaves the register unchanged.
+    /// Fragments pair in document order, repeating the last for extra destinations. Replaces the exact ranges even for linewise yanks, using the destination's line endings.
+    fn replace_with_yanked(ctx) { crate::register::paste(ctx, crate::register::Paste::Replace) }
+
+    /// Cut selections into the shared internal register and delete them atomically, leaving normal-mode cursors at the edit locations.
     fn delete_selection(ctx) {
+        let values = crate::register::capture(ctx.editor);
+        delete_selection_without_yank(ctx)?;
+        ctx.editor.yank_register.write(values);
+        Ok(())
+    }
+
+    /// Delete selections without changing the yank register. Used for internal buffer cleanup; leaves normal-mode cursors at the edit locations.
+    fn delete_selection_without_yank(ctx) {
         let editor = &mut *ctx.editor;
         let transaction = editor.document.replace_selections(&editor.selections, "")?;
         editor.apply(transaction, false)?;
@@ -663,12 +692,14 @@ commands! {
         normalize(editor)
     }
 
-    /// Delete selected text and enter insert mode; the deletion and subsequent typing share one undo step.
+    /// Cut selections into the shared internal register and enter insert mode; the deletion and subsequent typing share one undo step.
     fn change_selection(ctx) {
+        let values = crate::register::capture(ctx.editor);
         let editor = &mut *ctx.editor;
         editor.finish_undo_group();
         let transaction = editor.document.replace_selections(&editor.selections, "")?;
         editor.apply(transaction, true)?;
+        editor.yank_register.write(values);
         editor.mode = Mode::Insert;
         normalize(editor)
     }

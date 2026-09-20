@@ -35,7 +35,10 @@ and calls that existing dispatcher.
 | Backspace, Ctrl-h in insert mode | Delete the preceding grapheme |
 | Ctrl-x in insert mode | Request completion immediately; automatic completion also opens after typing |
 | `v` | Enter select mode |
-| `d`, `c` | Delete/change the selection |
+| `y` | Yank selections to the internal register shared across files and panes |
+| `p`, `P` | Paste after/before selections; newline-terminated yanks paste below/above selected lines |
+| `R` | Replace selections with yanked text without overwriting the register |
+| `d`, `c` | Cut selections to the internal register, then delete/change them |
 | `x` | Select lines |
 | `u`, `U` | Undo/redo |
 | `K`, `gd`, Ctrl-o | Hover, go to definition, return from a definition jump |
@@ -61,6 +64,21 @@ only indentation before the caret, so splitting leading whitespace preserves the
 remaining indentation without duplicating it. Counts such as `3o` create three
 lines with a caret on each. Tab inserts a literal tab, displayed at the editor's
 configured tab stops.
+
+The internal yank register lives for the session, independently of buffer and undo
+history. `y`, `p`, `P`, and `R` return to normal mode; pastes select the inserted
+text. Multiple fragments pair with destinations in document order, repeating the
+last fragment for extra destinations and ignoring unused fragments. Counts such
+as `3p` repeat each fragment within one undo step. `R` replaces the exact selected
+ranges, and neither replacement nor undo/redo changes the saved register.
+
+If any yanked fragment ends in LF, CRLF, or CR, `p`/`P` paste at line boundaries.
+A final line without a line ending is copied as characterwise text. Pasting below
+an unterminated destination line adds a separator. Register pastes normalize line
+endings to the destination's convention while retaining the original register
+bytes. Backspace/Delete in insert mode do not overwrite the register. System
+clipboard integration and named registers are planned in [TODO](../TODO.md).
+
 Bracketed paste in insert mode is a separate undo step, preserving the pasted
 bytes. Pasting in normal/select mode shows a message to enter insert mode. Pasting
 into the prompt removes control characters and never submits a command.

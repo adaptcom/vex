@@ -166,6 +166,10 @@ impl Default for Keymap {
                 (vec![Char('a')], "append_mode"),
                 (vec![Char('o')], "open_below"),
                 (vec![Char('O')], "open_above"),
+                (vec![Char('y')], "yank"),
+                (vec![Char('p')], "paste_after"),
+                (vec![Char('P')], "paste_before"),
+                (vec![Char('R')], "replace_with_yanked"),
                 (vec![Char('d')], "delete_selection"),
                 (vec![Char('c')], "change_selection"),
                 (vec![Char('u')], "undo"),
@@ -409,6 +413,27 @@ mod tests {
         for key in keys.chars() {
             handler.handle(editor, Key::Char(key)).unwrap();
         }
+    }
+
+    #[test]
+    fn yank_paste_bindings_work_in_normal_select_and_insert_modes() {
+        for (key, expected) in [('p', "aab"), ('P', "aab"), ('R', "ab")] {
+            for select in [false, true] {
+                let mut editor = Editor::new(Document::from("ab"));
+                let mut keys = KeyHandler::default();
+                press(&mut keys, &mut editor, "y");
+                if select {
+                    press(&mut keys, &mut editor, "v");
+                }
+                keys.handle(&mut editor, Key::Char(key)).unwrap();
+                assert_eq!(editor.document().text(), expected);
+                assert_eq!(editor.mode(), Mode::Normal);
+            }
+        }
+        let mut editor = Editor::new(Document::from(""));
+        let mut keys = KeyHandler::default();
+        press(&mut keys, &mut editor, "iypPR");
+        assert_eq!(editor.document().text(), "ypPR");
     }
 
     #[test]

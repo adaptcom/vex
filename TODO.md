@@ -1,5 +1,89 @@
 # TODO
 
+## Editing priorities
+
+Ordered by everyday usefulness and dependencies after the shared internal yank
+register, `y`/`p`/`P`/`R`, and cut behavior for `d`/`c`. Bindings follow the
+[Helix keymap](https://docs.helix-editor.com/keymap.html); compatibility differences
+should be deliberate and documented. Alt bindings are deferred for now.
+
+1. [ ] Selection controls: `%` select all, `;` collapse, `,` keep primary, `X`
+   extend to line boundaries, and `_` trim whitespace. Make repeated `x` extend
+   to subsequent lines.
+2. [ ] Precise movement: `f`/`F`, `t`/`T`, `W`/`B`/`E`, `gs`, counted `gg`/`G`,
+   and counted `g|`. Add command input for a following character without losing
+   counts or cancellation.
+3. [ ] Everyday edits: `I`, `A`, `r`, `>`, `<`, `J`, and `[Space`/`]Space`.
+   Add language indentation settings for indent/unindent.
+4. [ ] Comments: `<space>c` and `<space>C`, with language-specific line/block
+   delimiters. Decide whether normal-mode Ctrl-c should keep its current cancel
+   behavior or adopt Helix's comment binding.
+5. [ ] Multiple selections and search: `s`, `S`, `C`, `K`, `*`, regex `/`/`?`,
+   and accumulating matches with `n`/`N` in select mode. Move the current `K`
+   hover alias if it is needed for selection filtering; `<space>k` already works.
+6. [ ] Buffer switching: retain ordinary buffers without visible panes, then add
+   `<space>b`, `ga`, `gn`/`gp`, and `gm`. Add `gf` to open selected paths in the
+   current pane. Preserve unsaved text, undo history, and per-view selections
+   when switching files.
+7. [ ] Match mode: `mm`, `mi`/`ma` textobjects for words, paragraphs, and paired
+   delimiters, followed by `ms`/`mr`/`md` surrounds.
+8. [ ] Repeat the last insert with `.`. Record logical editing actions, including
+   counted commands and completion, so replay stays independent of terminal input.
+
+## Registers and input follow-ups
+
+- [ ] System clipboard commands: `<space>y`/`Y`, `<space>p`/`P`, and `<space>R`.
+  Keep platform/terminal clipboard I/O outside editor commands.
+- [ ] Named registers with `"<register>` and insert/prompt Ctrl-r. Preserve
+  fragment boundaries when copying between editor selections.
+- [ ] Insert-mode word deletion and line kills: Ctrl-w, Ctrl-u, Ctrl-k, plus
+  Ctrl-d/Ctrl-j aliases for Delete/Enter.
+- [ ] Prompt history, command/path completion, word movement, and line kills.
+- [ ] Decide whether to track explicit linewise selection intent so a final line
+  without a trailing newline can paste as a whole line rather than as characters.
+
+## Project navigation and language tools
+
+- [ ] Workspace text search with `<space>/`, then `<space>'` to reopen the last
+  picker with its query and selection intact.
+- [ ] Bidirectional jump history: Ctrl-i, `<space>j`, explicit jump checkpoints,
+  and `g.` to return to the last modification. Resolve Ctrl-s's existing save
+  binding before adopting Helix's normal-mode jump checkpoint binding.
+- [ ] LSP references (`gr`), type definition (`gy`), implementation (`gi`), and
+  reference selections (`<space>h`). Reuse pickers for multiple destinations.
+- [ ] LSP rename (`<space>r`), code actions (`<space>a`), and formatting (`=`).
+  Support validated edits across open and hidden buffers before enabling workspace
+  edits; respect revisions and undo boundaries.
+- [ ] Document/workspace diagnostic pickers (`<space>d`/`D`) and first/last
+  diagnostic jumps (`[D`/`]D`). Retain diagnostics beyond the active document.
+- [ ] Scrollable hover documentation and signature help.
+- [ ] Git change navigation: `[g`/`]g`, `[G`/`]G`, and change textobjects.
+- [ ] Tree-sitter textobjects and navigation between functions, types, arguments,
+  comments, and tests (`[f`/`]f`, `[t`/`]t`, `[a`/`]a`, `[c`/`]c`, `[T`/`]T`).
+  Extend the language registry with textobject queries and use revision-matched
+  syntax results. Add paragraph navigation (`[p`/`]p`) independently.
+
+## Later editing and interface work
+
+- [ ] View mode `z`/sticky `Z`: center/top/bottom alignment, horizontal centering,
+  and scrolling without moving selections. Add `gt`/`gc`/`gb` and Ctrl-b/Ctrl-f
+  page aliases; keep logical/visual line movement explicit if soft wrapping arrives.
+- [ ] Picker split-open (Ctrl-s/Ctrl-v), preview toggle (Ctrl-t), first/last result
+  navigation, and `<space>F` for the working-directory file picker.
+- [ ] Command palette (`<space>?`) backed by the existing documented registry.
+- [ ] Case conversion, Ctrl-a/Ctrl-x number changes, selection alignment (`&`),
+  and primary-selection rotation (`(`/`)`).
+- [ ] Shell selection filters and output insertion (`|`, `!`, `$`). Resolve the
+  existing `$` line-end binding and use the event queue for subprocess results.
+- [ ] Macro recording/replay (`Q`/`q`), undo-tree history navigation, and explicit
+  insert undo checkpoints. Ctrl-s currently saves in insert mode.
+- [ ] Label-based word navigation (`gw`); debugger integration is a separate,
+  lower-priority project.
+- [ ] Deferred Alt support: represent modifiers in the key model and terminal
+  adapter, then add selection reversal, splitting/merging/filtering, cursor-above,
+  syntax expansion/siblings, non-yanking deletion, motion repeat, and related
+  picker/insert/prompt variants.
+
 ## Developer tool integrations
 
 Extend the pattern established by the Git view: each tool gets a pane,
