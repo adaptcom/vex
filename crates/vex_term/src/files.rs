@@ -22,6 +22,22 @@ pub struct FileState {
 
 impl FileState {
     pub fn load(path: Option<&Path>) -> io::Result<(Document, Self)> {
+        Self::load_with_cancel(path, || false)
+    }
+
+    pub(crate) fn load_with_cancel(
+        path: Option<&Path>,
+        cancelled: impl Fn() -> bool,
+    ) -> io::Result<(Document, Self)> {
+        struct Reader<R, F>(R, F);
+        impl<R: Read, F: Fn() -> bool> Read for Reader<R, F> {
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                if (self.1)() {
+                    return Err(io::Error::other("file load cancelled"));
+                }
+                self.0.read(output)
+            }
+        }
         let Some(path) = path else {
             let document = Document::default();
             let state = Self::scratch(&document);
@@ -36,7 +52,10 @@ impl FileState {
                 if !file.metadata()?.is_file() {
                     return Err(io::Error::other("only regular files can be edited"));
                 }
-                (Document::from_reader(BufReader::new(file))?, true)
+                (
+                    Document::from_reader(BufReader::new(Reader(file, &cancelled)))?,
+                    true,
+                )
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => (Document::default(), false),
             Err(error) => return Err(error),

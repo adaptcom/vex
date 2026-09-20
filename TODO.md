@@ -74,8 +74,11 @@ selections, and measure operations that could affect input latency.
   and full selection restoration. Saved selections lazily follow edits, grouped
   undo/redo, and reloads through a text-free journal. Navigation and picker
   remapping are cancellable, preserve queued input, and reject stale revisions.
-- [ ] LSP references (`gr`), type definition (`gy`), implementation (`gi`), and
-  reference selections (`<space>h`). Reuse pickers for multiple destinations.
+- [x] LSP references (`gr`), type definition (`gy`), implementation (`gi`), and
+  reference selections (`<space>h`). Multiple destinations (including `gd`)
+  use the shared picker with filtering, syntax previews, and last-picker reopening.
+  Document highlights retain the primary occurrence; range preparation and file
+  loading run on workers with cancellation, revision guards, and queued input.
 - [ ] LSP rename (`<space>r`), code actions (`<space>a`), and formatting (`=`).
   Support validated edits across open and hidden buffers before enabling workspace
   edits; respect revisions and undo boundaries.

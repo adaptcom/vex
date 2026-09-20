@@ -22,6 +22,8 @@ mod git_write;
 mod jumps;
 pub(crate) use jumps::{Job as JumpNavigationJob, Result as JumpNavigationResult};
 mod language;
+mod navigation;
+pub(crate) use navigation::{Job as LocationNavigationJob, Result as LocationNavigationResult};
 mod picker;
 mod prompt;
 mod reload;
@@ -84,6 +86,7 @@ pub struct App {
     git_write: git_write::State,
     reload: reload::State,
     jump_navigation: jumps::State,
+    navigation: navigation::State,
 }
 
 impl App {
@@ -124,6 +127,7 @@ impl App {
             git_write: git_write::State::default(),
             reload: reload::State::default(),
             jump_navigation: jumps::State::default(),
+            navigation: navigation::State::default(),
         }
     }
 
@@ -219,6 +223,16 @@ impl App {
     }
 
     fn handle_event_at(&mut self, event: Event, now: std::time::Instant) -> bool {
+        if (self.location_navigation_waiting() || self.language_waiting())
+            && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release
+                && matches!(input::key(*key), Some(Key::Escape | Key::Ctrl('c'))))
+        {
+            self.cancel_location_navigation();
+            self.cancel_language_request();
+            self.keys.cancel(&mut self.editor);
+            self.clear_message();
+            return true;
+        }
         if self.jump_navigation_waiting()
             && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release
                 && matches!(input::key(*key), Some(Key::Escape | Key::Ctrl('c'))))

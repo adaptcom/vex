@@ -7,6 +7,7 @@ pub(crate) mod files;
 mod fuzzy;
 mod ignore;
 pub(crate) mod jumps;
+pub(crate) mod locations;
 mod preview;
 pub(crate) mod search;
 pub(crate) mod symbols;

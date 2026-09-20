@@ -182,6 +182,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
             if let Some(job) = app.take_picker_job() {
                 runtime.submit_picker(job);
             }
+            if let Some(job) = app.take_location_job() {
+                runtime.submit_locations(job);
+            }
+            if let Some(job) = app.take_location_navigation() {
+                runtime.submit_location_navigation(job);
+            }
             if let Some(job) = app.take_symbol_job() {
                 runtime.submit_symbols(job);
             }
@@ -243,6 +249,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Files(result)) => {
                     redraw |= app.handle_picker_result(result)
                 }
+                AppEvent::Background(BackgroundEvent::Locations(result)) => {
+                    app.handle_location_result(result);
+                }
+                AppEvent::Background(BackgroundEvent::LocationNavigation(result)) => {
+                    app.handle_location_navigation(result);
+                }
                 AppEvent::Background(BackgroundEvent::Symbols(result)) => {
                     redraw |= app.handle_symbol_result(result)
                 }
@@ -303,6 +315,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(job) = app.take_picker_job() {
                 runtime.submit_picker(job);
+            }
+            if let Some(job) = app.take_location_job() {
+                runtime.submit_locations(job);
+            }
+            if let Some(job) = app.take_location_navigation() {
+                runtime.submit_location_navigation(job);
             }
             if let Some(job) = app.take_symbol_job() {
                 runtime.submit_symbols(job);

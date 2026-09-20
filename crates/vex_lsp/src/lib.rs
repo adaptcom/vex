@@ -3,13 +3,15 @@
 
 mod completion;
 mod executor;
+mod navigation;
 mod protocol;
 mod symbols;
 mod transport;
 
 pub use completion::{CompletionItem, Completions};
 use executor::Executor;
-pub use protocol::{Location, Position, file_path, file_uri, offset, position};
+pub use navigation::{Destination, Locations, Navigation, destination_selection};
+pub use protocol::{Location, Position, Range, file_path, file_uri, offset, position};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
@@ -82,7 +84,8 @@ pub struct Document {
 #[derive(Clone, Debug)]
 pub enum RequestKind {
     Hover,
-    Definition,
+    Navigation(Navigation),
+    DocumentHighlights,
     DocumentSymbols,
     WorkspaceSymbols(String),
     Completion(CompletionTrigger),
@@ -115,7 +118,8 @@ pub struct Diagnostic {
 #[derive(Debug)]
 pub enum Answer {
     Hover(String),
-    Definition(Option<Location>),
+    Locations(Navigation, Locations),
+    DocumentHighlights(Option<vex_editor::PreparedSelections>),
     Symbols(Symbols),
     Completion(Completions),
     CompletionResolved(CompletionItem),
@@ -408,6 +412,10 @@ async fn session(
                 "publishDiagnostics":{"versionSupport":true},
                 "hover":{"contentFormat":["plaintext"]},
                 "definition":{"linkSupport":true},
+                "typeDefinition":{"linkSupport":true},
+                "implementation":{"linkSupport":true},
+                "references":{},
+                "documentHighlight":{},
                 "documentSymbol":{"hierarchicalDocumentSymbolSupport":true,"symbolKind":{"valueSet":(1..=26).collect::<Vec<_>>()}},
                 "completion":{"contextSupport":true,"completionItem":{
                     "snippetSupport":false,"insertReplaceSupport":true,
@@ -524,7 +532,8 @@ async fn session(
                     if !request.cancellation.is_cancelled() {
                         let result = result.and_then(|value| match request.kind {
                             RequestKind::Hover => Ok(Answer::Hover(protocol::hover_text(&value))),
-                            RequestKind::Definition => protocol::definition(&value).map(Answer::Definition).map_err(|e| e.to_string()),
+                            RequestKind::Navigation(kind) => navigation::locations(&value, &request.cancellation).map(|locations| Answer::Locations(kind, locations)),
+                            RequestKind::DocumentHighlights => navigation::highlights(&value, &document.snapshot, &positions, request.position, &request.cancellation).map(Answer::DocumentHighlights),
                             RequestKind::DocumentSymbols => symbols::parse(&value, Some(&document.path)).map(Answer::Symbols),
                             RequestKind::WorkspaceSymbols(_) => symbols::parse(&value, None).map(Answer::Symbols),
                             RequestKind::Completion(_) => completion::parse(value, document.snapshot.text(), request.position, capabilities["completionProvider"]["resolveProvider"] == true).map(Answer::Completion),
@@ -610,7 +619,11 @@ fn start_request(
     }
     let (method, capability) = match &request.kind {
         RequestKind::Hover => ("textDocument/hover", "hoverProvider"),
-        RequestKind::Definition => ("textDocument/definition", "definitionProvider"),
+        RequestKind::Navigation(kind) => kind.request(),
+        RequestKind::DocumentHighlights => (
+            "textDocument/documentHighlight",
+            "documentHighlightProvider",
+        ),
         RequestKind::DocumentSymbols => ("textDocument/documentSymbol", "documentSymbolProvider"),
         RequestKind::WorkspaceSymbols(_) => ("workspace/symbol", "workspaceSymbolProvider"),
         RequestKind::Completion(_) => ("textDocument/completion", "completionProvider"),
@@ -628,6 +641,9 @@ fn start_request(
                 let position = position(document.snapshot.text(), request.position)
                     .ok_or("invalid request position")?;
                 let mut params = json!({"textDocument":{"uri":uri},"position":position});
+                if matches!(kind, RequestKind::Navigation(Navigation::References)) {
+                    params["context"] = json!({"includeDeclaration": true});
+                }
                 if let RequestKind::Completion(trigger) = kind {
                     params["context"] = match trigger {
                         CompletionTrigger::Invoked => json!({"triggerKind":1}),
@@ -737,7 +753,7 @@ while True:
     params = value.get('params')
     if method == 'initialize':
         if HANG_INITIALIZE: continue
-        send({'id':value['id'],'result':{'capabilities':{'positionEncoding':'utf-16','textDocumentSync':{'openClose':True,'change':2,'save':True},'hoverProvider':True,'definitionProvider':True,'documentSymbolProvider':True,'workspaceSymbolProvider':{},'completionProvider':{'resolveProvider':True,'triggerCharacters':['.',':','.',None,'..','\n']}}}})
+        send({'id':value['id'],'result':{'capabilities':{'positionEncoding':'utf-16','textDocumentSync':{'openClose':True,'change':2,'save':True},'hoverProvider':True,'definitionProvider':True,'typeDefinitionProvider':{},'implementationProvider':True,'referencesProvider':True,'documentHighlightProvider':True,'documentSymbolProvider':True,'workspaceSymbolProvider':{},'completionProvider':{'resolveProvider':True,'triggerCharacters':['.',':','.',None,'..','\n']}}}})
         send({'id':'configuration','method':'workspace/configuration','params':{'items':[{'section':'rust-analyzer'}]}})
     elif method == 'textDocument/didOpen':
         uri = params['textDocument']['uri']; version = params['textDocument']['version']
@@ -751,6 +767,14 @@ while True:
         send({'id':value['id'],'result':{'contents':{'kind':'plaintext','value':'fn example() -> u32'}}})
     elif method == 'textDocument/definition':
         send({'id':value['id'],'result':[{'targetUri':uri,'targetRange':{'start':{'line':0,'character':0},'end':{'line':0,'character':4}},'targetSelectionRange':{'start':{'line':0,'character':3},'end':{'line':0,'character':4}}}]})
+    elif method in ('textDocument/typeDefinition', 'textDocument/implementation', 'textDocument/references'):
+        if method == 'textDocument/references': assert params['context']['includeDeclaration'] is True
+        else: assert 'context' not in params
+        span = {'start':{'line':0,'character':3},'end':{'line':0,'character':4}}
+        send({'id':value['id'],'result':[{'uri':uri,'range':span},{'uri':uri,'range':{'start':{'line':0,'character':0},'end':{'line':0,'character':1}}}]})
+    elif method == 'textDocument/documentHighlight':
+        assert set(params) == {'textDocument', 'position'}
+        send({'id':value['id'],'result':[{'range':{'start':{'line':0,'character':3},'end':{'line':0,'character':4}}, 'kind':3}]})
     elif method == 'textDocument/documentSymbol':
         assert set(params) == {'textDocument'}
         span = {'start':{'line':0,'character':3},'end':{'line':0,'character':4}}
@@ -1038,11 +1062,46 @@ while True:
         );
         service.update(Update {
             document: Some(doc.clone()),
-            request: Some(request(2, RequestKind::Definition, 2)),
+            request: Some(request(
+                2,
+                RequestKind::Navigation(Navigation::Definition),
+                2,
+            )),
         });
         assert!(
-            matches!(until(&receiver, |event| matches!(event, Event::Answer { id: 2, .. })), Event::Answer { result: Ok(Answer::Definition(Some(location))), .. } if location.path == doc.path)
+            matches!(until(&receiver, |event| matches!(event, Event::Answer { id: 2, .. })), Event::Answer { result: Ok(Answer::Locations(Navigation::Definition, locations)), .. } if locations.items[0].path == doc.path)
         );
+        for (id, kind) in [
+            (20, Navigation::TypeDefinition),
+            (21, Navigation::Implementation),
+            (22, Navigation::References),
+        ] {
+            service.update(Update {
+                document: Some(doc.clone()),
+                request: Some(request(id, RequestKind::Navigation(kind), 2)),
+            });
+            let event = until(
+                &receiver,
+                |event| matches!(event, Event::Answer { id: found, .. } if *found == id),
+            );
+            assert!(
+                matches!(event, Event::Answer { result: Ok(Answer::Locations(found, locations)), .. } if found == kind && locations.items.len() == 2)
+            );
+        }
+        service.update(Update {
+            document: Some(doc.clone()),
+            request: Some(request(23, RequestKind::DocumentHighlights, 2)),
+        });
+        let event = until(&receiver, |event| {
+            matches!(event, Event::Answer { id: 23, .. })
+        });
+        assert!(matches!(
+            event,
+            Event::Answer {
+                result: Ok(Answer::DocumentHighlights(Some(_))),
+                ..
+            }
+        ));
         service.update(Update {
             document: Some(doc.clone()),
             request: Some(request(
@@ -1295,14 +1354,17 @@ while True:
                     ..
                 }) => hover |= text.contains("answer"),
                 Ok(Event::Answer {
-                    result: Ok(Answer::Definition(Some(location))),
+                    result: Ok(Answer::Locations(Navigation::Definition, locations)),
                     ..
-                }) => definition |= location.path == path && location.position.line == 0,
+                }) => {
+                    definition |=
+                        locations.items[0].path == path && locations.items[0].range.start.line == 0
+                }
                 _ => {}
             }
             id += 1;
             let kind = if hover {
-                RequestKind::Definition
+                RequestKind::Navigation(Navigation::Definition)
             } else {
                 RequestKind::Hover
             };

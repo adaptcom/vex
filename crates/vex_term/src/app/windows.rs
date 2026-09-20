@@ -915,6 +915,51 @@ impl App {
         })
     }
 
+    pub(super) fn open_loaded_location(
+        &mut self,
+        loaded: super::navigation::Loaded,
+    ) -> io::Result<()> {
+        let prepared = if let Some((document, files)) = loaded.file {
+            // A buffer opened while the read was in flight must not be replaced.
+            if self.snapshot_for_path(&loaded.path).is_some() {
+                return Err(io::Error::other(
+                    "destination was opened while navigation was pending; retry",
+                ));
+            }
+            let mut editor = Editor::with_session(document, self.editor.session());
+            editor.set_display_name(files.display_name());
+            editor.set_language(Language::detect(files.path(), editor.document().text()));
+            editor.set_background_search(true);
+            editor.set_deferred_repeat(true);
+            editor.set_background_syntax(true);
+            Prepared::New(Box::new(Buffer {
+                editor,
+                files,
+                automatic_language: true,
+            }))
+        } else {
+            if !self
+                .snapshot_for_path(&loaded.path)
+                .is_some_and(|snapshot| {
+                    snapshot.id() == loaded.document && snapshot.revision() == loaded.revision
+                })
+            {
+                return Err(io::Error::other(
+                    "destination changed while navigation was pending; retry",
+                ));
+            }
+            Prepared::Existing(loaded.document)
+        };
+        self.replace_window_buffer(prepared)?;
+        self.editor
+            .execute("normal_mode", 1)
+            .map_err(io::Error::other)?;
+        if !self.editor.apply_prepared_selections(loaded.selections) {
+            return Err(io::Error::other("destination selection is stale"));
+        }
+        Ok(())
+    }
+
     pub(super) fn open_window_definition(
         &mut self,
         location: &vex_lsp::Location,

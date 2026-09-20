@@ -35,6 +35,8 @@ pub(crate) enum BackgroundEvent {
     Syntax(Vec<SyntaxResult>),
     Files(FileResult),
     Symbols(SymbolResult),
+    Locations(crate::picker::locations::Result),
+    LocationNavigation(crate::app::LocationNavigationResult),
     Buffers(BufferResult),
     Jumps(crate::picker::jumps::Result),
     JumpNavigation(crate::app::JumpNavigationResult),
@@ -113,6 +115,8 @@ impl EventQueue {
                 BackgroundEvent::Syntax(_) => 1,
                 BackgroundEvent::Files(_)
                 | BackgroundEvent::Symbols(_)
+                | BackgroundEvent::Locations(_)
+                | BackgroundEvent::LocationNavigation(_)
                 | BackgroundEvent::Buffers(_)
                 | BackgroundEvent::Jumps(_)
                 | BackgroundEvent::JumpNavigation(_)
@@ -294,6 +298,8 @@ impl SyntaxBuffers {
 enum PickerJob {
     Files(FileJob),
     Symbols(SymbolJob),
+    Locations(crate::picker::locations::Job),
+    LocationNavigation(crate::app::LocationNavigationJob),
     Buffers(BufferJob),
     Jumps(crate::picker::jumps::Job),
     JumpNavigation(crate::app::JumpNavigationJob),
@@ -306,6 +312,8 @@ impl Job for PickerJob {
         match self {
             Self::Files(job) => job.cancellation.clone(),
             Self::Symbols(job) => job.cancellation.clone(),
+            Self::Locations(job) => job.cancellation.clone(),
+            Self::LocationNavigation(job) => job.cancellation.clone(),
             Self::Buffers(job) => job.cancellation.clone(),
             Self::Jumps(job) => job.cancellation.clone(),
             Self::JumpNavigation(job) => job.cancellation.clone(),
@@ -546,6 +554,16 @@ impl Runtime {
                 });
                 None
             }
+            PickerJob::Locations(job) => {
+                workspace_search = crate::picker::search::Worker::default();
+                file_state = FileWorker::default();
+                job.run().map(BackgroundEvent::Locations)
+            }
+            PickerJob::LocationNavigation(job) => {
+                workspace_search = crate::picker::search::Worker::default();
+                file_state = FileWorker::default();
+                job.run().map(BackgroundEvent::LocationNavigation)
+            }
             PickerJob::Symbols(job) => {
                 workspace_search = crate::picker::search::Worker::default();
                 file_state = FileWorker::default();
@@ -646,6 +664,18 @@ impl Runtime {
 
     pub(crate) fn submit_picker(&self, job: FileJob) {
         self.files.as_ref().unwrap().submit(PickerJob::Files(job));
+    }
+    pub(crate) fn submit_locations(&self, job: crate::picker::locations::Job) {
+        self.files
+            .as_ref()
+            .unwrap()
+            .submit(PickerJob::Locations(job));
+    }
+    pub(crate) fn submit_location_navigation(&self, job: crate::app::LocationNavigationJob) {
+        self.files
+            .as_ref()
+            .unwrap()
+            .submit(PickerJob::LocationNavigation(job));
     }
     pub(crate) fn submit_symbols(&self, job: SymbolJob) {
         self.files.as_ref().unwrap().submit(PickerJob::Symbols(job));
@@ -823,6 +853,12 @@ mod tests {
             AppEvent::Background(BackgroundEvent::Files(result)) => {
                 app.handle_picker_result(result);
             }
+            AppEvent::Background(BackgroundEvent::Locations(result)) => {
+                app.handle_location_result(result);
+            }
+            AppEvent::Background(BackgroundEvent::LocationNavigation(result)) => {
+                app.handle_location_navigation(result);
+            }
             AppEvent::Background(BackgroundEvent::Symbols(result)) => {
                 app.handle_symbol_result(result);
             }
@@ -878,6 +914,95 @@ mod tests {
             vex_core::ByteOffset(0)..vex_core::ByteOffset(editor.document().text().len_bytes()),
         );
         editor.take_syntax_job().unwrap()
+    }
+
+    #[test]
+    fn document_highlights_and_destination_loads_finish_before_queued_edits() {
+        use vex_lsp::{Answer, Destination, Locations, Navigation, Position, Range};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("main.rs");
+        std::fs::write(&path, "foo foo\n").unwrap();
+        let mut app = App::open(Some(&path), (80, 24)).unwrap();
+        app.enable_lsp();
+        app.take_lsp_update();
+        press(&mut app, " h");
+        let update = app.take_lsp_update().unwrap();
+        let document = update.document.unwrap();
+        let selections = vex_editor::PreparedSelections::new(
+            &document.snapshot,
+            vex_core::SelectionSet::new(
+                vec![
+                    vex_core::Selection::new(vex_core::CharOffset(0), vex_core::CharOffset(3)),
+                    vex_core::Selection::new(vex_core::CharOffset(4), vex_core::CharOffset(7)),
+                ],
+                0,
+            )
+            .unwrap(),
+            vex_editor::Mode::Normal,
+            &Cancellation::default(),
+        )
+        .unwrap();
+        let events = EventQueue::default();
+        for ch in "cx".chars() {
+            events.terminal(key(KeyCode::Char(ch)));
+        }
+        events.terminal(key(KeyCode::Esc));
+        events.terminal(Event::Resize(100, 30));
+        let event = events.next(Duration::ZERO, app.input_waiting()).unwrap();
+        deliver(&mut app, event);
+        assert_eq!(app.size(), (100, 30));
+        assert!(events.next(Duration::ZERO, app.input_waiting()).is_none());
+        events.lsp(vex_lsp::Event::Answer {
+            epoch: document.epoch,
+            revision: document.snapshot.revision(),
+            id: update.request.unwrap().id,
+            result: Ok(Answer::DocumentHighlights(Some(selections))),
+        });
+        while let Some(event) = events.next(Duration::ZERO, app.input_waiting()) {
+            deliver(&mut app, event);
+        }
+        assert_eq!(app.editor.document().text(), "x x\n");
+        app.take_lsp_update();
+        press(&mut app, "gy");
+        let update = app.take_lsp_update().unwrap();
+        let document = update.document.unwrap();
+        events.terminal(key(KeyCode::Char('d')));
+        assert!(events.next(Duration::ZERO, app.input_waiting()).is_none());
+        events.lsp(vex_lsp::Event::Answer {
+            epoch: document.epoch,
+            revision: document.snapshot.revision(),
+            id: update.request.unwrap().id,
+            result: Ok(Answer::Locations(
+                Navigation::TypeDefinition,
+                Locations {
+                    items: vec![Destination {
+                        path: document.path.clone(),
+                        range: Range {
+                            start: Position {
+                                line: 0,
+                                character: 2,
+                            },
+                            end: Position {
+                                line: 0,
+                                character: 3,
+                            },
+                        },
+                    }],
+                    ..Default::default()
+                },
+            )),
+        });
+        let event = events.next(Duration::ZERO, app.input_waiting()).unwrap();
+        deliver(&mut app, event);
+        assert!(app.input_waiting());
+        assert!(events.next(Duration::ZERO, app.input_waiting()).is_none());
+        events.background(BackgroundEvent::LocationNavigation(
+            app.take_location_navigation().unwrap().run().unwrap(),
+        ));
+        while let Some(event) = events.next(Duration::ZERO, app.input_waiting()) {
+            deliver(&mut app, event);
+        }
+        assert_eq!(app.editor.document().text(), "x \n");
     }
 
     #[test]

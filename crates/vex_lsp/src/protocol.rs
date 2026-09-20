@@ -93,9 +93,16 @@ pub(crate) struct Positions {
 
 impl Positions {
     pub fn new(text: &Rope) -> Self {
+        Self::cancellable(text, || false).expect("not cancelled")
+    }
+
+    pub fn cancellable(text: &Rope, cancelled: impl Fn() -> bool) -> Option<Self> {
         let mut starts = vec![0];
         let mut cr = false;
         for (index, ch) in text.chars().enumerate() {
+            if index % 4096 == 0 && cancelled() {
+                return None;
+            }
             if ch == '\n' && cr {
                 *starts.last_mut().unwrap() = index + 1;
             } else if matches!(ch, '\r' | '\n') {
@@ -103,7 +110,23 @@ impl Positions {
             }
             cr = ch == '\r';
         }
-        Self { starts }
+        Some(Self { starts })
+    }
+
+    fn line_end(&self, text: &Rope, line: usize) -> usize {
+        let mut end = self
+            .starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(text.len_chars());
+        let start = self.starts[line];
+        if end > start && text.char(end - 1) == '\n' {
+            end -= 1;
+        }
+        if end > start && text.char(end - 1) == '\r' {
+            end -= 1;
+        }
+        end
     }
 
     pub fn position(&self, text: &Rope, offset: CharOffset) -> Option<Position> {
@@ -111,38 +134,23 @@ impl Positions {
             return None;
         }
         let line = self.starts.partition_point(|start| *start <= offset.0) - 1;
-        let character = text
-            .slice(self.starts[line]..offset.0)
-            .chars()
-            .take_while(|ch| !matches!(ch, '\r' | '\n'))
-            .map(|ch| ch.len_utf16() as u32)
-            .sum();
+        let end = offset.0.min(self.line_end(text, line));
         Some(Position {
             line: line.try_into().ok()?,
-            character,
+            character: text
+                .slice(self.starts[line]..end)
+                .len_utf16_cu()
+                .try_into()
+                .ok()?,
         })
     }
 
     pub fn offset(&self, text: &Rope, wanted: Position) -> Option<CharOffset> {
         let start = *self.starts.get(wanted.line as usize)?;
-        let end = self
-            .starts
-            .get(wanted.line as usize + 1)
-            .copied()
-            .unwrap_or(text.len_chars());
-        let (mut column, mut index) = (0, start);
-        for ch in text.slice(start..end).chars() {
-            if column >= wanted.character || matches!(ch, '\r' | '\n') {
-                break;
-            }
-            let next = column + ch.len_utf16() as u32;
-            if next > wanted.character {
-                break;
-            }
-            column = next;
-            index += 1;
-        }
-        Some(CharOffset(index))
+        let line = text.slice(start..self.line_end(text, wanted.line as usize));
+        Some(CharOffset(
+            start + line.utf16_cu_to_char((wanted.character as usize).min(line.len_utf16_cu())),
+        ))
     }
 }
 
@@ -192,28 +200,6 @@ pub(crate) fn hover_text(value: &Value) -> String {
 pub struct Location {
     pub path: PathBuf,
     pub position: Position,
-}
-
-pub(crate) fn definition(value: &Value) -> io::Result<Option<Location>> {
-    let value = value
-        .as_array()
-        .and_then(|values| values.first())
-        .unwrap_or(value);
-    if value.is_null() || value.as_array().is_some_and(Vec::is_empty) {
-        return Ok(None);
-    }
-    let uri = value["uri"]
-        .as_str()
-        .or_else(|| value["targetUri"].as_str())
-        .ok_or_else(|| io::Error::other("invalid definition location"))?;
-    let range = value
-        .get("targetSelectionRange")
-        .or_else(|| value.get("range"))
-        .ok_or_else(|| io::Error::other("missing definition range"))?;
-    Ok(Some(Location {
-        path: file_path(uri)?,
-        position: serde_json::from_value(range["start"].clone()).map_err(io::Error::other)?,
-    }))
 }
 
 #[cfg(test)]
@@ -308,11 +294,105 @@ mod tests {
     }
 
     #[test]
+    fn indexed_columns_match_flat_utf16_across_chunks_and_line_ending_variants() {
+        let source = format!(
+            "{}\r\n{}\r{}\n",
+            "ab🦀e\u{301}\u{2028}".repeat(900),
+            "界".repeat(1200),
+            "x".repeat(2000)
+        );
+        let text = Rope::from_str(&source);
+        let positions = Positions::new(&text);
+        for line in 0..positions.starts.len() {
+            let start = positions.starts[line];
+            let content: Vec<_> = text
+                .slice(start..)
+                .chars()
+                .take_while(|ch| !matches!(ch, '\r' | '\n'))
+                .collect();
+            for column in
+                (0..=(content.iter().map(|ch| ch.len_utf16()).sum::<usize>() + 8)).step_by(13)
+            {
+                let mut units = 0;
+                let scalars = content
+                    .iter()
+                    .take_while(|ch| {
+                        units += ch.len_utf16();
+                        units <= column
+                    })
+                    .count();
+                assert_eq!(
+                    positions.offset(
+                        &text,
+                        Position {
+                            line: line as u32,
+                            character: column as u32
+                        }
+                    ),
+                    Some(CharOffset(start + scalars))
+                );
+                let actual = positions
+                    .position(&text, CharOffset(start + scalars))
+                    .unwrap();
+                assert_eq!(
+                    actual.character as usize,
+                    content[..scalars]
+                        .iter()
+                        .map(|ch| ch.len_utf16())
+                        .sum::<usize>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual release-mode coordinate benchmark"]
+    fn benchmark_indexed_lsp_columns() {
+        use std::{hint::black_box, time::Instant};
+        for mib in [1usize, 8] {
+            let text = Rope::from_str(&"a🦀".repeat((mib << 20) / 5));
+            let positions = Positions::new(&text);
+            let queries: Vec<_> = (0..128)
+                .map(|i| ((text.len_utf16_cu() - 1) * (i + 128) / 256) as u32)
+                .collect();
+            let now = Instant::now();
+            let indexed: Vec<_> = queries
+                .iter()
+                .map(|&character| {
+                    positions
+                        .offset(black_box(&text), Position { line: 0, character })
+                        .unwrap()
+                })
+                .collect();
+            let fast = now.elapsed();
+            let now = Instant::now();
+            let flat: Vec<_> = queries
+                .iter()
+                .map(|&character| {
+                    let mut units = 0;
+                    CharOffset(
+                        black_box(&text)
+                            .chars()
+                            .take_while(|ch| {
+                                units += ch.len_utf16() as u32;
+                                units <= character
+                            })
+                            .count(),
+                    )
+                })
+                .collect();
+            let slow = now.elapsed();
+            assert_eq!(indexed, flat);
+            println!(
+                "{mib} MiB, 128 columns, cached line index: indexed={fast:?}, sequential={slow:?}"
+            );
+        }
+    }
+
+    #[test]
     fn file_uris_round_trip_spaces_unicode_and_reserved_characters() {
         let path = std::env::temp_dir().join("界 #?%.rs");
         assert_eq!(file_path(&file_uri(&path).unwrap()).unwrap(), path);
         assert!(file_path("https://example.com/code.rs").is_err());
-        let value = json!([{"targetUri": file_uri(&path).unwrap(), "targetSelectionRange": {"start":{"line":3,"character":2},"end":{"line":3,"character":8}}}]);
-        assert_eq!(definition(&value).unwrap().unwrap().position.line, 3);
     }
 }

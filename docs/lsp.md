@@ -34,7 +34,11 @@ protocol failures, and request errors leave editing and saving available.
 | Key / command | Behavior |
 |---|---|
 | Space-k / `:hover` | Show documentation at the primary cursor |
-| `gd` / `:goto_definition` | Jump to the first definition returned by the server |
+| `gd` / `:goto_definition` | Jump to a definition, or pick among several |
+| `gy` / `:goto_type_definition` | Jump to a type definition, or pick among several |
+| `gi` / `:goto_implementation` | Jump to an implementation, or pick among several |
+| `gr` / `:goto_reference` | Find references across files, including the declaration |
+| `Space-h` / `:select_references_to_symbol_under_cursor` | Select related occurrences in the current document |
 | `Space-s` / `:symbol_picker` | Pick a symbol from the current document |
 | `Space-S` / `:workspace_symbol_picker` | Search symbols across the active server's workspace |
 | `Ctrl-o` / `:jump_backward` | Move backward through the current pane's jump history |
@@ -56,8 +60,32 @@ arrives.
 Definition and symbol jumps open another local file in the focused pane, retaining
 the old buffer and any unsaved edits. Each pane's [jump list](windows.md#jump-history)
 retains up to 32 selection checkpoints. Returning to a loaded file reuses its buffer and history, including
-when no pane displays it. Multiple definition results currently choose the first
-result.
+when no pane displays it.
+
+Definition, type, implementation, and reference requests jump directly for one
+usable destination; multiple destinations open the shared floating picker with
+fuzzy path/line filtering and syntax previews. Returned ranges remain selected,
+with the cursor at the start. Location links use `targetRange`, following Helix.
+`Space-'` reopens the picker with its filter and selected result. File loading and
+range conversion use the existing picker worker, reusing shared unsaved buffers.
+Navigation validates both its origin and loaded destination before switching.
+
+`Space-h` uses `textDocument/documentHighlight`, as
+[Helix does](https://github.com/helix-editor/helix/blob/master/helix-term/src/commands/lsp.rs),
+and retains the occurrence containing the original primary cursor as primary.
+It preserves normal/select mode. UTF-16 conversion, grapheme normalization, and
+sorting happen on the language-service thread; installing the resulting selection
+set does not repeat those scans. Subsequent editing keys wait in FIFO order for
+navigation or reference selections. Escape/Ctrl-c can cancel when next in that
+order; resize and service events continue. Empty results and errors release input
+without changing selections. Stale replies cannot apply to a different revision,
+selection, mode, or file session.
+
+Location responses are capped at 65,536 entries and 8 MiB of path data; the picker
+reports limits and skipped malformed/non-file locations, and ranks at most 512
+visible results per query. Document highlight responses exceeding 65,536 ranges
+fail explicitly rather than selecting only a prefix. These limits are separate
+from the existing 8 MiB active-document LSP limit.
 
 Language services maintain one active document session. Switching focus between
 views of the same file keeps the session and cancels cursor-specific requests.
@@ -186,7 +214,8 @@ before `didSave`, followed by the newer unsaved text. Save notifications therefo
 describe the contents actually written to disk.
 
 Positions use negotiated UTF-16 coordinates. A per-snapshot index distinguishes
-LSP's LF/CRLF/bare-CR lines from Ropey's additional Unicode separators. Surrogate
+LSP's LF/CRLF/bare-CR lines from Ropey's additional Unicode separators. Column
+conversion uses the rope's UTF-16 index rather than scanning line prefixes. Surrogate
 pairs, combining marks, escaped file URIs, and non-ASCII file names are covered by
 source tests. Results are checked against the active file session and document
 revision; interactive replies also check request identity, selections, and mode.

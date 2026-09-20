@@ -5,7 +5,9 @@ use crate::screen::{Frame, Style};
 use std::{io, time::Instant};
 use vex_core::{CharOffset, DocumentId, Revision, SelectionSet, motion};
 use vex_editor::{Language, LanguageAction, Mode, background::Cancellation};
-use vex_lsp::{Answer, CompletionOptions, CompletionTrigger, Diagnostic, Event, RequestKind};
+use vex_lsp::{
+    Answer, CompletionOptions, CompletionTrigger, Diagnostic, Event, Navigation, RequestKind,
+};
 
 struct Pending {
     id: u64,
@@ -14,6 +16,7 @@ struct Pending {
     selections: SelectionSet,
     mode: Mode,
     cancellation: Cancellation,
+    waiting: bool,
 }
 
 #[derive(Default)]
@@ -54,6 +57,13 @@ impl App {
         self.language.force = true;
     }
 
+    pub(super) fn language_waiting(&self) -> bool {
+        self.language
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.waiting)
+    }
+
     pub(super) fn dismiss_language_help(&mut self) {
         self.language.cancel();
         self.language.popup = None;
@@ -78,6 +88,7 @@ impl App {
     /// metadata cross this boundary; JSON and UTF-16 work run on the service.
     pub fn take_lsp_update(&mut self) -> Option<vex_lsp::Update> {
         self.invalidate_symbol_picker();
+        self.invalidate_location_picker();
         self.poll_completion(Instant::now());
         let action = self.editor.take_language_action();
         if !self.language.enabled {
@@ -143,7 +154,23 @@ impl App {
                 automatic: false,
             }),
             Some(LanguageAction::Definition) => Some(super::completion::Request {
-                kind: RequestKind::Definition,
+                kind: RequestKind::Navigation(Navigation::Definition),
+                automatic: false,
+            }),
+            Some(LanguageAction::TypeDefinition) => Some(super::completion::Request {
+                kind: RequestKind::Navigation(Navigation::TypeDefinition),
+                automatic: false,
+            }),
+            Some(LanguageAction::Implementation) => Some(super::completion::Request {
+                kind: RequestKind::Navigation(Navigation::Implementation),
+                automatic: false,
+            }),
+            Some(LanguageAction::References) => Some(super::completion::Request {
+                kind: RequestKind::Navigation(Navigation::References),
+                automatic: false,
+            }),
+            Some(LanguageAction::DocumentHighlights) => Some(super::completion::Request {
+                kind: RequestKind::DocumentHighlights,
                 automatic: false,
             }),
             Some(LanguageAction::Completion) => Some(super::completion::Request {
@@ -186,6 +213,10 @@ impl App {
                     selections: self.editor.selections().clone(),
                     mode: self.editor.mode(),
                     cancellation: cancellation.clone(),
+                    waiting: matches!(
+                        kind,
+                        RequestKind::Navigation(_) | RequestKind::DocumentHighlights
+                    ),
                 });
                 request = Some(vex_lsp::Request {
                     id: self.language.next_request,
@@ -277,11 +308,16 @@ impl App {
                         self.message = "hover — any key closes".into();
                         self.language.popup = Some(text);
                     }
-                    Ok(Answer::Definition(None)) => self.message = "no definition found".into(),
-                    Ok(Answer::Definition(Some(location))) => {
-                        if let Err(error) = self.open_location(location) {
-                            self.fail(error);
+                    Ok(Answer::Locations(kind, locations)) => {
+                        self.receive_locations(kind, locations)
+                    }
+                    Ok(Answer::DocumentHighlights(Some(selections))) => {
+                        if self.editor.apply_prepared_selections(selections) {
+                            self.clear_message();
                         }
+                    }
+                    Ok(Answer::DocumentHighlights(None)) => {
+                        self.message = "no document references found".into()
                     }
                     Ok(Answer::Completion(items)) => self.receive_completions(items),
                     Ok(Answer::Symbols(symbols)) => self.receive_symbols(symbols),
@@ -657,6 +693,41 @@ mod tests {
     }
 
     #[test]
+    fn reference_requests_reject_late_results_and_release_input_on_cancel_error_and_empty() {
+        for command in [
+            "goto_reference",
+            "goto_type_definition",
+            "goto_implementation",
+            "select_references_to_symbol_under_cursor",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = app(directory.path());
+            let key = issue(&mut app, command);
+            assert!(app.input_waiting());
+            press(&mut app, KeyCode::Esc);
+            assert!(!app.input_waiting());
+            assert!(!answer(&mut app, key, Answer::DocumentHighlights(None)));
+            let key = issue(&mut app, command);
+            assert!(app.handle_lsp_event(Event::Answer {
+                epoch: key.0,
+                revision: key.1,
+                id: key.2,
+                result: Err("unsupported request".into())
+            }));
+            assert!(!app.input_waiting());
+            assert!(app.message.contains("unsupported request"));
+            let key = issue(&mut app, command);
+            app.editor.execute("move_right", 1).unwrap();
+            assert!(!answer(&mut app, key, Answer::DocumentHighlights(None)));
+            app.take_lsp_update();
+            assert!(!app.input_waiting());
+            let key = issue(&mut app, command);
+            assert!(answer(&mut app, key, Answer::DocumentHighlights(None)));
+            assert!(!app.input_waiting());
+        }
+    }
+
+    #[test]
     fn definitions_protect_unsaved_files_and_jump_back_restores_the_origin() {
         let directory = tempfile::tempdir().unwrap();
         let mut app = app(directory.path());
@@ -677,8 +748,22 @@ mod tests {
         assert!(answer(
             &mut app,
             key,
-            Answer::Definition(Some(location.clone()))
+            Answer::Locations(
+                Navigation::Definition,
+                vex_lsp::Locations {
+                    items: vec![vex_lsp::Destination {
+                        path: location.path.clone(),
+                        range: vex_lsp::Range {
+                            start: location.position,
+                            end: location.position
+                        }
+                    }],
+                    ..Default::default()
+                }
+            )
         ));
+        let result = app.take_location_navigation().unwrap().run().unwrap();
+        assert!(app.handle_location_navigation(result));
         app.take_lsp_update();
         assert_eq!(app.files.target(), Some(target.as_path()));
         assert_eq!(app.language_cursor(), CharOffset(7));

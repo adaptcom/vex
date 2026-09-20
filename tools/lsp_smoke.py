@@ -65,6 +65,42 @@ def main():
             terminal.finish()
         print("PASS: real rust-analyzer diagnostics, hover, definitions, document/workspace symbols, jump back, shutdown")
 
+        # Navigation uses ranges and document highlights from the real server.
+        navigation_source = (
+            "struct Widget;\n"
+            "trait Measure {}\n"
+            "impl Measure for Widget {}\n"
+            "fn main() {\n"
+            "    let value = Widget;\n"
+            "    let _ = (&value, &value);\n"
+            "}\n"
+        )
+        main_file.write_text(navigation_source)
+        with Terminal([binary, str(main_file)]) as terminal:
+            terminal.start()
+            terminal.resize(180, 24)
+            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"1W")  # Workspace loading and cargo check finished.
+            terminal.send(b"/value\rgy")
+            terminal.expect_screen(b"1:1")
+            terminal.send(b"\x0f")
+            terminal.expect_screen(b"5:13")
+            terminal.send(b"gr")
+            terminal.expect_screen(b"References")
+            terminal.expect_screen(b"3 locations")
+            terminal.send(b"\x1b")
+            terminal.expect_screen(b"NOR")
+            terminal.send(b" h")
+            terminal.expect_screen(b"3 sel")
+            terminal.send(b"citem")
+            terminal.save_from_insert()
+            assert main_file.read_text() == navigation_source.replace("value", "item")
+            terminal.send(b",gg/Measure\rgi")
+            terminal.expect_screen(b"3:1")
+            terminal.send(b":q\r")
+            terminal.finish()
+        print("PASS: real rust-analyzer references picker, type/implementation ranges, document reference selections and edits")
+
         # Keep the declaration outside the final viewport, so seeing its name
         # verifies the completion list rather than the underlying document.
         source = "/// Returns the completion probe.\nfn vex_completion_target() -> u32 { 42 }\n" + "\n" * 30 + "fn main() { vex_com"

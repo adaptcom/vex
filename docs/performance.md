@@ -907,3 +907,36 @@ filesystem calls and candidate scores are not preemptible; index construction
 and each new query still scale with the candidate set. The current picker has
 not had a large-workspace latency benchmark recorded. See [picker limits and
 validation](pickers.md) for cancellation, memory limits, and terminal checks.
+
+
+## LSP navigation and reference selections
+
+Navigation response parsing and document-highlight preparation run on the LSP
+service thread. Destination reads and UTF-16 range conversion share the picker
+worker; query ranking retains at most 512 rows in a heap. Shared snapshots retain
+unsaved contents without copying whole files. File reads check cancellation on
+each buffered read; destination line indexing checks every 4,096 scalars.
+
+A local release-mode microbenchmark compared 128 UTF-16 lookups on a long line
+containing ASCII and supplementary Unicode characters, with the line index
+already built, against an equivalent sequential reference scan:
+
+| Text size | Indexed lookups | Sequential reference scans |
+|---|---:|---:|
+| 1 MiB | 38.5 µs | 102.3 ms |
+| 8 MiB | 32.3 µs | 788.3 ms |
+
+Installing worker-prepared selections averaged 29–199 ns over 50 applications
+for 1, 1,000, and 65,536 ranges in 1 MiB and 100 MiB documents. These small times
+are near timer/allocator noise: they show that delivery avoids repeated text
+scanning, not end-to-end editing latency. Normalization, server latency, file
+loading, worker wakeup, and rendering are excluded. Large normalized selection
+sets still incur their usual costs when drawing and editing. Sorting and an
+individual grapheme normalization are not interruptible; cancellation is checked
+between ranges. No additional runtime or production dependency was introduced.
+
+Reproduce these isolated measurements with:
+
+```sh
+cargo test -p vex_editor -p vex_lsp --release --locked benchmark_ -- --ignored --nocapture
+```

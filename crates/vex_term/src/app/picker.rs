@@ -16,6 +16,7 @@ use std::{io, path::PathBuf, sync::Arc};
 use vex_editor::background::Cancellation;
 
 mod jumps;
+mod locations;
 mod search;
 mod symbols;
 
@@ -23,6 +24,7 @@ mod symbols;
 enum Target {
     File(PathBuf),
     Symbol(vex_lsp::Location),
+    Location(Arc<vex_lsp::Destination>),
     Buffer(vex_core::DocumentId),
     Jump(crate::picker::jumps::Location),
     Search(crate::picker::search::Hit),
@@ -31,6 +33,7 @@ enum Target {
 enum Source {
     Files(Option<PathBuf>, PathBuf),
     Symbols(symbols::Source),
+    Locations(locations::Source),
     Buffers(Arc<[CatalogEntry]>),
     Jumps(Arc<crate::picker::jumps::Catalog>),
     Search(search::Source),
@@ -63,6 +66,7 @@ pub(super) struct State {
     file_job: Option<FileJob>,
     preview_job: Option<PreviewJob>,
     symbol_job: Option<SymbolJob>,
+    location_job: Option<crate::picker::locations::Job>,
     buffer_job: Option<BufferJob>,
     jump_job: Option<crate::picker::jumps::Job>,
     search_job: Option<crate::picker::search::Job>,
@@ -154,6 +158,16 @@ impl App {
         active.preview_target = None;
         active.accept_pending = false;
         self.picker.preview_job = None;
+        if let Source::Locations(source) = &active.source {
+            self.picker.location_job = Some(crate::picker::locations::Job {
+                session: active.session,
+                revision: active.revision,
+                catalog: source.catalog.clone(),
+                query: active.view.query.text().into(),
+                cancellation: active.cancellation.clone(),
+            });
+            return;
+        }
         if let Source::Jumps(catalog) = &active.source {
             self.picker.jump_job = Some(crate::picker::jumps::Job {
                 session: active.session,
@@ -226,6 +240,7 @@ impl App {
                 }
                 Target::File(path) => (path, None),
                 Target::Symbol(location) => (location.path, Some(location.position)),
+                Target::Location(location) => (location.path.clone(), Some(location.range.start)),
                 Target::Search(hit) => (
                     hit.path,
                     Some(vex_lsp::Position {
@@ -264,6 +279,9 @@ impl App {
             Some(Target::File(path)) | Some(Target::Symbol(vex_lsp::Location { path, .. })) => self
                 .snapshot_for_path(path)
                 .is_some_and(|snapshot| snapshot.id() == document),
+            Some(Target::Location(location)) => self
+                .snapshot_for_path(&location.path)
+                .is_some_and(|snapshot| snapshot.id() == document),
             Some(Target::Search(_) | Target::Jump(_)) | None => false,
         };
         if changed {
@@ -298,6 +316,7 @@ impl App {
         }
         self.picker.preview_job = None;
         self.picker.symbol_job = None;
+        self.picker.location_job = None;
         self.picker.buffer_job = None;
         self.picker.jump_job = None;
         self.picker.search_job = None;
@@ -328,6 +347,11 @@ impl App {
         }
         if matches!(active.source, Source::Jumps(_)) {
             active.source = Source::Jumps(self.jump_catalog());
+            active.view.pending = true;
+        }
+        if let Source::Locations(source) = &mut active.source {
+            source.document = self.editor.document().id();
+            source.revision = self.editor.document().revision();
             active.view.pending = true;
         }
         if let Source::Search(source) = &mut active.source {
@@ -401,6 +425,8 @@ impl App {
     pub(crate) fn input_waiting(&self) -> bool {
         self.editor.search_waiting()
             || self.jump_navigation_waiting()
+            || self.location_navigation_waiting()
+            || self.language_waiting()
             || self.clipboard_waiting()
             || self.editor.repeat_pending()
             || self.completion_waiting()
@@ -452,7 +478,8 @@ impl App {
             Action::Selection => self.request_picker_preview(),
             Action::Accept => {
                 if active.view.pending
-                    && (active.view.items.is_empty() || matches!(active.source, Source::Jumps(_)))
+                    && (active.view.items.is_empty()
+                        || matches!(active.source, Source::Jumps(_) | Source::Locations(_)))
                 {
                     active.accept_pending = true;
                 } else {
@@ -539,6 +566,13 @@ impl App {
         let result = match target {
             Target::File(path) => self.open_picked_file(path),
             Target::Symbol(location) => self.open_location(location),
+            Target::Location(location) => {
+                // Closing the picker schedules cache cleanup; dispatch navigation
+                // after it so that cleanup cannot replace the destination job.
+                self.close_picker();
+                self.begin_location_navigation((*location).clone());
+                return;
+            }
             Target::Search(hit) => self.accept_workspace_hit(hit),
             Target::Buffer(id) => {
                 if id != self.editor.document().id() {
