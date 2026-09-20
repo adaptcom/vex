@@ -353,9 +353,6 @@ impl<T: Eq> Picker<T> {
         let bottom = bottom - 1;
         rule(frame, left, right + 1, y + 1, "├", "┤");
         rule(frame, left, right + 1, bottom - 2, "├", "┤");
-        for col in x..right {
-            frame.put(col, bottom - 1, " ", Style::Status);
-        }
         frame.put(x, y, ">", Style::Message);
         // Keep the prompt caret visible, scrolling at grapheme boundaries.
         let room = usize::from(right - x - 2);
@@ -429,7 +426,7 @@ impl<T: Eq> Picker<T> {
                 self.noun,
             )
         };
-        label(frame, x, bottom - 1, right - x, &status, Style::Status);
+        label(frame, x, bottom - 1, right - x, &status, Style::Text);
     }
 
     fn paint_spinner(&self, frame: &mut Frame, left: u16, top: u16, right: u16, bottom: u16) {

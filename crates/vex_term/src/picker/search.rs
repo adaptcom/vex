@@ -86,7 +86,7 @@ impl Worker {
             return;
         }
         if job.query.is_empty() {
-            emit(empty(&job, String::new()));
+            emit(empty(&job, "Type a regular expression".into()));
             return;
         }
         let regex = match Regex::new(

@@ -64,6 +64,7 @@ impl Style {
                 | Self::MatchingBracket(_)
                 | Self::MatchingSelection
                 | Self::MatchingSecondaryCursor
+                | Self::PickerMatch
         ) || matches!(self.syntax(), Some(Highlight::Heading | Highlight::Strong))
             || matches!(self, Self::Markup(attributes) if attributes.contains(Attributes::STRONG))
     }
