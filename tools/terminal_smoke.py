@@ -323,6 +323,20 @@ def main():
             assert indented_lines.read_bytes() == b"\t  first\r\n\t  second\r\nlast"
         print("PASS: Enter copies mixed indentation, preserves CRLF, and groups undo/redo")
 
+        for name, unit in [("two", b"  "), ("four", b"    "), ("eight", b"        "), ("tabs", b"\t"), ("empty", b"    ")]:
+            tab_file = Path(directory) / f"{name} indentation.txt"
+            source = b"" if name == "empty" else b"root\tvalue\r\n" + unit + b"child\r\n" + unit + b"other\r\n"
+            tab_file.write_bytes(source)
+            with Terminal([binary, str(tab_file)]) as terminal:
+                terminal.start()
+                terminal.send(b"i\tnew")
+                terminal.expect_screen(b"new")
+                terminal.leave_insert()
+                terminal.send(b"uU:wq\r")
+                terminal.finish()
+                assert tab_file.read_bytes() == unit + b"new" + source
+        print("PASS: Tab uses detected spaces/tabs and empty-file defaults, preserves CRLF, and groups undo/redo")
+
         saved_group = Path(directory) / "saved group.txt"
         saved_group.write_text("")
         with Terminal([binary, str(saved_group)]) as terminal:

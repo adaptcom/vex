@@ -34,18 +34,31 @@ all colors, including syntax and selection colors.
 
 ## Indentation
 
-The language registry also sets indentation for `>` and `<`: Rust and plain
-text use four spaces; Markdown, Bash/shell, JavaScript/JSX, and TypeScript/TSX
-use two. Tab display width defaults to that same number. Changing language
-applies its defaults without rewriting the file. Resetting the same language
-for syntax highlighting retains any buffer override.
+On opening a buffer or reloading it from disk, Vex samples up to 1,000 lines and
+129 characters at the start of each line to infer tabs or a space indentation
+width from 2–8. Blank lines and block-comment continuation stars are ignored.
+Recurring changes in indentation take priority over absolute depth, so a large
+nested block does not make the indentation unit larger. A style must account for
+at least three quarters of the sample; sparse, conflicting, or tied evidence
+falls back to the language's defaults.
+
+Rust and plain text default to four spaces; Markdown, Bash/shell,
+JavaScript/JSX, and TypeScript/TSX default to two. Detected spaces set both the
+indentation and tab display width. Literal tabs identify the style but cannot
+reveal a display width, so they retain the language's default tab stops.
+
+Tab inserts one unit of the chosen spaces/tabs at every insert caret. `>`/`<`
+and LSP formatting use the same buffer settings. Detection does not rewrite the
+file, run on each keystroke, or change settings while typing. All views of a
+buffer share its settings.
 
 The editor API exposes `Indentation { style: IndentStyle, tab_width }` and
 `Editor::set_indentation`. `IndentStyle::Spaces(NonZeroUsize)` and
 `IndentStyle::Tabs` support independent indentation and tab display widths.
-Project/user configuration and indentation detection remain future work.
-`o`, `O`, and Enter continue copying the existing whitespace prefix literally;
-Tab in insert mode still inserts a literal tab. Syntax-based indentation is
+Explicit buffer overrides survive reloads and resetting the same language.
+Changing language restores the cached detection with that language's fallback.
+Project/user configuration remains future work. `o`, `O`, and Enter continue
+copying the existing whitespace prefix literally; syntax-based indentation is
 not inferred by these settings.
 
 ## Comments
@@ -191,4 +204,4 @@ To add another bundled language:
 
 The registry is compiled into Vex. Loading languages or server settings from a
 user configuration file remains future work. These indentation settings control
-explicit shifts; they do not infer indentation from syntax.
+Tab, explicit shifts, and formatting; they do not infer indentation from syntax.

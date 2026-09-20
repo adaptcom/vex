@@ -1227,3 +1227,27 @@ latency. Reproduce with:
 ```sh
 cargo test -p vex_term --release --lib benchmark_mouse_scroll_and_split_drag --locked -- --ignored --nocapture
 ```
+
+## Indentation detection
+
+Buffer creation and disk reload inspect at most 1,000 lines and 129 initial
+characters per line. Detection uses fixed-size counters, skips line
+bodies through the rope's line iterator, and retains the result in the buffer.
+Typing and changing language reuse that result. Tab insertion uses static space
+slices for common widths; it does not rescan the file or measure display columns.
+
+A local release run on 2026-09-20 took 1,000 samples of detection on each
+preconstructed rope:
+
+| Input | Median | Sample p95 |
+|---|---:|---:|
+| 200,000 nonempty lines | 51.375 µs | 77.833 µs |
+| Single 1 MiB line | 2.625 µs | 2.750 µs |
+| Single 1 MiB whitespace prefix | 2.792 µs | 3.083 µs |
+
+These samples exclude file I/O, rope construction, and other buffer setup; they
+measure the additional inference work rather than total file-opening latency.
+
+```sh
+cargo test -p vex_editor --release --lib benchmark_indentation_detection --locked -- --ignored --nocapture
+```

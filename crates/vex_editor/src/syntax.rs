@@ -112,7 +112,8 @@ impl Editor {
         self.cancel_surround();
         self.search.invalidate_syntax();
         if self.language() != language {
-            self.set_indentation(language.map(Language::indentation).unwrap_or_default());
+            self.indentation_state.overridden = false;
+            self.apply_indentation(self.indentation_state.resolve(language));
         }
         let syntax = self.syntax.get_mut();
         syntax.reset(&self.document, language, syntax.background);

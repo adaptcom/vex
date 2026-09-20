@@ -1194,7 +1194,7 @@ commands! {
     /// Replace each selected grapheme with the following character in one undo step, retaining selection direction and returning to normal mode. Enter uses the buffer's line ending; Tab inserts a literal tab. Empty EOF cursors do nothing; ignores counts and leaves the yank register unchanged.
     fn replace(ctx) [Character] { crate::editing::replace(ctx) }
 
-    /// Indent each selected nonblank line once, using the buffer's language indentation settings. Counts add levels; spaces advance to an indent boundary. Retains selected text and returns to normal mode in one undo step.
+    /// Indent each selected nonblank line once, using the buffer's indentation settings. Counts add levels; spaces advance to an indent boundary. Retains selected text and returns to normal mode in one undo step.
     fn indent(ctx) { crate::editing::indent(ctx, false) }
 
     /// Remove up to a counted number of indentation levels from each selected line, measuring tabs at the buffer's tab stops. Retains selected text and returns to normal mode in one undo step.
@@ -1238,6 +1238,23 @@ commands! {
 
     /// Insert the context's text at all carets, continuing the typing undo group; requires insert mode.
     fn insert_text(ctx) { insert(ctx, true) }
+
+    /// Insert one indentation unit at every caret using the buffer's detected or configured spaces/tabs. Continues the typing undo group; requires insert mode.
+    fn insert_tab(ctx) {
+        require_insert(ctx.editor)?;
+        match ctx.editor.indentation().style {
+            crate::IndentStyle::Tabs => ctx.editor.insert_text("\t"),
+            crate::IndentStyle::Spaces(width) => {
+                if let Some(spaces) = "        ".get(..width.get()) {
+                    return ctx.editor.insert_text(spaces);
+                }
+                let mut spaces = String::new();
+                spaces.try_reserve_exact(width.get()).map_err(|_| vex_core::Error::LengthOverflow)?;
+                spaces.extend(std::iter::repeat_n(' ', width.get()));
+                ctx.editor.insert_text(&spaces)
+            }
+        }
+    }
 
     /// Start a new undo checkpoint without saving or leaving insert mode. Subsequent typing and deletion form a new undo group.
     fn commit_undo_checkpoint(ctx) {

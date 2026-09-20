@@ -40,13 +40,14 @@ and calls that existing dispatcher.
 | `i`, `a` | Insert before/after the selection |
 | `I`, `A` | Insert at the first non-whitespace character / end of each cursor's line |
 | `r<char>` | Replace each selected grapheme with a character; Enter and Tab also work |
-| `>`, `<` | Indent/unindent selected lines, using language defaults and repeat counts |
+| `>`, `<` | Indent/unindent selected lines, using buffer indentation settings and repeat counts |
 | `J` | Join selected lines, or join the next line for a single-line selection |
 | Space-c, Ctrl-c in normal/select mode | Toggle comments using the language's delimiters |
 | Space-C | Toggle block comments; use line comments for languages that only support those |
 | `[Space`, `]Space` | Add empty lines above/below selections, retaining normal/select mode |
 | `o`, `O` | Open lines below/above selections and enter insert mode |
 | Enter, Ctrl-j in insert mode | Split the line and copy indentation before the caret |
+| Tab in insert mode | Insert one unit of the buffer's spaces/tabs at each caret |
 | Backspace, Ctrl-h in insert mode | Delete the preceding grapheme |
 | Delete, Ctrl-d in insert mode | Delete the next grapheme |
 | Ctrl-w in insert mode | Delete the preceding word |
@@ -146,8 +147,10 @@ CRLF, or CR), retained even after deleting all line breaks. They copy leading ta
 and spaces literally, without language-specific indentation rules. Enter copies
 only indentation before the caret, so splitting leading whitespace preserves the
 remaining indentation without duplicating it. Counts such as `3o` create three
-lines with a caret on each. Tab inserts a literal tab, displayed at the editor's
-configured tab stops.
+lines with a caret on each. Tab invokes `insert_tab`, inserting one unit of the
+buffer's detected or configured spaces/tabs at every caret. Empty and ambiguous
+files use language defaults. Existing and pasted tab characters retain their
+original bytes and use the editor's configured tab stops for display.
 
 `I` and `A` enter insert mode on each selection's cursor line; duplicate carets
 on a line merge. `I` uses the first non-whitespace grapheme, or the line start
@@ -166,7 +169,7 @@ skips blank lines; spaces advance to the next indentation boundary, with counts
 adding further levels. Unindent removes leading spaces/tabs up to the counted
 width, consuming whole tabs at the configured tab stops. These commands return
 to normal mode, retain the selected text, and create one undo step.
-See [language indentation defaults](syntax.md) for widths and API overrides.
+See [indentation detection and defaults](syntax.md#indentation) for widths and API overrides.
 
 `J` removes line endings within the selected lines and the following indentation.
 A single-line selection joins the next line. It adds a space where needed,

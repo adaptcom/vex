@@ -23,7 +23,7 @@ require `:q!` to discard. `:wq` saves and quits. Use `:help` or
 `:help move_word_forward` for command documentation.
 
 Everyday edits include `I`/`A` for insertion at line edges, `r<char>` to replace
-selected characters, `>`/`<` for language-configured indentation, `J` to join
+selected characters, `>`/`<` for buffer indentation, `J` to join
 lines, and `[Space`/`]Space` to add blank lines. See the
 [editing controls](docs/terminal.md#controls) for selection and count behavior.
 Use `"ay` to copy into a named register, `"ap` to paste it, and Ctrl-r `a` to
@@ -220,7 +220,9 @@ returns an error and clears the count. An unbound sequence also clears pending
 input; sticky groups keep their prefix active. Insert mode treats unbound printable
 characters as text; Enter is bound to
 `insert_newline`, which uses the loaded line ending (LF by default) and copies
-the current line's indentation before the caret. Tab inserts a literal tab.
+the current line's indentation before the caret. Tab calls `insert_tab` to insert
+one unit of the buffer's detected spaces/tabs at each caret. Indentation is sampled
+on opening or reloading a file, with language defaults for ambiguous files.
 Text events call `Editor::insert_text`; paste events call `Editor::insert_paste`
 to get a separate undo step.
 

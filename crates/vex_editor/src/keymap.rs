@@ -444,6 +444,7 @@ impl Default for Keymap {
         keymap
             .bind(Mode::Insert, vec![Enter], "insert_newline")
             .unwrap();
+        keymap.bind(Mode::Insert, vec![Tab], "insert_tab").unwrap();
         keymap
             .bind(Mode::Insert, vec![Ctrl('x')], "completion")
             .unwrap();
@@ -776,7 +777,6 @@ impl KeyHandler {
             let mut buffer = [0; 4];
             let text = match key {
                 Key::Char(ch) if !ch.is_control() => ch.encode_utf8(&mut buffer),
-                Key::Tab => "\t",
                 _ => return Ok(Dispatch::Ignored),
             };
             editor.insert_text(text)?;
@@ -1449,13 +1449,61 @@ mod tests {
         keys.handle(&mut editor, Key::Backspace).unwrap();
         keys.handle(&mut editor, Key::Enter).unwrap();
         keys.handle(&mut editor, Key::Tab).unwrap();
-        assert_eq!(editor.document().text(), "20hjkl\n\t");
+        assert_eq!(editor.document().text(), "20hjkl\n    ");
         assert_eq!(keys.count(), None);
         keys.handle(&mut editor, Key::Escape).unwrap();
         assert_eq!(
             editor.selections().primary().range(),
-            CharOffset(7)..CharOffset(8)
+            CharOffset(10)..CharOffset(11)
         );
+    }
+
+    #[test]
+    fn soft_tabs_at_multiple_carets_group_with_typing_and_repeat_across_languages() {
+        use crate::Language;
+        use vex_core::{Selection, SelectionSet};
+        for language in std::iter::once(None).chain(Language::ALL.iter().copied().map(Some)) {
+            let source = "é\r\n界";
+            let mut editor = Editor::new(Document::from(source));
+            editor.set_language(language);
+            let width = editor.tab_width().get();
+            editor
+                .set_selections(
+                    SelectionSet::new(
+                        vec![
+                            Selection::cursor(CharOffset(0)),
+                            Selection::cursor(CharOffset(3)),
+                        ],
+                        1,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let mut keys = KeyHandler::default();
+            press(&mut keys, &mut editor, "i");
+            assert_eq!(
+                keys.handle(&mut editor, Key::Tab).unwrap(),
+                Dispatch::Executed("insert_tab")
+            );
+            press(&mut keys, &mut editor, "x");
+            let expected = format!("{0}xé\r\n{0}x界", " ".repeat(width));
+            assert_eq!(editor.document().text(), expected.as_str());
+            assert_eq!(
+                editor.selections().ranges(),
+                &[
+                    Selection::cursor(CharOffset(width + 1)),
+                    Selection::cursor(CharOffset(3 + 2 * (width + 1))),
+                ]
+            );
+            assert_eq!(editor.selections().primary_index(), 1);
+            keys.handle(&mut editor, Key::Escape).unwrap();
+            press(&mut keys, &mut editor, "u");
+            assert_eq!(editor.document().text(), source);
+            press(&mut keys, &mut editor, ".");
+            assert_eq!(editor.document().text(), expected.as_str());
+            press(&mut keys, &mut editor, "u");
+            assert_eq!(editor.document().text(), source);
+        }
     }
 
     #[test]

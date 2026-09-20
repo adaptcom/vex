@@ -71,8 +71,9 @@ Ctrl-s in normal/select mode records the full current selection set. Ctrl-o
 (`jump_backward`) moves backward and Ctrl-i (`jump_forward`) moves forward;
 both accept counts, following the [Helix keymap](https://docs.helix-editor.com/keymap.html#movement).
 Tab also moves forward in normal/select mode because legacy terminals send the
-same byte for Tab and Ctrl-i. Insert-mode Tab still inserts a tab, and picker
-Tab still navigates results. `jump_back` remains an unbound command alias.
+same byte for Tab and Ctrl-i. Insert-mode Tab inserts the buffer's indentation
+unit, and picker Tab still navigates results. `jump_back` remains an unbound
+command alias.
 
 Each pane has its own history, capped at 32 entries. A backward jump saves the
 live return location before leaving the newest entry, so Ctrl-i can return to

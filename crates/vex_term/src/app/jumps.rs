@@ -590,7 +590,7 @@ mod tests {
         // Tab retains its editing meaning in insert mode.
         app.execute("insert_mode").unwrap();
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        assert!(app.editor.document().text().to_string().contains('\t'));
+        assert_eq!(app.editor.document().text(), "targ    et text");
     }
 
     #[test]

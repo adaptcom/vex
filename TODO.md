@@ -122,9 +122,11 @@ selections, and measure operations that could affect input latency.
 
 ## Later editing and interface work
 
-- [ ] User/project indentation overrides and optional indentation detection for
-  existing files. The registry now supplies spaces/tabs and tab display widths;
-  add configuration (including EditorConfig) without rewriting existing text.
+- [x] Detect existing indentation on open/reload with bounded sampling and
+  language defaults for ambiguous files. Tab, indent/unindent, and formatting
+  share the chosen spaces/tabs; explicit buffer overrides survive reloads.
+- [ ] User/project indentation configuration (including EditorConfig), including
+  a way to override or disable automatic detection without rewriting text.
 - [ ] Use language/buffer tab widths in file-picker and Git diff previews, which
   currently display tabs at four-column stops.
 - [ ] Language-aware joining that removes repeated comment prefixes. `J`

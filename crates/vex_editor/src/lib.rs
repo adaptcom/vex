@@ -24,6 +24,7 @@ pub mod commands;
 mod comments;
 mod editing;
 mod error;
+mod indentation;
 mod keymap;
 mod prepared_selection;
 mod register;
@@ -200,6 +201,7 @@ pub struct Editor {
     preferred_columns: Option<Vec<usize>>,
     tab_width: NonZeroUsize,
     indent_style: IndentStyle,
+    indentation_state: indentation::State,
     newline: &'static str,
     layout: RefCell<LayoutCache>,
     syntax: RefCell<syntax::Highlighting>,
@@ -224,6 +226,8 @@ impl Editor {
     /// Create a buffer sharing registers and insert history with other buffers.
     pub fn with_session(document: Document, session: Session) -> Self {
         let newline = line_ending(document.text());
+        let indentation_state = indentation::State::new(document.text());
+        let indentation = indentation_state.resolve(None);
         let selections = SelectionSet::single(
             motion::block(document.text(), CharOffset(0)).expect("BOF is valid"),
         );
@@ -237,8 +241,9 @@ impl Editor {
             selections,
             mode: Mode::Normal,
             preferred_columns: None,
-            tab_width: NonZeroUsize::new(4).unwrap(),
-            indent_style: Indentation::default().style,
+            tab_width: indentation.tab_width,
+            indent_style: indentation.style,
+            indentation_state,
             newline,
             layout: RefCell::default(),
             syntax: RefCell::default(),
@@ -417,14 +422,24 @@ impl Editor {
         }
     }
 
-    /// Override this buffer's indentation and tab display width. Changing to a
-    /// different language restores that language's defaults; text is untouched.
+    /// Override this buffer's indentation and tab display width. Reloads retain
+    /// the override; changing language restores detection with language defaults.
     pub fn set_indentation(&mut self, indentation: Indentation) {
+        self.indentation_state.overridden = true;
+        self.apply_indentation(indentation);
+    }
+
+    fn apply_indentation(&mut self, indentation: Indentation) {
         self.indent_style = indentation.style;
-        self.set_tab_width(indentation.tab_width);
+        self.apply_tab_width(indentation.tab_width);
     }
 
     pub fn set_tab_width(&mut self, width: NonZeroUsize) {
+        self.indentation_state.overridden = true;
+        self.apply_tab_width(width);
+    }
+
+    fn apply_tab_width(&mut self, width: NonZeroUsize) {
         if self.tab_width != width {
             self.search.invalidate_columns();
         }

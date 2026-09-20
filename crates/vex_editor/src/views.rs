@@ -249,6 +249,7 @@ impl Editor {
         }
         self.preferred_columns = None;
         self.newline = crate::line_ending(self.document.text());
+        self.refresh_indentation();
         self.language_action = None;
         self.application_action = None;
         Ok(())

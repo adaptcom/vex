@@ -945,7 +945,7 @@ mod tests {
                     assert!(!answer(&mut app, request, result));
                 }
                 if event == key(KeyCode::Tab) {
-                    assert_eq!(app.editor.document().text(), "an\t");
+                    assert_eq!(app.editor.document().text(), "an    ");
                 }
                 if event == key(KeyCode::Enter) {
                     assert_eq!(app.editor.document().text(), "an\n");
