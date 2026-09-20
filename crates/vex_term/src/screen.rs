@@ -44,7 +44,6 @@ pub enum Style {
     SecondaryCursor,
     InactiveCursor,
     PickerMatch,
-    PickerSelectedMatch,
 }
 
 impl Style {
@@ -125,8 +124,7 @@ impl Style {
             }
             Self::SecondaryCursor => (Black, DarkCyan),
             Self::InactiveCursor => (DarkGrey, Reset),
-            Self::PickerMatch => (Yellow, Reset),
-            Self::PickerSelectedMatch => (DarkYellow, Grey),
+            Self::PickerMatch => (DarkYellow, Reset),
         }
     }
 }

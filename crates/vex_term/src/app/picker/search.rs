@@ -64,11 +64,12 @@ impl App {
         };
         active.cancellation.cancel();
         active.preview_cancel.cancel();
+        active.view.preview_pending = false;
         active.cancellation = Cancellation::default();
         active.revision += 1;
         active.preview_target = None;
         active.accept_pending = false;
-        active.view.pending = true;
+        active.view.begin_update();
         source.due = Instant::now() + QUERY_DELAY;
         self.picker.preview_job = None;
         self.picker.search_job = Some(Job {
@@ -90,7 +91,6 @@ impl App {
         source.documents = documents;
         let accepting = active.accept_pending;
         active.view.resume();
-        active.view.items.clear();
         self.submit_workspace_query();
         self.picker.active.as_mut().unwrap().accept_pending = accepting;
     }
@@ -124,7 +124,7 @@ impl App {
             return false;
         }
         active.view.title = format!("Search · {}", result.root.display());
-        active.view.replace_incremental(
+        let replaced = active.view.replace_incremental(
             result
                 .items
                 .into_iter()
@@ -138,16 +138,23 @@ impl App {
                 .collect(),
             !result.scanning,
         );
-        active.view.matched = result.matched;
-        active.view.total = result.scanned;
+        if replaced {
+            active.view.matched = result.matched;
+            active.view.total = result.scanned;
+        }
         active.view.pending = result.scanning;
         active.view.notice = result.notice;
-        if active.accept_pending && (!active.view.items.is_empty() || !result.scanning) {
+        if active.accept_pending
+            && ((active.view.current() && !active.view.items.is_empty()) || !result.scanning)
+        {
             active.accept_pending = false;
             if !active.view.items.is_empty() {
                 self.accept_picker();
-            } else if active.view.notice.is_empty() {
-                active.view.notice = "No matching lines".into();
+            } else {
+                if active.view.notice.is_empty() {
+                    active.view.notice = "No matching lines".into();
+                }
+                self.request_picker_preview();
             }
         } else {
             self.request_picker_preview();
@@ -362,6 +369,49 @@ mod tests {
         assert!(app.picker.active.is_some());
         app.handle(key(KeyCode::Esc));
         assert!(app.picker.active.is_none());
+    }
+
+    #[test]
+    fn empty_partial_scans_keep_old_rows_without_accepting_them_for_a_new_query() {
+        let (root, mut app) = fixture();
+        let mut worker = Worker::default();
+        app.start_workspace_search(root.path().into(), '/');
+        press(&mut app, "needle");
+        finish(&mut app, &mut worker);
+        let previous = app
+            .picker
+            .active
+            .as_ref()
+            .unwrap()
+            .view
+            .selected()
+            .unwrap()
+            .clone();
+        press(&mut app, "missing");
+        app.handle(key(KeyCode::Enter));
+        assert!(app.input_waiting());
+        let active = app.picker.active.as_ref().unwrap();
+        let partial = Result {
+            session: active.session,
+            revision: active.revision,
+            root: root.path().into(),
+            items: vec![],
+            matched: 0,
+            scanned: 0,
+            scanning: true,
+            notice: String::new(),
+        };
+        assert!(app.handle_workspace_search_result(partial));
+        let active = app.picker.active.as_ref().unwrap();
+        assert!(Arc::ptr_eq(active.view.selected().unwrap(), &previous));
+        assert!(!active.view.current());
+        assert!(app.input_waiting());
+        finish(&mut app, &mut worker);
+        assert!(!app.input_waiting());
+        let view = &app.picker.active.as_ref().unwrap().view;
+        assert!(view.items.is_empty() && view.current() && !view.pending);
+        assert!(view.preview.text.is_empty() && !view.preview_pending);
+        assert_eq!(app.editor.document().text(), "original\n");
     }
 
     #[test]

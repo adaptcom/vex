@@ -19,13 +19,18 @@ use crate::{
     input::Prompt,
     screen::{Cursor, CursorShape, Frame, Style},
 };
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use vex_core::display;
 use vex_editor::Key;
 
 pub(crate) const MAX_QUERY_BYTES: usize = 1024;
+const SPINNER_INTERVAL: Duration = Duration::from_millis(100);
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Shared geometry for drawing, paging, and deciding whether to load a preview.
 /// Bounds are exclusive; margins leave the current document visible behind us.
@@ -92,12 +97,17 @@ pub(crate) struct Picker<T> {
     touched: bool,
     restore: Option<Arc<Entry<T>>>,
     pub pending: bool,
+    current: bool,
     pub matched: usize,
     pub total: usize,
     pub title: String,
     pub noun: &'static str,
     pub notice: String,
     pub preview: Preview,
+    preview_title: String,
+    pub preview_pending: bool,
+    spinner: usize,
+    spinner_due: Option<Instant>,
 }
 
 impl<T: Eq> Picker<T> {
@@ -110,17 +120,73 @@ impl<T: Eq> Picker<T> {
             touched: false,
             restore: None,
             pending: true,
+            current: false,
             matched: 0,
             total: 0,
             title,
             noun: "files",
             notice: String::new(),
             preview: Preview::default(),
+            preview_title: String::new(),
+            preview_pending: false,
+            spinner: 0,
+            spinner_due: None,
         }
     }
 
     pub fn selected(&self) -> Option<&Arc<Entry<T>>> {
         self.items.get(self.selected).map(|item| &item.entry)
+    }
+
+    /// Retained rows remain drawable, but only current rows may be accepted.
+    pub fn current(&self) -> bool {
+        self.current
+    }
+
+    pub fn begin_update(&mut self) {
+        self.current = false;
+        self.pending = true;
+        self.notice.clear();
+    }
+
+    pub fn set_preview(&mut self, preview: Preview) {
+        self.preview_title = self
+            .selected()
+            .map_or_else(String::new, |entry| entry.label.clone());
+        self.preview = preview;
+        self.preview_pending = false;
+    }
+
+    pub fn clear_preview(&mut self) {
+        self.preview = Preview::default();
+        self.preview_title.clear();
+        self.preview_pending = false;
+    }
+
+    pub fn animation_deadline(&self) -> Option<Instant> {
+        (self.pending || self.preview_pending)
+            .then_some(self.spinner_due)
+            .flatten()
+    }
+
+    /// Animate only while work is outstanding, using the event loop's clock.
+    pub fn poll_animation(&mut self, now: Instant) -> bool {
+        if !self.pending && !self.preview_pending {
+            self.spinner = 0;
+            return self.spinner_due.take().is_some();
+        }
+        match self.spinner_due {
+            Some(due) if now < due => false,
+            due => {
+                self.spinner = if due.is_some() {
+                    (self.spinner + 1) % SPINNER.len()
+                } else {
+                    0
+                };
+                self.spinner_due = Some(now + SPINNER_INTERVAL);
+                true
+            }
+        }
     }
 
     /// Keep the retained selection when refreshed results arrive after reopening.
@@ -138,7 +204,7 @@ impl<T: Eq> Picker<T> {
 
     /// A reopened picker keeps its cached rows until the selected identity is
     /// rediscovered or the scan finishes. Early partial scans cannot lose it.
-    pub fn replace_incremental(&mut self, items: Vec<Item<T>>, complete: bool) {
+    pub fn replace_incremental(&mut self, items: Vec<Item<T>>, complete: bool) -> bool {
         if let Some(wanted) = &self.restore {
             if let Some(index) = items
                 .iter()
@@ -147,12 +213,18 @@ impl<T: Eq> Picker<T> {
                 self.selected = index;
                 self.items = items;
                 self.restore = None;
-                return;
+                self.current = true;
+                return true;
             }
             if !complete {
-                return;
+                return false;
             }
             self.restore = None;
+        }
+        // An empty partial scan isn't an empty final result. Keep the last
+        // visible batch until this query produces rows or finishes.
+        if !complete && items.is_empty() && !self.items.is_empty() {
+            return false;
         }
         let selected = self
             .selected()
@@ -160,6 +232,8 @@ impl<T: Eq> Picker<T> {
             .and_then(|old| items.iter().position(|item| item.entry.value == old.value));
         self.items = items;
         self.selected = selected.unwrap_or(0);
+        self.current = true;
+        true
     }
 
     pub fn handle(&mut self, key: Key, page: usize) -> Action {
@@ -206,14 +280,8 @@ impl<T: Eq> Picker<T> {
 
     fn changed(&mut self) {
         self.restore = None;
-        self.items.clear();
-        self.selected = 0;
-        self.top = 0;
         self.touched = false;
-        self.pending = true;
-        self.matched = 0;
-        self.preview = Preview::default();
-        self.notice.clear();
+        self.begin_update();
     }
 
     fn navigate(&mut self, delta: isize) {
@@ -240,12 +308,19 @@ impl<T: Eq> Picker<T> {
             bottom,
             &format!(" {} ", self.title),
         );
+        if self.pending {
+            self.paint_spinner(frame, left, top, right, bottom);
+        }
         if let Some(preview_left) = layout.preview_left() {
-            let title = self.selected().map_or_else(
-                || " Preview ".to_owned(),
-                |entry| format!(" Preview · {} ", entry.label),
-            );
+            let title = if self.preview_title.is_empty() {
+                " Preview ".to_owned()
+            } else {
+                format!(" Preview · {} ", self.preview_title)
+            };
             paint_box(frame, preview_left, top, layout.right, bottom, &title);
+            if self.preview_pending {
+                self.paint_spinner(frame, preview_left, top, layout.right, bottom);
+            }
             self.preview.paint(
                 frame,
                 preview_left + 2,
@@ -312,26 +387,18 @@ impl<T: Eq> Picker<T> {
         if self.selected >= self.top + rows {
             self.top = self.selected + 1 - rows;
         }
-        if self.items.is_empty() {
-            let message = if self.pending {
-                "Loading / matching…".into()
-            } else {
-                format!("No matching {}", self.noun)
-            };
+        if self.items.is_empty() && !self.pending {
+            let message = format!("No matching {}", self.noun);
             label(frame, x + 1, y + 2, right - x - 1, &message, Style::Gutter);
         }
         for (offset, item) in self.items.iter().enumerate().skip(self.top).take(rows) {
             let row = y + 2 + (offset - self.top) as u16;
             let selected = offset == self.selected;
-            let base = if selected {
-                Style::Selection
-            } else {
-                Style::Text
-            };
+            let base = Style::Text;
             for col in x..right {
                 frame.put(col, row, " ", base);
             }
-            frame.put(x, row, if selected { ">" } else { " " }, base);
+            frame.put(x, row, if selected { ">" } else { " " }, Style::Message);
             let mut col = x + 2;
             for (byte, grapheme) in item.entry.label.grapheme_indices(true) {
                 let size = display::visible(grapheme).width() as u16;
@@ -346,15 +413,7 @@ impl<T: Eq> Picker<T> {
                     col,
                     row,
                     grapheme,
-                    if found {
-                        if selected {
-                            Style::PickerSelectedMatch
-                        } else {
-                            Style::PickerMatch
-                        }
-                    } else {
-                        base
-                    },
+                    if found { Style::PickerMatch } else { base },
                 );
                 col += size;
             }
@@ -363,15 +422,22 @@ impl<T: Eq> Picker<T> {
             self.notice.clone()
         } else {
             format!(
-                " {}/{} matches · {} {}{} · ↑↓ move · Enter open · Esc close",
+                " {}/{} matches · {} {} · ↑↓ move · Enter open · Esc close",
                 self.items.len(),
                 self.matched,
                 self.total,
                 self.noun,
-                if self.pending { " · loading" } else { "" }
             )
         };
         label(frame, x, bottom - 1, right - x, &status, Style::Status);
+    }
+
+    fn paint_spinner(&self, frame: &mut Frame, left: u16, top: u16, right: u16, bottom: u16) {
+        if right - left >= 7 && bottom - top >= 2 {
+            frame.put(right - 4, top, " ", Style::PopupTitle);
+            frame.put(right - 3, top, SPINNER[self.spinner], Style::PopupTitle);
+            frame.put(right - 2, top, " ", Style::PopupTitle);
+        }
     }
 }
 
@@ -432,6 +498,89 @@ pub(crate) fn label(frame: &mut Frame, mut x: u16, y: u16, width: u16, text: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_queries_keep_rows_and_preview_with_only_a_marker_and_match_colors() {
+        let mut picker = Picker::new("Files".into());
+        picker.replace(vec![Item {
+            entry: Arc::new(Entry {
+                label: "alpha".into(),
+                value: 1,
+            }),
+            matched: vec![0],
+        }]);
+        picker.pending = false;
+        picker.set_preview(Preview::plain("old preview"));
+        let selected = picker.selected().unwrap().clone();
+        picker.paste("beta");
+        assert!(!picker.current());
+        assert!(Arc::ptr_eq(&selected, picker.selected().unwrap()));
+        assert_eq!(picker.preview.text, "old preview");
+        assert!(!picker.replace_incremental(vec![], false));
+        assert!(Arc::ptr_eq(&selected, picker.selected().unwrap()));
+
+        let mut frame = Frame::default();
+        frame.reset(120, 24).unwrap();
+        picker.paint(&mut frame);
+        let layout = Layout::new(120, 24);
+        let row = layout.top + 3;
+        assert!(frame.row_text(row).contains("> alpha"));
+        assert_eq!(
+            frame.style_at(layout.left + 3, row),
+            Some(Style::PickerMatch)
+        );
+        assert_eq!(frame.style_at(layout.left + 4, row), Some(Style::Text));
+        assert!(
+            (layout.left + 1..layout.list_right() - 1)
+                .all(|x| frame.style_at(x, row) != Some(Style::Selection))
+        );
+        let text: String = (0..24).map(|row| frame.row_text(row)).collect();
+        assert!(!text.contains("Loading") && !text.contains("loading"));
+        assert!(text.contains("old preview") && text.contains("Preview · alpha"));
+
+        assert!(picker.replace_incremental(vec![], true));
+        picker.pending = false;
+        assert!(picker.current() && picker.selected().is_none());
+        frame.reset(120, 24).unwrap();
+        picker.paint(&mut frame);
+        assert!(frame.row_text(row).contains("No matching files"));
+    }
+
+    #[test]
+    fn spinner_animates_idle_work_at_bounded_intervals_and_stops_when_both_jobs_finish() {
+        let mut picker = Picker::<()>::new("Files".into());
+        let now = Instant::now();
+        assert!(picker.poll_animation(now));
+        assert_eq!(picker.animation_deadline(), Some(now + SPINNER_INTERVAL));
+        assert!(!picker.poll_animation(now + SPINNER_INTERVAL / 2));
+        let mut frame = Frame::default();
+        frame.reset(120, 24).unwrap();
+        picker.paint(&mut frame);
+        let layout = Layout::new(120, 24);
+        assert!(frame.row_text(layout.top).contains(SPINNER[0]));
+        assert!(picker.poll_animation(now + SPINNER_INTERVAL));
+        frame.reset(120, 24).unwrap();
+        picker.paint(&mut frame);
+        assert!(frame.row_text(layout.top).contains(SPINNER[1]));
+        picker.pending = false;
+        picker.preview_pending = true;
+        assert!(picker.animation_deadline().is_some());
+        assert!(picker.poll_animation(now + SPINNER_INTERVAL * 2));
+        frame.reset(120, 24).unwrap();
+        picker.paint(&mut frame);
+        assert_eq!(frame.row_text(layout.top).matches(SPINNER[2]).count(), 1);
+        picker.preview_pending = false;
+        assert!(picker.animation_deadline().is_none());
+        assert!(picker.poll_animation(now + SPINNER_INTERVAL * 3));
+        assert!(!picker.poll_animation(now + Duration::from_secs(10)));
+        frame.reset(120, 24).unwrap();
+        picker.paint(&mut frame);
+        assert!(
+            SPINNER
+                .iter()
+                .all(|glyph| !frame.row_text(layout.top).contains(glyph))
+        );
+    }
 
     #[test]
     fn reopening_keeps_scroll_and_selection_until_incremental_scan_finds_it() {
@@ -560,7 +709,9 @@ mod tests {
         }
         picker.paste("界e\u{301}\n:q!\x1b");
         assert_eq!(picker.query.text(), "界e\u{301}:q!");
-        assert!(picker.items.is_empty());
+        assert_eq!(picker.items.len(), 40);
+        assert_eq!(picker.selected().unwrap().value, 10);
+        assert!(!picker.current());
         assert!(matches!(picker.handle(Key::Enter, 10), Action::Accept));
         picker.paste(&"界".repeat(2000));
         assert!(picker.query.text().len() <= MAX_QUERY_BYTES);

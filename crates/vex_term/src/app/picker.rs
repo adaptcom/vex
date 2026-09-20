@@ -12,7 +12,7 @@ use crate::{
     screen::{Frame, Style},
 };
 use crossterm::event::{Event, KeyEventKind};
-use std::{io, path::PathBuf, sync::Arc};
+use std::{io, path::PathBuf, sync::Arc, time::Instant};
 use vex_editor::background::Cancellation;
 
 mod diagnostics;
@@ -77,6 +77,17 @@ pub(super) struct State {
 }
 
 impl App {
+    pub(crate) fn picker_animation_deadline(&self) -> Option<Instant> {
+        self.picker.active.as_ref()?.view.animation_deadline()
+    }
+
+    pub(crate) fn poll_picker_animation(&mut self, now: Instant) -> bool {
+        self.picker
+            .active
+            .as_mut()
+            .is_some_and(|active| active.view.poll_animation(now))
+    }
+
     pub(super) fn picker_query_stamp(&self) -> Option<(u64, crate::input::PromptStamp)> {
         self.picker
             .active
@@ -107,7 +118,7 @@ impl App {
         }
         self.picker.next_session += 1;
         self.picker.active = Some(Active {
-            view: Picker::new("Files · discovering project…".into()),
+            view: Picker::new("Files".into()),
             session: self.picker.next_session,
             revision: 0,
             source: Source::Files(self.files.target().map(PathBuf::from), cwd),
@@ -155,8 +166,10 @@ impl App {
             return;
         }
         let active = self.picker.active.as_mut().unwrap();
+        active.view.begin_update();
         active.cancellation.cancel();
         active.preview_cancel.cancel();
+        active.view.preview_pending = false;
         active.cancellation = Cancellation::default();
         active.revision += 1;
         active.preview_target = None;
@@ -229,17 +242,19 @@ impl App {
             .then(|| active.view.selected().map(|entry| entry.value.clone()))
             .flatten();
         if target == active.preview_target {
+            if target.is_none() {
+                active.view.clear_preview();
+            }
             return;
         }
         active.preview_cancel.cancel();
         active.preview_cancel = Cancellation::default();
         active.preview_request += 1;
         active.preview_target = target.clone();
-        active.view.preview = if target.is_some() {
-            Preview::plain("Loading preview…")
-        } else {
-            Preview::default()
-        };
+        active.view.preview_pending = target.is_some();
+        if target.is_none() {
+            active.view.clear_preview();
+        }
         let session = active.session;
         let request = active.preview_request;
         let cancellation = active.preview_cancel.clone();
@@ -279,6 +294,14 @@ impl App {
                 cancellation,
             })
         });
+        if self.picker.preview_job.is_none()
+            && let Some(active) = &mut self.picker.active
+            && active.view.preview_pending
+        {
+            active
+                .view
+                .set_preview(Preview::plain("Preview unavailable"));
+        }
     }
 
     pub(super) fn refresh_picker_buffer(&mut self, document: vex_core::DocumentId) {
@@ -317,6 +340,7 @@ impl App {
         if let Some(mut active) = self.picker.active.take() {
             active.cancellation.cancel();
             active.preview_cancel.cancel();
+            active.view.preview_pending = false;
             active.accept_pending = false;
             if let Source::Diagnostics(source) = &mut active.source {
                 source.documents = Arc::from([]);
@@ -509,14 +533,15 @@ impl App {
             Action::Selection => self.request_picker_preview(),
             Action::Accept => {
                 if active.view.pending
-                    && (active.view.items.is_empty()
+                    && (!active.view.current()
+                        || active.view.items.is_empty()
                         || matches!(
                             active.source,
                             Source::Jumps(_) | Source::Locations(_) | Source::Diagnostics(_)
                         ))
                 {
                     active.accept_pending = true;
-                } else {
+                } else if active.view.current() {
                     self.accept_picker();
                 }
             }
@@ -541,7 +566,7 @@ impl App {
             return false;
         }
         active.view.title = format!("Files · {}", result.root.display());
-        active.view.replace_incremental(
+        let replaced = active.view.replace_incremental(
             result
                 .items
                 .into_iter()
@@ -555,8 +580,10 @@ impl App {
                 .collect(),
             !result.scanning,
         );
-        active.view.matched = result.matched;
-        active.view.total = result.scanned;
+        if replaced {
+            active.view.matched = result.matched;
+            active.view.total = result.scanned;
+        }
         active.view.pending = result.scanning;
         active.view.notice = result.notice;
         let accept = active.accept_pending && !result.scanning;
@@ -580,7 +607,7 @@ impl App {
         {
             return false;
         }
-        active.view.preview = result.preview;
+        active.view.set_preview(result.preview);
         true
     }
 
@@ -595,6 +622,7 @@ impl App {
             if let Some(active) = &mut self.picker.active {
                 active.view.notice = format!("No matching {} · Esc close", active.view.noun);
             }
+            self.request_picker_preview();
             return;
         };
         let result = match target {
@@ -896,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn highlighted_previews_cancel_on_resize_and_do_not_color_another_selection() {
+    fn highlighted_previews_cancel_on_resize_and_survive_query_changes() {
         let (directory, mut app) = fixture();
         fs::write(directory.path().join("example.rs"), "fn main() {}\n").unwrap();
         let mut worker = FileWorker::default();
@@ -929,16 +957,10 @@ mod tests {
         );
         assert_eq!(app.editor.document().text(), "alpha contents");
         app.handle(key(KeyCode::Backspace));
-        assert!(
-            app.picker
-                .active
-                .as_ref()
-                .unwrap()
-                .view
-                .preview
-                .highlights
-                .is_empty()
-        );
+        let view = &app.picker.active.as_ref().unwrap().view;
+        assert!(!view.preview.highlights.is_empty());
+        assert_eq!(view.preview.text, "fn main() {}");
+        assert!(!view.current());
         finish(&mut app, &mut worker);
         let late = app.take_preview_job().unwrap().run().unwrap();
         app.handle(key(KeyCode::Esc));
@@ -1097,10 +1119,27 @@ mod tests {
     fn early_enter_opens_the_current_query_and_unsaved_changes_are_protected() {
         let (directory, mut app) = fixture();
         app.enable_lsp();
-        press(&mut app, "ll fbeta");
+        press(&mut app, "ll f");
+        let mut worker = FileWorker::default();
+        finish(&mut app, &mut worker);
+        assert_eq!(
+            app.picker
+                .active
+                .as_ref()
+                .unwrap()
+                .view
+                .selected()
+                .unwrap()
+                .label,
+            "alpha.txt"
+        );
+        press(&mut app, "beta");
+        let view = &app.picker.active.as_ref().unwrap().view;
+        assert_eq!(view.selected().unwrap().label, "alpha.txt");
+        assert!(!view.current());
         app.handle(key(KeyCode::Enter));
         assert!(app.input_waiting());
-        finish(&mut app, &mut FileWorker::default());
+        finish(&mut app, &mut worker);
         assert!(!app.input_waiting());
         assert!(app.picker.active.is_none());
         assert_eq!(app.editor.document().text(), "beta contents");
@@ -1123,6 +1162,58 @@ mod tests {
             fs::read_to_string(directory.path().join("alpha.txt")).unwrap(),
             "alpha contents"
         );
+    }
+
+    #[test]
+    fn preview_retains_its_own_title_until_replacement_and_animation_stops_on_close() {
+        let (_directory, mut app) = fixture();
+        let mut worker = FileWorker::default();
+        press(&mut app, " f");
+        finish(&mut app, &mut worker);
+        let preview = app.take_preview_job().unwrap().run().unwrap();
+        assert!(app.handle_preview_result(preview));
+        press(&mut app, "beta");
+        assert_eq!(
+            app.picker.active.as_ref().unwrap().view.preview.text,
+            "alpha contents"
+        );
+        let now = Instant::now();
+        assert!(app.poll_picker_animation(now));
+        assert!(app.picker_animation_deadline().is_some());
+        finish(&mut app, &mut worker);
+        assert_eq!(
+            app.picker
+                .active
+                .as_ref()
+                .unwrap()
+                .view
+                .selected()
+                .unwrap()
+                .label,
+            "beta.txt"
+        );
+        assert!(app.picker.active.as_ref().unwrap().view.preview_pending);
+        let mut frame = Frame::default();
+        frame.reset(120, 18).unwrap();
+        app.paint(&mut frame).unwrap();
+        let text: String = (0..18).map(|row| frame.row_text(row)).collect();
+        assert!(text.contains("Preview · alpha.txt") && text.contains("alpha contents"));
+        assert!(!text.contains("Loading") && !text.contains("Preview · beta.txt"));
+        let preview = app.take_preview_job().unwrap().run().unwrap();
+        assert!(app.handle_preview_result(preview));
+        assert!(app.picker_animation_deadline().is_none());
+        assert!(app.poll_picker_animation(now));
+        assert!(!app.poll_picker_animation(now));
+        frame.reset(120, 18).unwrap();
+        app.paint(&mut frame).unwrap();
+        let text: String = (0..18).map(|row| frame.row_text(row)).collect();
+        assert!(text.contains("Preview · beta.txt") && text.contains("beta contents"));
+        app.handle(key(KeyCode::Backspace));
+        assert!(app.poll_picker_animation(now));
+        app.handle(key(KeyCode::Esc));
+        assert!(app.picker_animation_deadline().is_none());
+        assert!(!app.poll_picker_animation(now));
+        assert!(!app.picker.last.as_ref().unwrap().view.preview_pending);
     }
 
     #[test]

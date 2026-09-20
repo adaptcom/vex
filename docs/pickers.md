@@ -48,19 +48,31 @@ must match, in any order. Uppercase in the query enables case-sensitive matching
 Otherwise matching uses simple Unicode lowercase comparison. Contiguous matches,
 word boundaries, camel-case boundaries, and the basename receive higher scores.
 Ties use path order. Matched characters are highlighted at grapheme boundaries.
+The selected row uses a `>` marker and the same foreground match highlights as
+other rows, with the terminal's default background. Preview line markers also
+use foreground emphasis.
 Accent folding, regex queries, and fuzzy-query operators are not supported.
 
 Results appear as scanning proceeds. The picker keeps the best 512 entries and
 shows the total match count; narrow the query to find entries beyond that list.
-Enter opens the highlighted result even while discovery continues. If the current
-query has no results yet, Enter waits for its ranking to finish. Subsequent
+Query edits keep the most recent rows, match highlights, and preview visible
+until new results arrive. An empty partial scan keeps those rows; a completed
+empty result replaces them with the no-matches message. A small spinner in each
+panel's title marks outstanding list or preview work. It advances every 100 ms
+through the existing event loop and stops when work finishes or the picker closes.
+Before the first result, the panel stays empty with its spinner.
+
+Enter opens a current result even while discovery continues. Retained rows from
+an older query cannot be accepted: Enter waits for the current ranking. Subsequent
 editing keys stay queued until the file opens; Escape/Ctrl-c can cancel when next
 in key order, and resize/focus events still work.
 
 The picker floats in two independently bordered boxes: the query, results, and
 footer on the left, and a preview on the right. The current document remains
 visible around the boxes and through the gap between them. The preview has its
-own title showing the selected path and uses its full interior height. Narrow
+own title showing the displayed preview's path and uses its full interior height.
+While another preview loads, the previous text and title remain together; the
+new title, text, and syntax colors replace them at once. Narrow
 terminals show only the file list; margins shrink on small terminals, and
 terminals too small for results show a resize message.
 

@@ -38,6 +38,7 @@ impl App {
         source.path = self.files.target().map(PathBuf::from);
         source.selections = self.editor.selections().clone();
         source.mode = self.editor.mode();
+        active.view.begin_update();
         source.loading = false;
         source.due = source.catalog.is_none().then(Instant::now);
         if source.catalog.is_some() {
@@ -145,7 +146,9 @@ impl App {
         };
         active.cancellation.cancel();
         active.cancellation = Cancellation::default();
+        active.view.begin_update();
         active.preview_cancel.cancel();
+        active.view.preview_pending = false;
         active.preview_target = None;
         active.accept_pending = false;
         active.revision += 1;
@@ -166,13 +169,14 @@ impl App {
     }
 
     fn rank_symbols(&mut self) {
-        let active = self.picker.active.as_ref().unwrap();
+        let active = self.picker.active.as_mut().unwrap();
         let super::Source::Symbols(source) = &active.source else {
             return;
         };
         let Some(symbols) = source.catalog.clone() else {
             return;
         };
+        active.view.begin_update();
         self.picker.symbol_job = Some(SymbolJob {
             session: active.session,
             revision: active.revision,

@@ -51,7 +51,7 @@ impl Preview {
                         }
                     ),
                     if self.focus_line == Some(row) {
-                        Style::Selection
+                        Style::Message
                     } else {
                         Style::Gutter
                     },

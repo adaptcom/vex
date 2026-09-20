@@ -171,6 +171,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
         // completion and diagnostics never depend on another terminal event arriving.
         redraw |= app.advance_repeat();
         redraw |= app.poll_diagnostics(Instant::now());
+        redraw |= app.poll_picker_animation(Instant::now());
         if let Some(job) = app.editor.take_search_job() {
             runtime.submit(job);
         }
@@ -252,6 +253,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 .chain(app.diagnostic_deadline())
                 .chain(app.symbol_deadline())
                 .chain(app.workspace_search_deadline())
+                .chain(app.picker_animation_deadline())
                 .chain(app.git_deadline())
                 .chain(app.status_deadline())
                 .chain(app.file_poll_deadline())
