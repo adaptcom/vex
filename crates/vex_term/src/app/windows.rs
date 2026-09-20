@@ -1,5 +1,5 @@
-//! Window ownership and buffer sharing. Only visible buffers are retained;
-//! closing their last view must pass the same save protection as quitting.
+//! Window ownership and buffer sharing. Documents retain the usual save
+//! protection; commit drafts remain in memory when their last view closes.
 
 mod layout;
 
@@ -71,6 +71,118 @@ impl State {
 }
 
 impl App {
+    pub(super) fn open_commit_draft(
+        &mut self,
+        root: PathBuf,
+        status_key: PathBuf,
+    ) -> io::Result<()> {
+        let existing = self
+            .git_write
+            .drafts
+            .iter()
+            .find(|(_, draft)| draft.root == root)
+            .map(|(id, _)| *id);
+        if let Some(id) = existing
+            && let Some(window) = self
+                .windows
+                .panes
+                .iter()
+                .find(|(_, pane)| pane.document == id && matches!(pane.content, Content::Document))
+                .map(|(id, _)| *id)
+        {
+            self.focus_window(window);
+        } else {
+            if existing.is_none() && self.git_write.drafts.len() >= 16 {
+                return Err(io::Error::other(
+                    "too many retained commit drafts (16 repository limit)",
+                ));
+            }
+            // A split retains the original document and status pane. Horizontal
+            // fallback also permits composing on narrow terminals.
+            if self.split_window(Axis::Vertical).is_err() {
+                self.split_window(Axis::Horizontal)?;
+            }
+            let prepared = if let Some(id) = existing {
+                Prepared::Existing(id)
+            } else {
+                let document = vex_core::Document::default();
+                let files = FileState::scratch(&document);
+                let mut editor = Editor::new(document);
+                editor.set_background_search(true);
+                editor.execute("insert_mode", 1).map_err(io::Error::other)?;
+                self.git_write.drafts.insert(
+                    editor.document().id(),
+                    super::git_write::Draft {
+                        root,
+                        status_key,
+                        committed: None,
+                    },
+                );
+                Prepared::New(Box::new(Buffer {
+                    editor,
+                    files,
+                    automatic_language: false,
+                }))
+            };
+            self.replace_window_buffer(prepared)?;
+        }
+        let id = self.editor.document().id();
+        if self.git_write.drafts[&id].committed == Some(self.editor.document().revision()) {
+            // Insert mode normalizes selections to insertion cursors. Leave it
+            // before selecting the completed message for removal.
+            self.editor
+                .execute("normal_mode", 1)
+                .map_err(io::Error::other)?;
+            self.editor
+                .set_selections(vex_core::SelectionSet::single(vex_core::Selection::new(
+                    vex_core::CharOffset(0),
+                    vex_core::CharOffset(self.editor.document().text().len_chars()),
+                )))
+                .map_err(io::Error::other)?;
+            self.editor
+                .execute("delete_selection", 1)
+                .map_err(io::Error::other)?;
+            self.editor.finish_undo_group();
+            self.files = FileState::scratch(self.editor.document());
+            self.editor
+                .execute("insert_mode", 1)
+                .map_err(io::Error::other)?;
+            self.git_write.drafts.get_mut(&id).unwrap().committed = None;
+        }
+        Ok(())
+    }
+
+    pub(super) fn leave_commit_draft(&mut self, status_key: &Path) -> io::Result<()> {
+        if self.windows.panes.len() > 1 {
+            self.close_window(true)?;
+        }
+        if let Some(window) = self
+            .windows
+            .panes
+            .iter()
+            .find(|(_, pane)| matches!(&pane.content, Content::Git(key) if key == status_key))
+            .map(|(id, _)| *id)
+        {
+            self.focus_window(window);
+        } else {
+            self.set_git_view(Some(status_key.into()));
+        }
+        Ok(())
+    }
+
+    pub(super) fn commit_draft_revision(
+        &self,
+        id: DocumentId,
+        text: &str,
+    ) -> Option<vex_core::Revision> {
+        let editor = if self.editor.document().id() == id {
+            &self.editor
+        } else {
+            &self.windows.buffers.get(&id)?.editor
+        };
+        (editor.document().text() == text).then_some(editor.document().revision())
+    }
+
     pub(super) fn active_git_view(&self) -> Option<&PathBuf> {
         match &self.windows.panes[&self.windows.layout.active].content {
             Content::Git(key) => Some(key),
@@ -244,6 +356,8 @@ impl App {
         self.viewport = viewport;
         self.windows.layout.active = id;
         self.keys.cancel();
+        self.git_write.prefix = None;
+        self.git_write.status_prefix = None;
         self.prompt = None;
     }
 
@@ -286,7 +400,12 @@ impl App {
         if matches!(&prepared, Prepared::Existing(id) if *id == self.editor.document().id()) {
             return Ok(());
         }
-        let keep_old = self.views_of(self.editor.document().id()) > 1;
+        let old_views = self.views_of(self.editor.document().id());
+        let keep_old = old_views > 1
+            || self
+                .git_write
+                .drafts
+                .contains_key(&self.editor.document().id());
         if !keep_old && self.is_dirty() {
             return Err(io::Error::other(
                 "save this buffer before opening another file",
@@ -297,16 +416,23 @@ impl App {
         let buffer = match prepared {
             Prepared::New(buffer) => *buffer,
             Prepared::Existing(id) => {
+                let visible = self.views_of(id) > 0;
                 let mut buffer = self.windows.buffers.remove(&id).expect("existing buffer");
-                let view = buffer.editor.duplicate_view();
-                buffer.editor.focus_view(view);
+                if visible {
+                    let view = buffer.editor.duplicate_view();
+                    buffer.editor.focus_view(view);
+                } else {
+                    buffer.editor.retain_active_view();
+                }
                 buffer
             }
         };
         let old_view = self.editor.active_view();
         let mut old = self.switch_buffer(buffer);
         if keep_old {
-            assert!(old.editor.remove_view(old_view));
+            if old_views > 1 {
+                assert!(old.editor.remove_view(old_view));
+            }
             self.windows.buffers.insert(old.editor.document().id(), old);
         }
         self.viewport = Viewport::default();
@@ -359,7 +485,13 @@ impl App {
     pub(super) fn open_window_from_picker(&mut self, path: &Path) -> io::Result<()> {
         let prepared = self.prepare_file(path)?;
         if !matches!(&prepared, Prepared::Existing(id) if *id == self.editor.document().id()) {
-            if self.views_of(self.editor.document().id()) == 1 && self.is_dirty() {
+            if self.views_of(self.editor.document().id()) == 1
+                && self.is_dirty()
+                && !self
+                    .git_write
+                    .drafts
+                    .contains_key(&self.editor.document().id())
+            {
                 return Err(io::Error::other(
                     "save this buffer before opening another file",
                 ));
@@ -407,13 +539,18 @@ impl App {
         let id = self.windows.layout.active;
         let pane = &self.windows.panes[&id];
         let (document, view) = (pane.document, pane.view);
-        if self.views_of(document) == 1 && self.is_dirty() && !force {
+        if self.views_of(document) == 1
+            && self.is_dirty()
+            && !force
+            && !self.git_write.drafts.contains_key(&document)
+        {
             return Err(io::Error::other(
                 "unsaved changes; use :w to save or :q! to discard",
             ));
         }
         let ids = self.windows.layout.ids();
         if ids.len() == 1 {
+            self.check_git_writes_finished()?;
             self.quit = true;
             return Ok(());
         }
@@ -425,7 +562,9 @@ impl App {
         if document == self.editor.document().id() {
             self.editor.remove_view(view);
         } else if self.views_of(document) == 0 {
-            self.windows.buffers.remove(&document);
+            if !self.git_write.drafts.contains_key(&document) {
+                self.windows.buffers.remove(&document);
+            }
         } else {
             self.windows
                 .buffers
@@ -439,11 +578,10 @@ impl App {
 
     pub(super) fn only_window(&mut self, force: bool) -> io::Result<()> {
         if !force
-            && self
-                .windows
-                .buffers
-                .values()
-                .any(|buffer| buffer.files.is_dirty(buffer.editor.document()))
+            && self.windows.buffers.iter().any(|(id, buffer)| {
+                !self.git_write.drafts.contains_key(id)
+                    && buffer.files.is_dirty(buffer.editor.document())
+            })
         {
             return Err(io::Error::other(
                 "another buffer has unsaved changes; save it or use :only! to discard",
@@ -453,19 +591,25 @@ impl App {
         self.windows
             .panes
             .retain(|id, _| *id == self.windows.layout.active);
-        self.windows.buffers.clear();
+        self.windows
+            .buffers
+            .retain(|id, _| self.git_write.drafts.contains_key(id));
         self.editor.retain_active_view();
         Ok(())
     }
 
     pub(super) fn quit_all(&mut self, force: bool) -> io::Result<()> {
+        self.check_git_writes_finished()?;
         if !force
-            && (self.is_dirty()
-                || self
-                    .windows
-                    .buffers
-                    .values()
-                    .any(|buffer| buffer.files.is_dirty(buffer.editor.document())))
+            && ((self.is_dirty()
+                && !self
+                    .git_write
+                    .drafts
+                    .contains_key(&self.editor.document().id()))
+                || self.windows.buffers.iter().any(|(id, buffer)| {
+                    !self.git_write.drafts.contains_key(id)
+                        && buffer.files.is_dirty(buffer.editor.document())
+                }))
         {
             return Err(io::Error::other(
                 "unsaved changes; save the buffers or use :qa! to discard",
@@ -635,10 +779,22 @@ impl App {
                     let buffer = self.windows.buffers.get_mut(&pane.document).unwrap();
                     (&mut buffer.editor, &buffer.files)
                 };
-                let filename = files
-                    .path()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "[scratch]".into());
+                let filename = self
+                    .git_write
+                    .drafts
+                    .get(&pane.document)
+                    .map(|draft| {
+                        format!(
+                            "Git commit · {}",
+                            draft.root.file_name().unwrap_or_default().to_string_lossy()
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        files
+                            .path()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "[scratch]".into())
+                    });
                 let dirty = files.is_dirty(editor.document());
                 let git = self.git.diff(
                     editor.document().id(),
@@ -653,6 +809,7 @@ impl App {
                             &mut pane.viewport,
                             Chrome {
                                 filename: &filename,
+                                title: self.git_write.drafts.contains_key(&pane.document),
                                 dirty,
                                 pending: "",
                                 message: "",

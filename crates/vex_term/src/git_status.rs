@@ -113,6 +113,7 @@ pub(crate) fn highlight(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Id {
     Header(u8),
+    Output(usize),
     Section(Group),
     File(FileKey),
     Info(FileKey, usize),
@@ -150,6 +151,8 @@ pub(crate) struct View {
     pub unsaved: Vec<Entry>,
     pub refreshing: bool,
     pub help: bool,
+    pub operation: Option<String>,
+    pub output: Option<(String, bool)>,
 }
 
 impl Default for View {
@@ -164,12 +167,21 @@ impl Default for View {
             unsaved: Vec::new(),
             refreshing: true,
             help: false,
+            operation: None,
+            output: None,
         }
     }
 }
 
 impl View {
     pub fn update(&mut self, result: Result<Snapshot, String>) {
+        let selected_file = self.list.rows.get(self.list.selected).and_then(|row| {
+            if let Id::File(file) = &row.id {
+                Some(file.clone())
+            } else {
+                None
+            }
+        });
         match result {
             Ok(snapshot) => {
                 if self.snapshot.as_ref() == Some(&snapshot) && self.error.is_none() {
@@ -192,6 +204,22 @@ impl View {
         }
         self.refreshing = false;
         self.rebuild();
+        // Whole-file stage/unstage moves a file between sections. Follow that
+        // path when its old row disappears, so the next action has a clear target.
+        if let Some(file) = selected_file
+            && !self
+                .list
+                .rows
+                .iter()
+                .any(|row| matches!(&row.id, Id::File(next) if *next == file))
+            && let Some(index) = self
+                .list
+                .rows
+                .iter()
+                .position(|row| matches!(&row.id, Id::File(next) if next.path == file.path))
+        {
+            self.list.selected = index;
+        }
     }
 
     pub fn rebuild(&mut self) {
@@ -206,6 +234,15 @@ impl View {
         };
         if let Some(error) = &self.error {
             add(Id::Header(0), error.clone(), Style::Error);
+        }
+        if let Some((output, error)) = &self.output {
+            for (index, line) in output.lines().enumerate() {
+                add(
+                    Id::Output(index),
+                    line.into(),
+                    if *error { Style::Error } else { Style::Gutter },
+                );
+            }
         }
         if let Some(snapshot) = &self.snapshot {
             let branch = if snapshot.branch == "(detached)" {
@@ -496,10 +533,12 @@ impl View {
             width.saturating_sub(2),
             &format!(
                 " Git · {name}{} ",
-                if self.refreshing {
-                    " · refreshing…"
+                if let Some(operation) = &self.operation {
+                    format!(" · {operation}")
+                } else if self.refreshing {
+                    " · refreshing…".into()
                 } else {
-                    ""
+                    String::new()
                 }
             ),
             if active {
@@ -586,6 +625,8 @@ impl View {
                 "Tab                Expand/collapse",
                 "Enter              Open file at change",
                 "r                  Refresh repository",
+                "s/u                Stage/unstage file",
+                "c c                Compose commit",
                 "Ctrl-w, Space-w    Window commands",
                 "q, Escape          Return to document",
                 "?                  Close this help",

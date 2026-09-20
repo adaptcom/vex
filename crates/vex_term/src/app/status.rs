@@ -1,5 +1,5 @@
 //! Repository view lifecycle. Only read queries use this replaceable mailbox;
-//! future mutations need ordered execution and reliable completion events.
+//! mutations use the separate ordered Git write worker.
 use super::{ActivePrompt, App, PromptKind};
 use crate::{
     git_status::View,
@@ -38,10 +38,16 @@ impl App {
             return Ok(());
         }
         let origin = self
-            .files
-            .target()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
+            .git_write
+            .drafts
+            .get(&self.editor.document().id())
+            .map(|draft| draft.status_key.clone())
+            .or_else(|| {
+                self.files
+                    .target()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf)
+            })
             .map_or_else(std::env::current_dir, Ok)?;
         if !self.status.views.contains_key(&origin) {
             if self.status.views.len() >= 16 {
@@ -50,7 +56,18 @@ impl App {
                     .status
                     .views
                     .keys()
-                    .find(|key| !visible.contains(key))
+                    .find(|key| {
+                        !visible.contains(key)
+                            && !self
+                                .git_write
+                                .drafts
+                                .values()
+                                .any(|draft| &draft.status_key == *key)
+                            && !self.status.views[*key]
+                                .snapshot
+                                .as_ref()
+                                .is_some_and(|snapshot| self.git_operation_for(&snapshot.root))
+                    })
                     .cloned()
                 {
                     self.status.views.remove(&old);
@@ -64,6 +81,7 @@ impl App {
         self.editor.finish_undo_group();
         let _ = self.editor.execute("search_cancel", 1);
         self.keys.cancel();
+        self.git_write.status_prefix = None;
         self.prompt = None;
         self.clear_message();
         self.set_git_view(Some(origin));
@@ -72,6 +90,7 @@ impl App {
     }
 
     pub(super) fn close_git_status(&mut self) {
+        self.git_write.status_prefix = None;
         if let Some(key) = self.active_git_view().cloned() {
             self.status.views.get_mut(&key).unwrap().help = false;
         }
@@ -267,6 +286,14 @@ impl App {
                     return Some(false);
                 };
                 self.clear_message();
+                if self.git_write.status_prefix.take().as_ref() == Some(&key) {
+                    if pressed == Key::Char('c')
+                        && let Err(error) = self.begin_git_commit()
+                    {
+                        self.fail(error);
+                    }
+                    return Some(true);
+                }
                 let pending = self.keys.pending_keys();
                 if !pending.is_empty() || matches!(pressed, Key::Char(' ') | Key::Ctrl('w')) {
                     let space = pending == [Key::Char(' ')];
@@ -301,6 +328,15 @@ impl App {
                         }
                     }
                     Key::Char('r') => self.refresh_status(),
+                    Key::Char('s' | 'u') => {
+                        if let Err(error) = self.change_git_index(pressed == Key::Char('s')) {
+                            self.fail(error);
+                        }
+                    }
+                    Key::Char('c') => {
+                        self.git_write.status_prefix = Some(key.clone());
+                        self.message = "c commit message · Esc cancel".into();
+                    }
                     Key::Tab => {
                         if let Err(error) = self.toggle_git_section() {
                             self.fail(error);
@@ -325,14 +361,15 @@ impl App {
                             Key::Char('n')=>view.section(true),
                             Key::Char('p')=>view.section(false),
                             Key::Char('?')=>view.help = !view.help,
-                            _=>self.message="Git status: Tab expand · Enter visit · r refresh · q return · ? help".into(),
+                            _=>self.message="Git: Tab expand · Enter visit · s/u stage/unstage · c c commit · ? help".into(),
                         }
                     }
                 }
                 Some(true)
             }
             Event::Paste(_) => {
-                self.message = "Git status is read-only; q returns to the document".into();
+                self.message =
+                    "Git status cannot edit the retained document; q returns to it".into();
                 Some(true)
             }
             _ => Some(false),

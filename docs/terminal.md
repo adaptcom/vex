@@ -197,6 +197,9 @@ cached HEAD baselines and hunks shared across views. Edit debounce and periodic
 repository refresh use event-loop deadlines. See [Git architecture and limits](git.md).
 The repository status view has its own query worker and latest-result slot,
 including lazy diffs and background syntax colors. See [repository status](git-status.md).
+Stage, unstage, and commit use a separate ordered write worker and a reliable
+FIFO of completion events. Commit drafts are normal editor buffers retained for
+the session; status remains visible in the adjacent pane.
 
 `BackgroundEvent` carries search, syntax, picker, preview, and Git results. LSP has a separate typed
 event variant and a FIFO of up to 128 events with producer backpressure, preserving
@@ -212,13 +215,15 @@ ordinary input. This avoids applying edits to an unresolved search position.
 Enter during picker matching uses the same input ordering until the selected
 file opens. Closing a picker cancels its work and releases its index.
 
-Closing the runtime wakes blocked producers, cancels search, syntax, picker, preview, and Git jobs,
+Closing the runtime wakes blocked producers, cancels search, syntax, picker, preview, and Git query jobs,
 shuts down the language server, and joins owned threads before restoring terminal state. Input errors and worker
 failures wake the main loop and unwind through cleanup. Input polling has a
 50 ms shutdown check; the main inbox wait checks signal flags at most every
 100 ms while idle. Cancellation is cooperative; service limits and remaining
 synchronous work are documented in [search](search.md), [syntax](syntax.md), and
 [language services](lsp.md), and [Git](git.md).
+Git writes finish in order during teardown; quit commands report busy while a
+write is pending, including long-running hooks and signing.
 
 ## Files and current limits
 

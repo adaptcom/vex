@@ -153,6 +153,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
         if let Some(batch) = app.take_status_batch(Instant::now()) {
             runtime.submit_status(batch);
         }
+        while let Some(job) = app.take_git_write() {
+            runtime.submit_git_write(job);
+        }
         if redraw {
             let (width, height) = app.size();
             app.paint(renderer.frame(width, height)?)?;
@@ -218,6 +221,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
                     redraw |= app.handle_status_result(result);
                 }
                 AppEvent::Lsp(event) => redraw |= app.handle_lsp_event(event),
+                AppEvent::GitWrite(result) => redraw |= app.handle_git_write(result),
                 AppEvent::Failed(error) => return Err(error),
             }
             if let Some(job) = app.editor.take_search_job() {
@@ -231,6 +235,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(batch) = app.take_status_batch(Instant::now()) {
                 runtime.submit_status(batch);
+            }
+            while let Some(job) = app.take_git_write() {
+                runtime.submit_git_write(job);
             }
             if let Some(job) = app.take_picker_job() {
                 runtime.submit_picker(job);

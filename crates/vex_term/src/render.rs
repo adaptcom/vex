@@ -56,6 +56,9 @@ pub(crate) fn gutter(width: usize, lines: usize) -> Gutter {
 #[derive(Clone, Copy)]
 pub struct Chrome<'a> {
     pub filename: &'a str,
+    /// Descriptive buffer titles retain their beginning when space is tight;
+    /// file paths retain the filename at their end.
+    pub title: bool,
     pub dirty: bool,
     pub pending: &'a str,
     pub message: &'a str,
@@ -362,7 +365,7 @@ fn paint_status(
     } else {
         chrome.filename
     };
-    let name = status_text(name, available - suffix.len() - 1, !error);
+    let name = status_text(name, available - suffix.len() - 1, !error && !chrome.title);
     frame.label(
         start as u16,
         row,
@@ -514,6 +517,7 @@ mod tests {
             viewport,
             Chrome {
                 filename: "test",
+                title: false,
                 dirty: false,
                 pending: "",
                 message: "",

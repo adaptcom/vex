@@ -22,6 +22,7 @@ pub(crate) enum AppEvent {
     Terminal(Event),
     Background(BackgroundEvent),
     Lsp(vex_lsp::Event),
+    GitWrite(vex_git::write::Result),
     Failed(io::Error),
 }
 
@@ -41,6 +42,7 @@ pub(crate) enum BackgroundEvent {
 struct Inbox {
     input: VecDeque<Event>,
     lsp: VecDeque<vex_lsp::Event>,
+    git_writes: VecDeque<vex_git::write::Result>,
     background: [Option<BackgroundEvent>; 6],
     next_background: usize,
     prefer_input: bool,
@@ -59,6 +61,16 @@ struct SharedInbox {
 pub(crate) struct EventQueue(Arc<SharedInbox>);
 
 impl EventQueue {
+    fn git_write(&self, result: vex_git::write::Result) {
+        let mut state = self.0.state.lock().unwrap();
+        while state.git_writes.len() == 32 && !state.closed {
+            state = self.0.space.wait(state).unwrap();
+        }
+        if !state.closed {
+            state.git_writes.push_back(result);
+            self.0.ready.notify_one();
+        }
+    }
     /// Protocol results use a bounded FIFO. Only service threads call this;
     /// backpressure never blocks editing, and closing releases blocked senders.
     fn lsp(&self, event: vex_lsp::Event) {
@@ -111,6 +123,7 @@ impl EventQueue {
         state.closed = true;
         state.input.clear();
         state.lsp.clear();
+        state.git_writes.clear();
         state.background = [None, None, None, None, None, None];
         self.0.ready.notify_all();
         self.0.space.notify_all();
@@ -148,12 +161,21 @@ impl EventQueue {
                 self.0.space.notify_all();
                 return Some(AppEvent::Terminal(event));
             }
-            let services = state.background.len() + 1;
+            let services = state.background.len() + 2;
             for offset in 0..services {
                 let index = (state.next_background + offset) % services;
+                if index == state.background.len() + 1 {
+                    if let Some(result) = state.git_writes.pop_front() {
+                        state.next_background = 0;
+                        state.prefer_input = true;
+                        self.0.space.notify_all();
+                        return Some(AppEvent::GitWrite(result));
+                    }
+                    continue;
+                }
                 if index == state.background.len() {
                     if let Some(event) = state.lsp.pop_front() {
-                        state.next_background = 0;
+                        state.next_background = index + 1;
                         state.prefer_input = true;
                         self.0.space.notify_all();
                         return Some(AppEvent::Lsp(event));
@@ -389,6 +411,56 @@ impl<J: Job> Drop for LatestWorker<J> {
     }
 }
 
+/// Ordered writes drain on shutdown. Only read workers discard pending work.
+struct WriteWorker {
+    sender: Option<std::sync::mpsc::Sender<vex_git::write::Job>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl WriteWorker {
+    fn start(events: EventQueue) -> io::Result<Self> {
+        Self::with_runner(events, vex_git::write::Job::run)
+    }
+
+    fn with_runner(
+        events: EventQueue,
+        run: impl Fn(vex_git::write::Job) -> vex_git::write::Result + Send + 'static,
+    ) -> io::Result<Self> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("vex-git-write".into())
+            .spawn(move || {
+                if catch_unwind(AssertUnwindSafe(|| {
+                    for job in receiver {
+                        events.git_write(run(job));
+                    }
+                }))
+                .is_err()
+                {
+                    events.fail(io::Error::other("Git write worker panicked"));
+                }
+            })?;
+        Ok(Self {
+            sender: Some(sender),
+            thread: Some(thread),
+        })
+    }
+
+    fn submit(&self, job: vex_git::write::Job) {
+        // The UI admits one operation per repository, at most 16 overall.
+        let _ = self.sender.as_ref().unwrap().send(job);
+    }
+}
+
+impl Drop for WriteWorker {
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// The runtime owns every producer and joins them before terminal restoration.
 pub(crate) struct Runtime {
     pub events: EventQueue,
@@ -399,12 +471,14 @@ pub(crate) struct Runtime {
     preview: Option<LatestWorker<PreviewJob>>,
     git: Option<LatestWorker<vex_git::Batch>>,
     git_status: Option<LatestWorker<vex_git::status::Batch>>,
+    git_write: Option<WriteWorker>,
     input: Option<JoinHandle<()>>,
 }
 
 impl Runtime {
     pub(crate) fn start() -> io::Result<Self> {
         let events = EventQueue::default();
+        let git_write = WriteWorker::start(events.clone())?;
         let search = SearchWorker::start(events.clone())?;
         let mut syntax_state = SyntaxBuffers::default();
         let syntax = LatestWorker::spawn("vex-syntax", events.clone(), move |job| {
@@ -473,6 +547,7 @@ impl Runtime {
             preview: Some(preview),
             git: Some(git),
             git_status: Some(git_status),
+            git_write: Some(git_write),
             input: Some(input),
         })
     }
@@ -504,6 +579,9 @@ impl Runtime {
     pub(crate) fn submit_status(&self, job: vex_git::status::Batch) {
         self.git_status.as_ref().unwrap().submit(job);
     }
+    pub(crate) fn submit_git_write(&self, job: vex_git::write::Job) {
+        self.git_write.as_ref().unwrap().submit(job);
+    }
 }
 
 impl Drop for Runtime {
@@ -523,6 +601,7 @@ impl Drop for Runtime {
         self.preview.take();
         self.git.take();
         self.git_status.take();
+        self.git_write.take();
         if let Some(thread) = self.input.take() {
             let _ = thread.join();
         }
@@ -540,6 +619,75 @@ mod tests {
     };
     use vex_core::Document;
     use vex_editor::{Editor, SearchCompletion, SearchStatus};
+
+    #[test]
+    fn git_writes_finish_in_order_and_every_result_survives_worker_shutdown() {
+        let events = EventQueue::default();
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let log = ran.clone();
+        let worker = WriteWorker::with_runner(events.clone(), move |job| {
+            log.lock().unwrap().push(job.id);
+            vex_git::write::Result {
+                id: job.id,
+                root: job.root,
+                operation: job.operation,
+                outcome: if job.id == 2 {
+                    Err("injected failure".into())
+                } else {
+                    Ok(String::new())
+                },
+            }
+        })
+        .unwrap();
+        for id in 1..=16 {
+            worker.submit(vex_git::write::Job {
+                id,
+                root: "/repo".into(),
+                operation: vex_git::write::Operation::Commit {
+                    message: format!("{id}"),
+                },
+            });
+        }
+        drop(worker);
+        assert_eq!(*ran.lock().unwrap(), (1..=16).collect::<Vec<_>>());
+        for id in 1..=16 {
+            let Some(AppEvent::GitWrite(result)) = events.next(Duration::ZERO, false) else {
+                panic!("missing write completion");
+            };
+            assert_eq!(result.id, id);
+            assert_eq!(result.outcome.is_err(), id == 2);
+        }
+        assert!(events.next(Duration::ZERO, false).is_none());
+    }
+
+    #[test]
+    fn closing_the_inbox_releases_a_blocked_write_producer_without_dropping_jobs() {
+        let events = EventQueue::default();
+        let ran = Arc::new(AtomicUsize::new(0));
+        let log = ran.clone();
+        let worker = WriteWorker::with_runner(events.clone(), move |job| {
+            log.fetch_add(1, Ordering::SeqCst);
+            vex_git::write::Result {
+                id: job.id,
+                root: job.root,
+                operation: job.operation,
+                outcome: Ok(String::new()),
+            }
+        })
+        .unwrap();
+        for id in 0..64 {
+            worker.submit(vex_git::write::Job {
+                id,
+                root: "/repo".into(),
+                operation: vex_git::write::Operation::Commit {
+                    message: String::new(),
+                },
+            });
+        }
+        events.close();
+        drop(worker);
+        assert_eq!(ran.load(Ordering::SeqCst), 64);
+    }
 
     fn key(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
@@ -577,6 +725,9 @@ mod tests {
             }
             AppEvent::Lsp(event) => {
                 app.handle_lsp_event(event);
+            }
+            AppEvent::GitWrite(result) => {
+                app.handle_git_write(result);
             }
             AppEvent::Failed(error) => panic!("{error}"),
         }

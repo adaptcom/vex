@@ -17,6 +17,7 @@ use vex_editor::{
 
 mod completion;
 mod git;
+mod git_write;
 mod language;
 mod picker;
 mod status;
@@ -68,6 +69,7 @@ pub struct App {
     windows: windows::State,
     git: git::State,
     status: status::State,
+    git_write: git_write::State,
 }
 
 impl App {
@@ -102,6 +104,7 @@ impl App {
             windows,
             git: git::State::default(),
             status: status::State::default(),
+            git_write: git_write::State::default(),
         }
     }
 
@@ -163,6 +166,9 @@ impl App {
             self.refresh_status();
         }
         if let Some(redraw) = self.handle_picker_input(&event) {
+            return redraw;
+        }
+        if let Some(redraw) = self.handle_commit_input(&event) {
             return redraw;
         }
         if let Some(redraw) = self.handle_status_input(&event) {
@@ -300,6 +306,9 @@ impl App {
                     | "git_visit"
                     | "git_refresh"
                     | "git_close"
+                    | "git_stage"
+                    | "git_unstage"
+                    | "git_commit"
                     | "vsplit"
                     | "vs"
                     | "hsplit"
@@ -317,7 +326,7 @@ impl App {
             )
         {
             return Err(io::Error::other(
-                "Git status is read-only; q returns to the document",
+                "Git status cannot edit the retained document; q returns to it",
             ));
         }
         if let Some(command) = COMMANDS
@@ -372,10 +381,13 @@ impl App {
             return Ok(());
         }
         let filename = self
-            .files
-            .path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "[scratch]".into());
+            .commit_title(self.editor.document().id())
+            .unwrap_or_else(|| {
+                self.files
+                    .path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "[scratch]".into())
+            });
         let mut pending = format!(
             "{}{}",
             self.keys.count().map(|n| n.to_string()).unwrap_or_default(),
@@ -389,6 +401,14 @@ impl App {
             pending.push_str(" searching...");
         }
         pending.push_str(&self.language_status());
+        if self
+            .git_write
+            .drafts
+            .get(&self.editor.document().id())
+            .is_some_and(|draft| self.git_operation_for(&draft.root))
+        {
+            pending.push_str(" Git busy");
+        }
         let diagnostic = self.diagnostic_message();
         render::paint_view(
             frame,
@@ -396,6 +416,10 @@ impl App {
             &mut self.viewport,
             Chrome {
                 filename: &filename,
+                title: self
+                    .git_write
+                    .drafts
+                    .contains_key(&self.editor.document().id()),
                 dirty: self.files.is_dirty(self.editor.document()),
                 pending: &pending,
                 message: if self.message.is_empty() {
@@ -600,6 +624,31 @@ macro_rules! commands {
 }
 
 commands! {
+    /// Stage the selected whole file from disk. Save unsaved buffers first; hunk staging is not yet supported.
+    fn git_stage(app, argument, force) ["git_stage"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("git_stage takes no arguments")); }
+        app.change_git_index(true)
+    }
+    /// Unstage the selected whole file, preserving working files.
+    fn git_unstage(app, argument, force) ["git_unstage"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("git_unstage takes no arguments")); }
+        app.change_git_index(false)
+    }
+    /// Open or resume this repository's commit message in an editor pane. Ctrl-c Ctrl-c submits; Ctrl-c Ctrl-k returns and retains the draft.
+    fn git_commit(app, argument, force) ["git_commit"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("git_commit takes no arguments")); }
+        app.begin_git_commit()
+    }
+    /// Commit the current index using the active commit message. Hooks and signing follow Git configuration; failures retain the draft.
+    fn git_commit_submit(app, argument, force) ["git_commit_submit"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("git_commit_submit takes no arguments")); }
+        app.submit_git_commit()
+    }
+    /// Return to Git status, retaining this commit draft and undo history for the session. An already submitted commit continues in the background.
+    fn git_commit_cancel(app, argument, force) ["git_commit_cancel"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("git_commit_cancel takes no arguments")); }
+        app.cancel_git_commit()
+    }
     /// Open the repository status view, preserving the document behind it.
     fn git_status(app, argument, force) ["git_status"] {
         if !argument.is_empty() || force { return Err(io::Error::other("git_status takes no arguments")); }
@@ -664,6 +713,9 @@ commands! {
 
     /// Write the buffer atomically. Accepts an optional path; ! permits overwriting external changes or an existing destination.
     fn write_file(app, argument, force) ["write", "w"] {
+        if app.git_write.drafts.contains_key(&app.editor.document().id()) {
+            return Err(io::Error::other("commit drafts are retained in memory; Ctrl-c Ctrl-c commits, Ctrl-c Ctrl-k returns"));
+        }
         app.check_save_target(argument)?;
         app.editor.finish_undo_group();
         let bytes = app.files.save(app.editor.document(), if argument.is_empty() { None } else { Some(Path::new(argument)) }, force)?;
