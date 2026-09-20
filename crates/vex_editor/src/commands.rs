@@ -775,6 +775,34 @@ commands! {
         Ok(())
     }
 
+    /// Jump to the type definition of the symbol at the primary cursor, or pick among destinations.
+    fn goto_type_definition(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_language_action(crate::LanguageAction::TypeDefinition);
+        Ok(())
+    }
+
+    /// Jump to an implementation of the symbol at the primary cursor, or pick among destinations.
+    fn goto_implementation(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_language_action(crate::LanguageAction::Implementation);
+        Ok(())
+    }
+
+    /// Find references to the symbol at the primary cursor, including its declaration.
+    fn goto_reference(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_language_action(crate::LanguageAction::References);
+        Ok(())
+    }
+
+    /// Select document highlights for the symbol under the primary cursor, retaining the primary occurrence.
+    fn select_references_to_symbol_under_cursor(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_language_action(crate::LanguageAction::DocumentHighlights);
+        Ok(())
+    }
+
     /// Move to the next diagnostic, wrapping and honoring the repeat count.
     fn goto_next_diagnostic(ctx) {
         ctx.editor.finish_undo_group();

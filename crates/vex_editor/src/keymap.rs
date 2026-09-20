@@ -276,6 +276,13 @@ impl Default for Keymap {
                 (vec![Tab], "jump_forward"),
                 (vec![Ctrl('s')], "save_selection"),
                 (vec![Char('g'), Char('d')], "goto_definition"),
+                (vec![Char('g'), Char('y')], "goto_type_definition"),
+                (vec![Char('g'), Char('i')], "goto_implementation"),
+                (vec![Char('g'), Char('r')], "goto_reference"),
+                (
+                    vec![Char(' '), Char('h')],
+                    "select_references_to_symbol_under_cursor",
+                ),
                 (vec![Char(']'), Char('d')], "goto_next_diagnostic"),
                 (vec![Char('['), Char('d')], "goto_previous_diagnostic"),
                 (vec![Char('g'), Char('g')], "goto_file_start"),
@@ -1057,6 +1064,28 @@ mod tests {
             Dispatch::Executed("kill_to_line_start")
         );
         assert!(editor.take_application_action().is_none());
+    }
+
+    #[test]
+    fn language_navigation_bindings_are_documented_in_normal_and_select_modes() {
+        for mode in [Mode::Normal, Mode::Select] {
+            for (keys, action) in [
+                ("gd", crate::LanguageAction::Definition),
+                ("gy", crate::LanguageAction::TypeDefinition),
+                ("gi", crate::LanguageAction::Implementation),
+                ("gr", crate::LanguageAction::References),
+                (" h", crate::LanguageAction::DocumentHighlights),
+            ] {
+                let mut editor = Editor::new(Document::from("name"));
+                if mode == Mode::Select {
+                    editor.execute("select_mode", 1).unwrap();
+                }
+                press(&mut KeyHandler::default(), &mut editor, keys);
+                assert_eq!(editor.take_language_action(), Some(action));
+                assert_eq!(editor.mode(), mode);
+                assert_eq!(editor.document().text(), "name");
+            }
+        }
     }
 
     #[test]

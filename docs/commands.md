@@ -59,6 +59,10 @@ Generated from command Rustdoc and the default keymap.
 | `jump_back` |  | Alias for jump_backward; the default Ctrl-o binding uses the Helix command name. |
 | `hover` | Normal: `<Space>k`, Select: `<Space>k` | Show language-server documentation for the symbol at the primary cursor. |
 | `goto_definition` | Normal: `gd`, Select: `gd` | Jump to the definition of the symbol at the primary cursor. |
+| `goto_type_definition` | Normal: `gy`, Select: `gy` | Jump to the type definition of the symbol at the primary cursor, or pick among destinations. |
+| `goto_implementation` | Normal: `gi`, Select: `gi` | Jump to an implementation of the symbol at the primary cursor, or pick among destinations. |
+| `goto_reference` | Normal: `gr`, Select: `gr` | Find references to the symbol at the primary cursor, including its declaration. |
+| `select_references_to_symbol_under_cursor` | Normal: `<Space>h`, Select: `<Space>h` | Select document highlights for the symbol under the primary cursor, retaining the primary occurrence. |
 | `goto_next_diagnostic` | Normal: `]d`, Select: `]d` | Move to the next diagnostic, wrapping and honoring the repeat count. |
 | `goto_previous_diagnostic` | Normal: `[d`, Select: `[d` | Move to the previous diagnostic, wrapping and honoring the repeat count. |
 | `search_forward` | Normal: `/`, Select: `/` | Begin a forward regex search after the primary selection. Matches wrap; counts select successive matches, and select mode adds them. Acceptance stores the query in the chosen register (default: /) and makes it active for n/N across buffers. |

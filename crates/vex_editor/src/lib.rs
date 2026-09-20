@@ -17,7 +17,7 @@
 use std::fmt::Debug;
 use std::{cell::RefCell, num::NonZeroUsize};
 use vex_core::layout::LayoutCache;
-use vex_core::{CharOffset, Document, Selection, SelectionSet, grapheme, motion};
+use vex_core::{CharOffset, Document, Selection, SelectionSet, motion};
 
 pub mod background;
 pub mod commands;
@@ -25,6 +25,7 @@ mod comments;
 mod editing;
 mod error;
 mod keymap;
+mod prepared_selection;
 mod register;
 mod repeat;
 mod search;
@@ -37,6 +38,7 @@ mod views;
 pub use commands::{Command, CommandContext, CommandInput};
 pub use error::Error;
 pub use keymap::{Binding, Dispatch, Key, KeyHandler, KeyHints, Keymap, Modifier, NamedKey};
+pub use prepared_selection::PreparedSelections;
 pub use register::{Paste, PastePlan, RegisterValues, YankRegister};
 pub use repeat::Session;
 pub use search::{
@@ -60,6 +62,10 @@ pub enum Mode {
 pub enum LanguageAction {
     Hover,
     Definition,
+    TypeDefinition,
+    Implementation,
+    References,
+    DocumentHighlights,
     Completion,
     NextDiagnostic(usize),
     PreviousDiagnostic(usize),
@@ -510,28 +516,7 @@ impl Editor {
         selections: SelectionSet,
         mode: Mode,
     ) -> Result<SelectionSet, Error> {
-        let text = self.document.text();
-        selections.validate(text.len_chars())?;
-        let ranges = selections
-            .ranges()
-            .iter()
-            .map(|&selection| {
-                if mode == Mode::Insert {
-                    Ok(Selection::cursor(grapheme::ceil(text, selection.head)?))
-                } else if selection.is_empty() {
-                    motion::block(text, selection.head)
-                } else {
-                    let start = grapheme::floor(text, selection.start())?;
-                    let end = grapheme::ceil(text, selection.end())?;
-                    Ok(if selection.is_backward() {
-                        Selection::new(end, start)
-                    } else {
-                        Selection::new(start, end)
-                    })
-                }
-            })
-            .collect::<Result<Vec<_>, vex_core::Error>>()?;
-        Ok(SelectionSet::new(ranges, selections.primary_index())?)
+        prepared_selection::normalize(self.document.text(), selections, mode, || false)
     }
 
     /// Invoke a documented command by its stable name, without keyboard input.
