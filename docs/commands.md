@@ -4,6 +4,8 @@ Generated from command Rustdoc and the default keymap.
 
 | Command | Bindings by mode | Description |
 |---|---|---|
+| `copy_selection_on_next_line` | Normal: `C`, Select: `C` | Add copies of each selection on following logical lines at the same display columns. Counts add copies, skipping lines that cannot fit both endpoints. Multi-line selections advance by their height; the primary follows its last copy. Uses the cancellable search worker when enabled. |
+| `copy_selection_on_prev_line` |  | Add copies of each selection on preceding logical lines at the same display columns. Counts add copies, skipping short lines; preserves selection direction and mode. Uses the cancellable search worker when enabled. |
 | `save_selection` | Normal: `<C-s>`, Select: `<C-s>` | Save the current selections as a jump checkpoint without writing the file. |
 | `toggle_comments` | Normal: `<Space>c`, Normal: `<C-c>`, Select: `<Space>c`, Select: `<C-c>` | Toggle comments on selected lines, preferring line comments and recognizing existing block comments. Uses language delimiters, skips blank lines, preserves selections and mode, and creates one undo step. |
 | `toggle_block_comments` | Normal: `<Space>C`, Select: `<Space>C` | Toggle block comments around selections, retaining their direction and selecting added delimiters. Languages with only line comments use those instead; plain text defaults to /* */. One undo step, with normal/select mode retained. |

@@ -115,6 +115,19 @@ state, uses an eight-byte stack buffer only when a scan crosses chunks, and
 keeps complete-chunk queries on a short path. It neither flattens the rope nor
 restarts a prefix scan for every cluster in a long regional-indicator run.
 
+Selection copying (`C`) uses the same snapshot mailbox as search. In the release
+benchmark below, scheduling and cancelling one request took 40 ns at 1 MiB and
+39 ns at 100 MiB. That measures request construction and destruction only; it
+excludes mailbox synchronization, worker scheduling, result delivery, and drawing.
+The complete synchronous one-copy scan plus restoration of the original selection
+took 2.62 µs and 2.20 µs respectively on the repeated short source-line fixture.
+The destination is nearby in both cases. Scanning many short lines to find fitting
+columns, copying many selections, and cold deep-column lookups still cost more.
+
+```sh
+cargo bench -p vex_editor --bench commands --locked -- copy_selection_next_line --noplot
+```
+
 ## Terminal viewport baseline
 
 Recorded on the same development machine on 2026-09-19, with 30 samples, a

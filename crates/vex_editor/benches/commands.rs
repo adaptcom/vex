@@ -134,11 +134,38 @@ fn comments(c: &mut Criterion) {
     group.finish();
 }
 
+fn copy_selections(c: &mut Criterion) {
+    let mut group = c.benchmark_group("copy_selection_next_line");
+    for bytes in [1 << 20, 100 << 20] {
+        let line = "fn main() { let value = 123; }\n";
+        let rope = Rope::from_str(&line.repeat(bytes / line.len()));
+        let mut editor = editor(&rope, 1);
+        let origin = editor.selections().clone();
+        group.bench_function(BenchmarkId::new("scan_and_restore", bytes), |b| {
+            b.iter(|| {
+                editor.execute("copy_selection_on_next_line", 1).unwrap();
+                black_box(editor.selections());
+                editor.set_selections(origin.clone()).unwrap();
+            });
+        });
+        editor.set_background_search(true);
+        group.bench_function(BenchmarkId::new("schedule_cancel", bytes), |b| {
+            b.iter(|| {
+                editor.execute("copy_selection_on_next_line", 1).unwrap();
+                let job = editor.take_search_job().unwrap();
+                editor.finish_undo_group();
+                black_box(job);
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = commands, search, background_search, comments
+    targets = commands, search, background_search, comments, copy_selections
 }
 criterion_main!(benches);

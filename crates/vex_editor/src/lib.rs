@@ -27,6 +27,7 @@ mod error;
 mod keymap;
 mod register;
 mod search;
+mod selection;
 mod syntax;
 mod views;
 
@@ -188,7 +189,7 @@ impl Editor {
         self.search.preview.as_ref().map(|preview| preview.status)
     }
 
-    /// Use deferred search commands. The frontend must take each job, run it
+    /// Use deferred search and selection-scan commands. The frontend must take each job, run it
     /// off the UI thread, and deliver its result via apply_search_result.
     /// The default remains synchronous for standalone editor integrations.
     pub fn set_background_search(&mut self, enabled: bool) {
@@ -212,7 +213,12 @@ impl Editor {
         self.search.pending()
     }
 
-    /// An accepted preview or repeat is waiting for its destination. Frontends
+    /// Short status for the pending text-search or selection scan.
+    pub fn search_progress(&self) -> Option<&'static str> {
+        self.search.progress()
+    }
+
+    /// An accepted preview, repeat, or selection scan is waiting for its result. Frontends
     /// should defer subsequent editing keys, but keep cancellation responsive.
     pub fn search_waiting(&self) -> bool {
         self.search.waiting()
@@ -244,6 +250,9 @@ impl Editor {
     }
 
     pub fn set_tab_width(&mut self, width: NonZeroUsize) {
+        if self.tab_width != width {
+            self.search.invalidate_columns();
+        }
         self.tab_width = width;
         self.preferred_columns = None;
     }

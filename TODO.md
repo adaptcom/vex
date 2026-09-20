@@ -19,9 +19,10 @@ selections, and measure operations that could affect input latency.
    Add language indentation settings for indent/unindent.
 4. [x] Comments: `<space>c`, `<space>C`, and normal/select-mode Ctrl-c, with
    language-specific line/block delimiters. Pending commands retain cancellation.
-5. [ ] Multiple selections and search: `s`, `S`, `C`, `K`, `*`, regex `/`/`?`,
+5. [ ] Multiple selections and search: `s`, `S`, `K`, `*`, regex `/`/`?`,
    and accumulating matches with `n`/`N` in select mode. `K` is reserved for
-   selection filtering; hover uses `<space>k`.
+   selection filtering; hover uses `<space>k`. `C` now copies selections to
+   following lines, with counts and cancellable background scans.
 6. [ ] Buffer switching: retain ordinary buffers without visible panes, then add
    `<space>b`, `ga`, `gn`/`gp`, and `gm`. Add `gf` to open selected paths in the
    current pane. Preserve unsaved text, undo history, and per-view selections
@@ -77,6 +78,8 @@ selections, and measure operations that could affect input latency.
   currently joins whitespace only and preserves comment markers literally.
 - [ ] Add cancellable or bounded scanning for character finds and WORD motions
   on very large files or with many selections; preserve counts and input ordering.
+  Selection-copy scans already run in the background, but cold column lookups
+  and normalization of very large result sets still need finer cancellation.
 - [ ] Replace two-second polling of visible files with filesystem notifications.
   Watch parent directories as well as files so atomic saves and deletion/recreation
   remain observable; coalesce notifications through the background event queue.

@@ -296,6 +296,16 @@ def main():
         assert pages.read_text() == page_source
         print("PASS: Ctrl-u/Ctrl-d half-page movement, counts, resize, and clean quit")
 
+        copied_path = Path(directory) / "copied selections.txt"
+        copied_path.write_text("a1\nb2\nc3\n")
+        with Terminal([binary, str(copied_path)]) as terminal:
+            terminal.start()
+            # The delete/save must wait for the worker's new selections.
+            terminal.send(b"2Cd:wq\r")
+            terminal.finish()
+        assert copied_path.read_text() == "1\n2\n3\n"
+        print("PASS: counted C creates selections before queued delete/save/quit")
+
         split_path = Path(directory) / "split.txt"
         split_path.write_text("alpha\nsecond\n")
         other_path = Path(directory) / "other.txt"

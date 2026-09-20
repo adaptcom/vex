@@ -85,7 +85,12 @@ identity, revision, mode, and selections still match. Commands that edit or move
 cancel pending work, including a move away and back or an edit followed by undo.
 Late results cannot overwrite current selections or newer messages.
 
-`Editor::search_waiting` identifies an early acceptance or repeat whose destination
+The same job mailbox handles `C` selection-copy scans, with `selecting...` progress.
+It shares snapshot validation and cancellation with search; copying selections
+does not overwrite the accepted search pattern. The worker uses a bounded local
+display-column cache and copies no document text. See [selection copying](terminal.md).
+
+`Editor::search_waiting` identifies an early acceptance, repeat, or selection scan whose destination
 is still needed. The terminal defers subsequent keys until completion, then
 continues dispatching normal documented command functions. See the
 [event queue and worker lifecycle](terminal.md#event-queue-and-background-work).
@@ -106,6 +111,7 @@ not preemptible. Large files and counts can delay a result, and keys depending o
 that result wait for it. There is no hard real-time deadline.
 
 Regex mode, case folding, query history, and highlighting every visible occurrence
-are not implemented. Syntax parsing, file I/O, rendering, and cold layout indexing
-still run synchronously. See [measured search costs](performance.md#background-search)
+are not implemented. The terminal runs syntax on its own worker; file opening,
+rendering, and cold layout indexing for ordinary cursor motions still run
+synchronously. See [measured search costs](performance.md#background-search)
 for the worker scheduling and terminal response baseline.

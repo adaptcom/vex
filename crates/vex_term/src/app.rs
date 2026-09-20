@@ -246,6 +246,11 @@ impl App {
                     self.handle_prompt_key(key);
                 } else {
                     match key {
+                        Key::Ctrl('c') if self.editor.search_waiting() => {
+                            // A pending scan is cancellable before subsequent
+                            // editing keys. Do not dispatch normal-mode comments.
+                            self.editor.finish_undo_group();
+                        }
                         Key::Char(':')
                             if self.editor.mode() != Mode::Insert
                                 && self.keys.pending_keys().is_empty() =>
@@ -382,8 +387,9 @@ impl App {
                 .map(ToString::to_string)
                 .collect::<String>()
         );
-        if self.editor.search_pending() {
-            pending.push_str(" searching...");
+        if let Some(progress) = self.editor.search_progress() {
+            pending.push(' ');
+            pending.push_str(progress);
         }
         pending.push_str(&self.language_status());
         if self

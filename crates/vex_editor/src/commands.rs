@@ -448,6 +448,12 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
 }
 
 commands! {
+    /// Add copies of each selection on following logical lines at the same display columns. Counts add copies, skipping lines that cannot fit both endpoints. Multi-line selections advance by their height; the primary follows its last copy. Uses the cancellable search worker when enabled.
+    fn copy_selection_on_next_line(ctx) { crate::search::copy_lines(ctx, true) }
+
+    /// Add copies of each selection on preceding logical lines at the same display columns. Counts add copies, skipping short lines; preserves selection direction and mode. Uses the cancellable search worker when enabled.
+    fn copy_selection_on_prev_line(ctx) { crate::search::copy_lines(ctx, false) }
+
     /// Save the current selections as a jump checkpoint without writing the file.
     fn save_selection(ctx) {
         ctx.editor.finish_undo_group();

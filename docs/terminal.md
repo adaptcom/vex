@@ -58,6 +58,7 @@ and calls that existing dispatcher.
 | `%` | Select the entire document |
 | `;` | Collapse each selection to its displayed cursor |
 | `,` | Keep only the primary selection |
+| `C` | Copy selections onto following lines at the same display columns; counts add copies |
 | `x` | Expand to whole lines, then extend below on repeated presses; accepts counts |
 | `X` | Expand to line boundaries, preserving direction |
 | `_` | Trim whitespace from selection edges |
@@ -106,6 +107,21 @@ Counts include the initial alignment, so `3x` from a character selects three
 lines, while `3x` on already selected lines adds three more. `X` aligns without
 adding lines and preserves direction. Both merge overlapping ranges, retain the
 primary, and exclude the next line when a selection ends exactly at its start.
+
+`C` adds a copy of each selection on the following line, preserving both endpoint
+columns and direction. It skips lines whose endpoints would fall beyond the line
+or inside a tab/wide glyph. Multi-line ranges advance by their height, so copying
+a two-line range starts two lines lower. Counts add that many fitting copies per
+original selection. Overlaps merge, and the primary follows its last copy.
+Normal/select mode is retained, and text, registers, and undo history are unchanged.
+`copy_selection_on_prev_line` provides the same operation upward as a named command;
+its Alt binding is part of the remaining modifier work.
+
+Selection copying runs on the existing search worker over a shared rope snapshot.
+The status shows `selecting...`; subsequent edit keys wait for completion. Resize
+and Escape/Ctrl-c cancellation still work. Cancellation is checked between candidate lines;
+individual cold display-column lookups and final selection normalization remain
+indivisible. Stale results cannot replace changed selections or text.
 
 `_` trims Unicode whitespace without editing the document or splitting graphemes.
 Whitespace-only selections are removed; if the primary is removed, the last

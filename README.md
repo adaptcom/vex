@@ -220,11 +220,18 @@ cargo run -p vex_editor --example command_reference --locked > docs/commands.md
 This is an initial set of bindings inspired by Helix, without a compatibility
 guarantee. Word categories currently group Unicode letters/numbers and underscore,
 punctuation, and whitespace; language-specific segmentation is not implemented.
-Consecutive typing, including Enter and Tab, shares one undo group. Movement,
-mode/selection changes, save attempts, paste, and explicit deletions separate
+Consecutive typing, including Enter, Tab, and insert-mode deletion, shares one undo
+group. Movement, mode/selection changes, save attempts, paste, and normal-mode deletions separate
 groups. `c` groups its deletion with the following replacement text; `o` and `O`
 group the opened lines with the following typing. Undo/redo
-counts refer to groups. Integrations call `Editor::finish_undo_group` at savepoints.
+counts refer to groups. Insert-mode Ctrl-s explicitly splits the group without
+saving. Integrations call `Editor::finish_undo_group` at savepoints.
+
+`C` adds copies of selections on following logical lines at the same display
+columns, skipping lines that cannot fit both endpoints. Counts add copies;
+multi-line selections advance by their height. The terminal uses a cancellable
+worker and preserves the order of following edits. The corresponding upward
+command is available by name until Alt bindings are added.
 
 Vertical movement and rendering share a bounded, lazy display-column cache. Edits retain
 the unaffected prefix and shift indexes for unchanged later lines; undo/redo

@@ -198,6 +198,7 @@ impl Default for Keymap {
                 (vec![Char('?')], "search_backward"),
                 (vec![Char('n')], "search_next"),
                 (vec![Char('N')], "search_previous"),
+                (vec![Char('C')], "copy_selection_on_next_line"),
                 (vec![Char(' '), Char('f')], "file_picker"),
                 (vec![Char(' '), Char('g')], "git_status"),
                 (vec![Char(' '), Char('s')], "symbol_picker"),

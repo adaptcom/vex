@@ -1061,6 +1061,39 @@ mod tests {
     }
 
     #[test]
+    fn copied_selections_finish_before_queued_edits_and_can_be_cancelled() {
+        let mut app = App::from_document(Document::from("abc\ndef\nghi"), (40, 8));
+        app.editor.set_background_search(true);
+        press(&mut app, "2C");
+        let result = app.editor.take_search_job().unwrap().run().unwrap();
+        let events = EventQueue::default();
+        events.terminal(key(KeyCode::Char('d')));
+        events.terminal(Event::Resize(60, 10));
+        let event = events.next(Duration::ZERO, app.input_waiting()).unwrap();
+        deliver(&mut app, event);
+        assert_eq!(app.size(), (60, 10));
+        assert!(events.next(Duration::ZERO, app.input_waiting()).is_none());
+        assert_eq!(app.editor.document().text(), "abc\ndef\nghi");
+        events.background(BackgroundEvent::Search(result));
+        while let Some(event) = events.next(Duration::ZERO, app.input_waiting()) {
+            deliver(&mut app, event);
+        }
+        assert_eq!(app.editor.document().text(), "bc\nef\nhi");
+        app.editor.execute("undo", 1).unwrap();
+        let original = app.editor.selections().clone();
+        press(&mut app, "C");
+        let result = app.editor.take_search_job().unwrap().run().unwrap();
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(!app.input_waiting());
+        assert!(!app.handle_search_result(result));
+        assert_eq!(app.editor.selections(), &original);
+        assert_eq!(app.editor.document().text(), "abc\ndef\nghi");
+    }
+
+    #[test]
     fn picker_enter_holds_following_edits_until_the_selected_file_opens() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::create_dir(directory.path().join(".git")).unwrap();

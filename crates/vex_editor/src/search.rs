@@ -1,8 +1,9 @@
-//! Search requests carry immutable snapshots. Frontends may execute them on a
-//! worker; only the editor applies results after validating request and view state.
+//! Text search and selection scans carry immutable snapshots. Frontends may
+//! execute them on a worker; only the editor applies results after validating
+//! request and view state.
 
 use crate::{CommandContext, Editor, Error, Mode, SearchDirection};
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 use vex_core::{
     ByteOffset, CharOffset, DocumentId, Revision, Rope, Selection, SelectionSet, Snapshot,
     grapheme, search::Literal,
@@ -27,15 +28,34 @@ enum Pattern {
     Compiled(Arc<Literal>),
 }
 
-/// Owned, Send search work. No mutable editor state crosses the worker boundary.
+#[derive(Debug)]
+enum Work {
+    Search {
+        pattern: Pattern,
+        direction: SearchDirection,
+        count: usize,
+        inclusive: bool,
+    },
+    CopyLines {
+        count: usize,
+        down: bool,
+        tabs: NonZeroUsize,
+    },
+}
+
+#[derive(Debug)]
+enum Outcome {
+    Search(Arc<Literal>, Option<SelectionSet>),
+    Selections(SelectionSet),
+}
+
+/// Owned, Send text-search or selection-scan work. No mutable editor state
+/// crosses the worker boundary. Both use the same ordered worker mailbox.
 #[derive(Debug)]
 pub struct SearchJob {
     snapshot: Snapshot,
     origins: SelectionSet,
-    pattern: Pattern,
-    direction: SearchDirection,
-    count: usize,
-    inclusive: bool,
+    work: Work,
     cancellation: SearchCancellation,
 }
 
@@ -43,7 +63,7 @@ pub struct SearchJob {
 #[derive(Debug)]
 pub struct SearchResult {
     cancellation: SearchCancellation,
-    outcome: Result<(Arc<Literal>, Option<SelectionSet>), Error>,
+    outcome: Result<Outcome, Error>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,26 +81,49 @@ impl SearchJob {
 
     /// Compile and scan the snapshot. Cancelled jobs return no completion.
     /// Cancellation is checked during compilation/scanning and between matches;
-    /// grapheme-boundary calculations are not individually preemptible.
+    /// grapheme-boundary and individual display-column lookups are not preemptible.
     pub fn run(self) -> Option<SearchResult> {
         let cancelled = || self.cancellation.is_cancelled();
         if cancelled() {
             return None;
         }
-        let pattern = match self.pattern {
-            Pattern::Text(ref text) => Arc::new(Literal::new_cancellable(text, cancelled)?),
-            Pattern::Compiled(ref pattern) => Arc::clone(pattern),
+        let outcome = match self.work {
+            Work::Search {
+                pattern,
+                direction,
+                count,
+                inclusive,
+            } => {
+                let pattern = match pattern {
+                    Pattern::Text(text) => Arc::new(Literal::new_cancellable(&text, cancelled)?),
+                    Pattern::Compiled(pattern) => pattern,
+                };
+                locate(
+                    self.snapshot.text(),
+                    &self.origins,
+                    &pattern,
+                    direction,
+                    count,
+                    inclusive,
+                    &cancelled,
+                )
+                .map(|selections| Outcome::Search(pattern, selections))
+            }
+            Work::CopyLines { count, down, tabs } => {
+                // The worker's document shares the snapshot rope; it has no edit
+                // history. Its bounded layout cache is local to this scan.
+                let document = vex_core::Document::from(self.snapshot.text().clone());
+                crate::selection::copy_lines(
+                    &document,
+                    &self.origins,
+                    count,
+                    down,
+                    tabs,
+                    &cancelled,
+                )
+                .map(Outcome::Selections)
+            }
         };
-        let outcome = locate(
-            self.snapshot.text(),
-            &self.origins,
-            &pattern,
-            self.direction,
-            self.count,
-            self.inclusive,
-            &cancelled,
-        )
-        .map(|selections| (pattern, selections));
         if cancelled() {
             return None;
         }
@@ -95,6 +138,7 @@ impl SearchJob {
 enum Kind {
     Preview { accept: bool },
     Repeat,
+    CopyLines,
 }
 
 #[derive(Debug)]
@@ -121,9 +165,27 @@ impl Search {
         self.pending.is_some()
     }
     pub fn waiting(&self) -> bool {
-        self.pending
+        self.pending.as_ref().is_some_and(|p| {
+            matches!(
+                p.kind,
+                Kind::Repeat | Kind::CopyLines | Kind::Preview { accept: true }
+            )
+        })
+    }
+    pub fn progress(&self) -> Option<&'static str> {
+        self.pending.as_ref().map(|pending| match pending.kind {
+            Kind::CopyLines => "selecting...",
+            _ => "searching...",
+        })
+    }
+    pub fn invalidate_columns(&mut self) {
+        if self
+            .pending
             .as_ref()
-            .is_some_and(|p| matches!(p.kind, Kind::Repeat | Kind::Preview { accept: true }))
+            .is_some_and(|pending| matches!(pending.kind, Kind::CopyLines))
+        {
+            self.cancel_jobs();
+        }
     }
     fn cancel_jobs(&mut self) {
         if let Some(pending) = self.pending.take() {
@@ -237,6 +299,34 @@ fn schedule(
     count: usize,
     kind: Kind,
 ) -> Result<(), Error> {
+    dispatch(
+        editor,
+        Work::Search {
+            pattern,
+            direction,
+            count,
+            inclusive: matches!(kind, Kind::Preview { .. }),
+        },
+        kind,
+    )
+}
+
+pub(crate) fn copy_lines(ctx: &mut CommandContext<'_>, down: bool) -> Result<(), Error> {
+    let editor = &mut *ctx.editor;
+    require_normal_or_select(editor)?;
+    editor.finish_undo_group();
+    dispatch(
+        editor,
+        Work::CopyLines {
+            count: ctx.count.get(),
+            down,
+            tabs: editor.tab_width,
+        },
+        Kind::CopyLines,
+    )
+}
+
+fn dispatch(editor: &mut Editor, work: Work, kind: Kind) -> Result<(), Error> {
     let cancellation = SearchCancellation::default();
     let snapshot = editor.document.snapshot();
     editor.search.pending = Some(Pending {
@@ -250,10 +340,7 @@ fn schedule(
     let job = SearchJob {
         snapshot,
         origins: editor.selections.clone(),
-        pattern,
-        direction,
-        count,
-        inclusive: matches!(kind, Kind::Preview { .. }),
+        work,
         cancellation,
     };
     if editor.search.background {
@@ -293,7 +380,12 @@ pub(crate) fn apply_result(
         return Ok(SearchCompletion::Ignored);
     }
     let (pattern, selections) = match result.outcome {
-        Ok(result) => result,
+        Ok(Outcome::Search(pattern, selections)) => (pattern, selections),
+        Ok(Outcome::Selections(selections)) => {
+            editor.selections = selections;
+            editor.preferred_columns = None;
+            return Ok(SearchCompletion::Navigation);
+        }
         Err(error) => {
             editor.search.preview = None;
             return Err(error);
@@ -329,6 +421,7 @@ pub(crate) fn apply_result(
             editor.preferred_columns = None;
             Ok(SearchCompletion::Navigation)
         }
+        Kind::CopyLines => unreachable!("line-copy requests produce selections"),
     }
 }
 
