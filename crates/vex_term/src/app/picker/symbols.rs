@@ -426,18 +426,11 @@ mod tests {
         ));
         finish(&mut app);
         app.handle(key(KeyCode::Enter));
-        assert!(
-            app.picker
-                .active
-                .as_ref()
-                .unwrap()
-                .view
-                .notice
-                .contains("save this buffer")
-        );
+        assert!(app.picker.active.is_none());
+        assert_eq!(app.files.target(), Some(path.as_path()));
+        app.execute("jump_back").unwrap();
+        app.take_lsp_update();
         assert!(app.is_dirty());
-        app.handle(key(KeyCode::Esc));
-        app.execute("vsplit").unwrap(); // Another pane keeps the dirty origin alive.
         app.execute("workspace_symbol_picker").unwrap();
         let request = app.take_lsp_update().unwrap();
         assert!(answer(

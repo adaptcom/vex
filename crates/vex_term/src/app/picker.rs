@@ -556,15 +556,10 @@ mod tests {
         press(&mut app, " fbeta");
         app.handle(key(KeyCode::Enter));
         finish(&mut app, &mut FileWorker::default());
-        assert!(
-            app.picker
-                .active
-                .as_ref()
-                .unwrap()
-                .view
-                .notice
-                .contains("save this buffer")
-        );
+        assert!(app.picker.active.is_none());
+        assert_eq!(app.editor.document().text(), "beta contents");
+        app.execute("jump_back").unwrap();
+        app.take_lsp_update();
         assert!(app.is_dirty());
         assert_eq!(app.editor.document().text(), "alxpha contents");
         assert_eq!(

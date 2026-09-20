@@ -61,21 +61,21 @@ selections support filenames containing spaces. Files must exist; all selected
 files and required splits are checked before opening any. Shell expansion and
 `file:line:column` parsing are not supported.
 
-Opening a file that is already displayed reuses its buffer and undo history,
-including unsaved edits. Opening another file in a pane is allowed while its old
-buffer is dirty if another pane still displays that buffer. The last view of
-unsaved text is protected. Buffers with no views are released; this is not yet a
-hidden-buffer list.
+Opening a file that is already loaded reuses its buffer and undo history,
+including unsaved edits. Switching files retains the old buffer, even when no
+pane displays it. Each pane restores its own saved selections and scroll position
+when returning to a buffer. Switching moves ownership without copying the text.
 
-`:q` closes the focused pane; `:q!` permits discarding its last unsaved view.
-`:only` keeps the focused pane and refuses to discard other unsaved buffers;
-`:only!` explicitly discards them. `:qa` quits all panes, and `:qa!` permits
+`:q` closes the focused pane, retaining its buffers. Closing the last pane checks
+all buffers for unsaved text, including hidden buffers; `:q!` skips that check.
+`:only` keeps the focused pane and retains buffers from the other panes;
+`:only!` has the same retention behavior. `:qa` quits all panes, and `:qa!` permits
 discarding all unsaved text. `:wq` saves and closes the focused pane.
 Saving one shared buffer updates every view's modified indicator. Saving to a
 path held by a different open buffer is rejected, even with `:w!`.
 
 Syntax highlighting runs for every visible buffer on the existing background
-worker, retaining a parser per open buffer and delivering a complete batch of
+worker, retaining a parser per visible buffer and delivering a complete batch of
 results through the event queue. Search and language-service requests belong to
 the focused pane and are canceled when focus changes. Language services still
 maintain one active document session: switching to a different file changes that

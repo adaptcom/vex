@@ -64,10 +64,10 @@ without crossing the pane border.
 
 Resizing to a narrow terminal cancels preview work. Previews never edit the
 document or start a language server. The chosen file opens in the focused pane.
-Opening another file requires saving current changes first unless another pane
-still displays that buffer; an error leaves the picker open. Successful opens add
-the origin to the existing Ctrl-o jump list. Already displayed files reuse their
-buffer and undo history; files without an open view are loaded from disk.
+Opening another file retains the previous buffer, including unsaved edits and
+undo history. Successful opens add the origin to the existing Ctrl-o jump list.
+Loaded files reuse their buffers even when no pane displays them; an error leaves
+the picker open.
 
 ## Symbol pickers
 

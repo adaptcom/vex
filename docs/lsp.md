@@ -52,12 +52,11 @@ no other message or prompt is active. Errors take precedence over other markers
 on the same line. Editing clears diagnostics immediately until a current result
 arrives.
 
-Definition and symbol jumps open another local file in the focused pane. Crossing files
-requires saving unsaved changes first unless another pane still displays the old
-buffer. The jump list retains up to 32 paths and cursor positions. Opening or
-returning to an already displayed file reuses its buffer/history; otherwise it
-loads from disk. Buffers with no views are released. Multiple definition results
-currently choose the first result.
+Definition and symbol jumps open another local file in the focused pane, retaining
+the old buffer and any unsaved edits. The jump list retains up to 32 selection
+checkpoints. Returning to a loaded file reuses its buffer and history, including
+when no pane displays it. Multiple definition results currently choose the first
+result.
 
 Language services maintain one active document session. Switching focus between
 views of the same file keeps the session and cancels cursor-specific requests.

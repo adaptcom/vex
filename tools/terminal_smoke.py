@@ -332,8 +332,10 @@ def main():
             terminal.send(b"iY")
             terminal.leave_insert()
             terminal.send(b":q\r")
+            terminal.expect_screen(b"Xalpha")
+            terminal.send(b":q\r")  # Final quit also protects hidden buffers.
             terminal.expect_screen(b"unsaved changes")
-            terminal.send(b":w\r")
+            terminal.send(b":vsplit " + os.fsencode(other_path) + b"\r:w\r")
             terminal.expect_screen(b"wrote")
             terminal.send(b" wH")  # Swap the active file left.
             terminal.resize(10, 3)

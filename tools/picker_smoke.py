@@ -63,8 +63,10 @@ def main():
             terminal.send(b"iDIRTY")
             terminal.leave_insert()
             terminal.send(b" ftarget\r")
-            terminal.expect_screen(b"save this buffer")
-            terminal.send(b"\x03:q!\r")
+            terminal.expect_screen(b"Xunique preview contents")
+            terminal.send(b"\x0f")
+            terminal.expect_screen(b"DIRTYoriginal")
+            terminal.send(b":q!\r")
             terminal.finish()
         print("PASS: group hints, floating borders, visible original buffer, syntax preview, Unicode fuzzy query, resize, cancellation, early Enter/edit/save, jump back, dirty-buffer protection, terminal cleanup")
 

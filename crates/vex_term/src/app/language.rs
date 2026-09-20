@@ -417,7 +417,8 @@ impl App {
             .back()
             .cloned()
             .ok_or_else(|| io::Error::other("no previous jump"))?;
-        if self.editor.document().id() != jump.document {
+        if self.editor.document().id() != jump.document && self.open_buffer(jump.document).is_err()
+        {
             let path = jump
                 .path
                 .as_ref()
@@ -756,18 +757,14 @@ mod tests {
             key,
             Answer::Definition(Some(location.clone()))
         ));
-        assert_eq!(app.files.target(), Some(origin.as_path()));
-        assert!(app.is_dirty());
-        assert!(app.message.contains("save this buffer"));
-        app.execute("write").unwrap();
-        let key = issue(&mut app, "goto_definition");
-        assert!(answer(&mut app, key, Answer::Definition(Some(location))));
         app.take_lsp_update();
         assert_eq!(app.files.target(), Some(target.as_path()));
         assert_eq!(app.language_cursor(), CharOffset(7));
         app.execute("jump_back").unwrap();
         app.take_lsp_update();
         assert_eq!(app.files.target(), Some(origin.as_path()));
+        assert!(app.is_dirty());
+        assert!(app.editor.document().text().to_string().starts_with(' '));
         assert!(app.language.jumps.is_empty());
     }
 

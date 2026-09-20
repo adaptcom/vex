@@ -11,7 +11,7 @@ use crate::mapping::PositionMap;
 use crate::{Affinity, ByteOffset, CharOffset, Edit, Error, Rope, SelectionSet, Transaction};
 
 /// Process-local identity, distinct even for documents containing identical text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DocumentId(u64);
 
 impl DocumentId {

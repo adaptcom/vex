@@ -1,5 +1,5 @@
-//! Window ownership and buffer sharing. Documents retain the usual save
-//! protection; commit drafts remain in memory when their last view closes.
+//! Pane views over retained buffers. Hiding or closing a pane never discards
+//! document text or history; quitting protects every unsaved buffer.
 
 mod layout;
 
@@ -23,12 +23,19 @@ enum Content {
     Git(PathBuf),
 }
 
+#[derive(Clone, Copy)]
+struct SavedView {
+    view: ViewId,
+    viewport: Viewport,
+}
+
 struct Pane {
     // The document stays owned by the pane while an auxiliary view is shown.
     content: Content,
     document: DocumentId,
     view: ViewId,
     viewport: Viewport,
+    saved: HashMap<DocumentId, SavedView>,
 }
 
 struct Buffer {
@@ -61,6 +68,7 @@ impl State {
                     document: editor.document().id(),
                     view: editor.active_view(),
                     viewport: Viewport::default(),
+                    saved: HashMap::new(),
                 },
             )]),
             buffers: HashMap::new(),
@@ -232,15 +240,34 @@ impl App {
         paths
     }
 
+    fn visible_documents(&self) -> Vec<DocumentId> {
+        let mut documents: Vec<_> = self
+            .windows
+            .layout
+            .visible(self.window_area())
+            .0
+            .into_iter()
+            .filter_map(|(id, rect)| {
+                let pane = &self.windows.panes[&id];
+                (rect.width > 0 && rect.height > 0 && matches!(pane.content, Content::Document))
+                    .then_some(pane.document)
+            })
+            .collect();
+        documents.sort_unstable();
+        documents.dedup();
+        documents
+    }
+
     pub(super) fn git_documents(&self) -> Vec<vex_git::Document> {
-        std::iter::once((&self.editor, &self.files))
-            .chain(
-                self.windows
-                    .buffers
-                    .values()
-                    .map(|buffer| (&buffer.editor, &buffer.files)),
-            )
-            .filter_map(|(editor, files)| {
+        self.visible_documents()
+            .into_iter()
+            .filter_map(|id| {
+                let (editor, files) = if id == self.editor.document().id() {
+                    (&self.editor, &self.files)
+                } else {
+                    let buffer = &self.windows.buffers[&id];
+                    (&buffer.editor, &buffer.files)
+                };
                 files.target().map(|path| vex_git::Document {
                     path: path.into(),
                     snapshot: editor.document().snapshot(),
@@ -297,37 +324,36 @@ impl App {
     }
 
     pub(crate) fn take_syntax_batch(&mut self) -> Option<crate::events::SyntaxBatch> {
-        let mut editors: Vec<_> = std::iter::once(&mut self.editor)
-            .chain(
-                self.windows
-                    .buffers
-                    .values_mut()
-                    .map(|buffer| &mut buffer.editor),
-            )
-            .collect();
-        let mut changed = false;
-        for editor in &mut editors {
-            changed |= editor.take_syntax_job().is_some();
+        let documents = self.visible_documents();
+        let mut changed = documents != self.windows.syntax_documents;
+        if changed {
+            for id in self.windows.syntax_documents.clone() {
+                if !documents.contains(&id) {
+                    self.with_file_buffer_mut(id, |editor, _, _| {
+                        editor.begin_syntax_frame();
+                        editor.cancel_syntax_request();
+                    });
+                }
+            }
         }
-        let documents: Vec<_> = editors
-            .iter()
-            .map(|editor| editor.document().id())
-            .collect();
-        changed |= documents.len() != self.windows.syntax_documents.len()
-            || documents
-                .iter()
-                .any(|id| !self.windows.syntax_documents.contains(id));
+        for &id in &documents {
+            changed |= self
+                .with_file_buffer_mut(id, |editor, _, _| editor.take_syntax_job().is_some())
+                .unwrap();
+        }
         if !changed {
             return None;
         }
-        // Replacing a batch also replaces any work still pending for its other
-        // buffers. Reissue those requests so none are stranded by cancellation.
+        // Replacing a batch replaces pending work for all visible buffers.
         self.windows.syntax_documents.clone_from(&documents);
-        let jobs = editors
-            .iter_mut()
-            .filter_map(|editor| {
-                editor.cancel_syntax_request();
-                editor.take_syntax_job()
+        let jobs = documents
+            .iter()
+            .filter_map(|&id| {
+                self.with_file_buffer_mut(id, |editor, _, _| {
+                    editor.cancel_syntax_request();
+                    editor.take_syntax_job()
+                })
+                .flatten()
             })
             .collect();
         Some(crate::events::SyntaxBatch {
@@ -408,14 +434,6 @@ impl App {
         self.prompt = None;
     }
 
-    fn views_of(&self, document: DocumentId) -> usize {
-        self.windows
-            .panes
-            .values()
-            .filter(|pane| pane.document == document)
-            .count()
-    }
-
     /// Resolve identity before loading, so existing buffers retain unsaved text,
     /// savepoints, and undo history even when opened through a symlink alias.
     fn prepare_file(&self, path: &Path) -> io::Result<Prepared> {
@@ -445,53 +463,60 @@ impl App {
 
     fn replace_window_buffer(&mut self, prepared: Prepared) -> io::Result<()> {
         if matches!(&prepared, Prepared::Existing(id) if *id == self.editor.document().id()) {
+            self.set_git_view(None);
             return Ok(());
-        }
-        let old_views = self.views_of(self.editor.document().id());
-        let keep_old = old_views > 1
-            || self
-                .git_write
-                .drafts
-                .contains_key(&self.editor.document().id());
-        if !keep_old && self.is_dirty() {
-            return Err(io::Error::other(
-                "save this buffer before opening another file",
-            ));
         }
         self.dismiss_language_help();
         self.editor.finish_undo_group();
-        let buffer = match prepared {
-            Prepared::New(buffer) => *buffer,
+        let window = self.windows.layout.active;
+        let old_id = self.editor.document().id();
+        let old_view = SavedView {
+            view: self.editor.active_view(),
+            viewport: self.viewport,
+        };
+        self.windows
+            .panes
+            .get_mut(&window)
+            .unwrap()
+            .saved
+            .insert(old_id, old_view);
+        let (buffer, viewport) = match prepared {
+            Prepared::New(buffer) => (*buffer, Viewport::default()),
             Prepared::Existing(id) => {
-                let visible = self.views_of(id) > 0;
+                let saved = self
+                    .windows
+                    .panes
+                    .get_mut(&window)
+                    .unwrap()
+                    .saved
+                    .remove(&id);
+                let owned = self
+                    .windows
+                    .panes
+                    .values()
+                    .any(|pane| pane.document == id || pane.saved.contains_key(&id));
                 let mut buffer = self.windows.buffers.remove(&id).expect("existing buffer");
-                if visible {
-                    let view = buffer.editor.duplicate_view();
-                    buffer.editor.focus_view(view);
+                let viewport = if let Some(saved) = saved {
+                    assert!(buffer.editor.focus_view(saved.view));
+                    saved.viewport
                 } else {
-                    buffer.editor.retain_active_view();
-                }
-                buffer
+                    if owned {
+                        let view = buffer.editor.duplicate_view();
+                        buffer.editor.focus_view(view);
+                    }
+                    Viewport::default()
+                };
+                (buffer, viewport)
             }
         };
-        let old_view = self.editor.active_view();
-        let mut old = self.switch_buffer(buffer);
-        if keep_old {
-            if old_views > 1 {
-                assert!(old.editor.remove_view(old_view));
-            }
-            self.windows.buffers.insert(old.editor.document().id(), old);
-        }
-        self.viewport = Viewport::default();
-        self.windows.panes.insert(
-            self.windows.layout.active,
-            Pane {
-                content: Content::Document,
-                document: self.editor.document().id(),
-                view: self.editor.active_view(),
-                viewport: self.viewport,
-            },
-        );
+        let old = self.switch_buffer(buffer);
+        self.windows.buffers.insert(old_id, old);
+        self.viewport = viewport;
+        let pane = self.windows.panes.get_mut(&window).unwrap();
+        pane.content = Content::Document;
+        pane.document = self.editor.document().id();
+        pane.view = self.editor.active_view();
+        pane.viewport = viewport;
         self.keys.cancel();
         self.prompt = None;
         Ok(())
@@ -500,6 +525,13 @@ impl App {
     pub(super) fn open_window_file(&mut self, path: &Path) -> io::Result<()> {
         let prepared = self.prepare_file(path)?;
         self.replace_window_buffer(prepared)
+    }
+
+    pub(super) fn open_buffer(&mut self, id: DocumentId) -> io::Result<()> {
+        if id != self.editor.document().id() && !self.windows.buffers.contains_key(&id) {
+            return Err(io::Error::other("buffer is no longer open"));
+        }
+        self.replace_window_buffer(Prepared::Existing(id))
     }
 
     pub(super) fn snapshot_for_path(&self, path: &Path) -> Option<vex_core::Snapshot> {
@@ -532,17 +564,6 @@ impl App {
     pub(super) fn open_window_from_picker(&mut self, path: &Path) -> io::Result<()> {
         let prepared = self.prepare_file(path)?;
         if !matches!(&prepared, Prepared::Existing(id) if *id == self.editor.document().id()) {
-            if self.views_of(self.editor.document().id()) == 1
-                && self.is_dirty()
-                && !self
-                    .git_write
-                    .drafts
-                    .contains_key(&self.editor.document().id())
-            {
-                return Err(io::Error::other(
-                    "save this buffer before opening another file",
-                ));
-            }
             self.record_jump();
         }
         self.replace_window_buffer(prepared)
@@ -558,6 +579,7 @@ impl App {
                 document: self.editor.document().id(),
                 view,
                 viewport: self.viewport,
+                saved: HashMap::new(),
             },
         );
         self.focus_window(id);
@@ -582,66 +604,44 @@ impl App {
         Ok(())
     }
 
+    fn remove_pane_views(&mut self, pane: Pane) {
+        for (document, view) in std::iter::once((pane.document, pane.view))
+            .chain(pane.saved.into_iter().map(|(id, saved)| (id, saved.view)))
+        {
+            self.with_file_buffer_mut(document, |editor, _, _| {
+                editor.remove_view(view);
+            });
+        }
+    }
+
     pub(super) fn close_window(&mut self, force: bool) -> io::Result<()> {
         let id = self.windows.layout.active;
-        let pane = &self.windows.panes[&id];
-        let (document, view) = (pane.document, pane.view);
-        if self.views_of(document) == 1
-            && self.is_dirty()
-            && !force
-            && !self.git_write.drafts.contains_key(&document)
-        {
-            return Err(io::Error::other(
-                "unsaved changes; use :w to save or :q! to discard",
-            ));
-        }
         let ids = self.windows.layout.ids();
         if ids.len() == 1 {
-            self.check_git_writes_finished()?;
-            self.quit = true;
-            return Ok(());
+            return self.quit_all(force);
         }
         let index = ids.iter().position(|other| *other == id).unwrap();
-        let next = ids[(index + 1) % ids.len()];
-        self.focus_window(next);
+        self.focus_window(ids[(index + 1) % ids.len()]);
         self.windows.layout.remove(id);
-        self.windows.panes.remove(&id);
-        if document == self.editor.document().id() {
-            self.editor.remove_view(view);
-        } else if self.views_of(document) == 0 {
-            if !self.git_write.drafts.contains_key(&document) {
-                self.windows.buffers.remove(&document);
-            }
-        } else {
-            self.windows
-                .buffers
-                .get_mut(&document)
-                .unwrap()
-                .editor
-                .remove_view(view);
-        }
+        let pane = self.windows.panes.remove(&id).unwrap();
+        self.remove_pane_views(pane);
         Ok(())
     }
 
-    pub(super) fn only_window(&mut self, force: bool) -> io::Result<()> {
-        if !force
-            && self.windows.buffers.iter().any(|(id, buffer)| {
-                !self.git_write.drafts.contains_key(id)
-                    && buffer.files.is_dirty(buffer.editor.document())
-            })
-        {
-            return Err(io::Error::other(
-                "another buffer has unsaved changes; save it or use :only! to discard",
-            ));
-        }
+    pub(super) fn only_window(&mut self, _force: bool) -> io::Result<()> {
         self.windows.layout.only();
+        let active = self
+            .windows
+            .panes
+            .remove(&self.windows.layout.active)
+            .unwrap();
+        let removed = std::mem::take(&mut self.windows.panes);
         self.windows
             .panes
-            .retain(|id, _| *id == self.windows.layout.active);
-        self.windows
-            .buffers
-            .retain(|id, _| self.git_write.drafts.contains_key(id));
-        self.editor.retain_active_view();
+            .insert(self.windows.layout.active, active);
+        for pane in removed.into_values() {
+            self.remove_pane_views(pane);
+        }
         Ok(())
     }
 
@@ -795,9 +795,8 @@ impl App {
     /// frame. Popups and completion remain clipped to the focused pane.
     pub(super) fn paint_windows(&mut self, frame: &mut Frame) -> io::Result<()> {
         self.remember_viewport();
-        self.editor.begin_syntax_frame();
-        for buffer in self.windows.buffers.values() {
-            buffer.editor.begin_syntax_frame();
+        for id in self.visible_documents() {
+            self.with_file_buffer_mut(id, |editor, _, _| editor.begin_syntax_frame());
         }
         let (leaves, dividers) = self.windows.layout.visible(self.window_area());
         if leaves.len() == 1 {
@@ -1180,8 +1179,6 @@ mod tests {
         assert_eq!(app.editor.document().text(), "beta");
         press(&mut app, "iY");
         key(&mut app, KeyCode::Esc);
-        assert!(app.execute("q").is_err());
-        assert!(app.execute("only").is_err());
         assert!(app.execute("qa").is_err());
         assert_eq!(app.windows.panes.len(), 2);
         // An explicit save cannot overwrite a different open buffer, even with !.
@@ -1191,7 +1188,7 @@ mod tests {
         assert_eq!(app.editor.document().id(), original);
         assert_eq!(app.editor.document().text(), "Xalpha");
         assert!(app.is_dirty());
-        assert!(app.windows.buffers.is_empty());
+        assert_eq!(app.windows.buffers.len(), 1);
         app.execute("w").unwrap();
         app.execute("jump_view_left").unwrap();
         assert!(!app.is_dirty());
@@ -1220,6 +1217,72 @@ mod tests {
         assert!(app.execute("q").is_err());
         app.execute("q!").unwrap();
         assert!(app.should_quit());
+    }
+
+    #[test]
+    fn closing_panes_retains_hidden_unsaved_buffers_and_undo() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clean.txt");
+        std::fs::write(&path, "clean").unwrap();
+        let mut app = App::from_document(Document::from("scratch"), (80, 24));
+        let scratch = app.editor.document().id();
+        press(&mut app, "iX");
+        key(&mut app, KeyCode::Esc);
+        app.execute(&format!("vsplit {}", path.display())).unwrap();
+        app.execute("only").unwrap();
+        assert_eq!(app.windows.panes.len(), 1);
+        assert!(!app.is_dirty());
+        assert!(app.execute("q").is_err());
+        app.replace_window_buffer(Prepared::Existing(scratch))
+            .unwrap();
+        assert_eq!(app.editor.document().text(), "Xscratch");
+        press(&mut app, "u");
+        assert_eq!(app.editor.document().text(), "scratch");
+        app.execute("vsplit").unwrap();
+        app.open_window_file(&path).unwrap();
+        press(&mut app, "iY");
+        key(&mut app, KeyCode::Esc);
+        app.execute("q").unwrap();
+        assert!(!app.should_quit());
+        assert_eq!(app.editor.document().id(), scratch);
+        assert!(app.execute("q").is_err());
+        app.open_window_file(&path).unwrap();
+        assert_eq!(app.editor.document().text(), "Yclean");
+        press(&mut app, "u");
+        assert!(!app.is_dirty());
+        app.execute("q").unwrap();
+        assert!(app.should_quit());
+    }
+
+    #[test]
+    fn switching_restores_each_panes_selections_and_viewport() {
+        let directory = tempfile::tempdir().unwrap();
+        let a = directory.path().join("a.txt");
+        let b = directory.path().join("b.txt");
+        std::fs::write(&a, "line\n".repeat(100)).unwrap();
+        std::fs::write(&b, "beta").unwrap();
+        let mut app = App::open(Some(&a), (100, 24)).unwrap();
+        press(&mut app, "30j");
+        draw(&mut app);
+        let first = app.editor.selections().clone();
+        let viewport = app.viewport;
+        app.execute("vsplit").unwrap();
+        press(&mut app, "20j");
+        let second = app.editor.selections().clone();
+        app.open_window_file(&b).unwrap();
+        app.execute("jump_view_left").unwrap();
+        app.open_window_file(&b).unwrap();
+        app.open_window_file(&a).unwrap();
+        assert_eq!(app.editor.selections(), &first);
+        assert_eq!(app.viewport, viewport);
+        app.execute("jump_view_right").unwrap();
+        app.open_window_file(&a).unwrap();
+        assert_eq!(app.editor.selections(), &second);
+        app.execute("only").unwrap();
+        // Closing other panes drops their saved views, without dropping text.
+        app.open_window_file(&b).unwrap();
+        app.open_window_file(&a).unwrap();
+        assert_eq!(app.editor.selections(), &second);
     }
 
     #[test]
@@ -1278,7 +1341,7 @@ mod tests {
     }
 
     #[test]
-    fn highlighting_batches_include_all_buffers_and_survive_superseded_work() {
+    fn highlighting_batches_include_visible_buffers_and_survive_superseded_work() {
         let directory = tempfile::tempdir().unwrap();
         let a = directory.path().join("a.rs");
         let b = directory.path().join("b.rs");
@@ -1318,5 +1381,16 @@ mod tests {
         app.execute("jump_view_left").unwrap();
         draw(&mut app);
         assert!(app.take_syntax_batch().is_none());
+        app.execute("only").unwrap();
+        draw(&mut app);
+        let batch = app.take_syntax_batch().unwrap();
+        assert_eq!(batch.documents, vec![app.editor.document().id()]);
+        assert_eq!(app.windows.buffers.len(), 1);
+        assert_eq!(app.git_documents().len(), 1);
+        assert_eq!(app.visible_file_probes().len(), 1);
+        // Cached colors survive being hidden; no text parse is needed to return.
+        app.open_window_file(&b).unwrap();
+        draw(&mut app);
+        assert!(app.take_syntax_batch().unwrap().jobs.is_empty());
     }
 }

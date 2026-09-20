@@ -95,7 +95,7 @@ show Git's descriptive output. Conflicts display the working tree compared with
 the index's ours side; this is a review view, not a conflict-resolution tool.
 
 Enter reuses an already open buffer, including unsaved text. Opening another file
-keeps the usual save protection. Deleted files and directories remain inspectable
+retains the old buffer and any unsaved edits. Deleted files and directories remain inspectable
 in status but cannot be opened as documents. Navigation uses the new-side line
 number, preferring matching text within 200 lines when staged or unsaved changes
 have shifted it; otherwise it clamps the position to the current document.
