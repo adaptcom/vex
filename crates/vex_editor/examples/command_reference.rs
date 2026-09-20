@@ -1,5 +1,5 @@
 //! Print the command registry and default bindings as Markdown.
-use vex_editor::{Keymap, commands::COMMANDS};
+use vex_editor::{CommandInput, Keymap, commands::COMMANDS};
 
 fn main() {
     let keymap = Keymap::default();
@@ -17,7 +17,12 @@ fn main() {
                     .iter()
                     .map(ToString::to_string)
                     .collect::<String>();
-                format!("{:?}: `{keys}`", binding.mode)
+                let argument = if command.input == CommandInput::Character {
+                    "<char>"
+                } else {
+                    ""
+                };
+                format!("{:?}: `{keys}{argument}`", binding.mode)
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -31,7 +36,7 @@ fn main() {
         println!(
             "| `{}` | {} | {} |",
             command.name,
-            bindings,
+            bindings.replace('|', "\\|"),
             command.description().replace('|', "\\|").replace('\n', " ")
         );
     }

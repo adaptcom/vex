@@ -24,8 +24,14 @@ and calls that existing dispatcher.
 |---|---|
 | `h j k l`, arrows | Move the cursor; extend selections in select mode |
 | `w b e` | Word movements |
+| `W B E` | Whitespace-separated WORD movements; punctuation stays in each WORD |
+| `f<char>`, `F<char>` | Select through the next/previous character, crossing lines |
+| `t<char>`, `T<char>` | Select until just before/after the next/previous character |
 | Digits before a command | Repeat count |
-| `gg`, `ge` | Start/end of document |
+| `gg`, `ge` | Start/end of document; a count before `gg` goes to that line |
+| `<count>G` | Go to the one-based line number; uncounted `G` does nothing |
+| `gs` | First non-whitespace grapheme on the current line |
+| `<count>g\|` | Go to the one-based grapheme column, defaulting to 1 |
 | Home, End | Start/end of logical line |
 | Page Up, Page Down | Move by roughly one viewport of logical lines |
 | Ctrl-u, Ctrl-d | Move cursors and scroll half a page up/down in normal/select mode; counts multiply the distance |
@@ -55,9 +61,25 @@ and calls that existing dispatcher.
 | Escape | Cancel a prefix/picker/prompt; otherwise enter normal mode |
 | `:` in normal/select mode | Open the command prompt |
 | Ctrl-s, Ctrl-q | Save / close the current pane with an unsaved-change check |
-| Ctrl-c | Cancel the prompt or return to normal mode |
+| Ctrl-c | Cancel a prompt or pending command; otherwise return to normal mode |
 
 See the [editing command reference](commands.md) for exact movement semantics.
+
+Character finds wait for one key, retaining the count (for example, `3f:`).
+Digits, spaces, and `:` are literal targets while waiting. Enter finds a logical
+line ending, including CRLF; Tab finds a tab. Escape or Ctrl-c cancels without
+leaving select mode. Other non-character keys cancel the pending find. Each
+selection searches independently without wrapping, and stays unchanged if the
+requested occurrence is missing. Normal mode selects the traversed span; select
+mode keeps its anchor. Till motions skip adjacent matches so repetition advances.
+Matches within a combining/emoji cluster select the whole grapheme.
+
+`gg` and `G` clamp oversized line counts to the last content line, excluding the
+empty EOF line after a trailing newline. `ge` retains Vex's existing EOF-boundary
+behavior. `g|` counts graphemes rather than terminal cells: a tab or wide glyph
+counts once. Oversized columns stop at the line-ending boundary. `gs` keeps
+whitespace-only lines unchanged. These motions run synchronously over the rope;
+bounded/cancellable scans for unusually large inputs are tracked in TODO.md.
 Prefix groups display their available commands. The [file picker](pickers.md)
 supports background discovery and fuzzy matching, Unicode query editing, a preview
 on wide terminals, and Ctrl-o return jumps. It protects unsaved changes when opening

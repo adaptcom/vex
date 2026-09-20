@@ -27,7 +27,7 @@ mod search;
 mod syntax;
 mod views;
 
-pub use commands::{Command, CommandContext};
+pub use commands::{Command, CommandContext, CommandInput};
 pub use error::Error;
 pub use keymap::{Binding, Dispatch, Key, KeyHandler, KeyHints, Keymap};
 pub use register::YankRegister;
@@ -350,11 +350,12 @@ impl Editor {
     }
 
     /// Invoke a documented command by its stable name, without keyboard input.
-    /// A zero count uses the default count of one.
+    /// A zero count is omitted and uses the command's default, usually one.
     pub fn execute(&mut self, name: &str, count: usize) -> Result<(), Error> {
         let command = commands::find(name).ok_or_else(|| Error::UnknownCommand(name.into()))?;
         let mut context = CommandContext::new(self);
         context.count = NonZeroUsize::new(count).unwrap_or(NonZeroUsize::MIN);
+        context.count_given = count != 0;
         (command.run)(&mut context)
     }
 

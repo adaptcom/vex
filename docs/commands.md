@@ -45,9 +45,19 @@ Generated from command Rustdoc and the default keymap.
 | `move_word_forward` | Normal: `w`, Select: `w` | Select through the next word start; repeat counts span multiple words. |
 | `move_word_backward` | Normal: `b`, Select: `b` | Select backward to a word start; repeat counts span multiple words. |
 | `move_word_end` | Normal: `e`, Select: `e` | Select through the next word end, excluding following whitespace. |
+| `move_long_word_forward` | Normal: `W`, Select: `W` | Select through the next whitespace-separated WORD start, keeping punctuation within each WORD; accepts a count. |
+| `move_long_word_backward` | Normal: `B`, Select: `B` | Select backward to a whitespace-separated WORD start; accepts a count. |
+| `move_long_word_end` | Normal: `E`, Select: `E` | Select through the next whitespace-separated WORD end, excluding following whitespace; accepts a count. |
+| `find_next_char` | Normal: `f<char>`, Select: `f<char>` | Select through the next occurrence of the supplied character, across line boundaries without wrapping; accepts a count. Enter targets a logical line ending; Tab targets a tab. Unmatched selections stay unchanged. |
+| `find_prev_char` | Normal: `F<char>`, Select: `F<char>` | Select backward through the supplied character, across line boundaries without wrapping; accepts a count. Unmatched selections stay unchanged. |
+| `find_till_char` | Normal: `t<char>`, Select: `t<char>` | Select until just before the next supplied character, skipping an adjacent match so repeated finds advance; accepts a count and crosses lines. |
+| `till_prev_char` | Normal: `T<char>`, Select: `T<char>` | Select backward until just after the previous supplied character, skipping an adjacent match so repeated finds advance; accepts a count and crosses lines. |
+| `goto_first_nonwhitespace` | Normal: `gs`, Select: `gs` | Move to the first non-whitespace grapheme of each cursor's line. Whitespace-only lines keep their selections unchanged. |
+| `goto_column` | Normal: `g\|`, Select: `g\|` | Move to the counted one-based grapheme column (default 1), clamped to each cursor's logical line. Tabs and wide graphemes each count as one column. |
+| `goto_line` | Normal: `G`, Select: `G` | Move to the explicitly counted one-based line, clamping to the last content line. With no count, do nothing; select mode extends to the destination. |
 | `goto_line_start` | Normal: `0`, Normal: `gh`, Normal: `<Home>`, Select: `0`, Select: `gh`, Select: `<Home>`, Insert: `<Home>` | Move to the beginning of the current logical line. |
 | `goto_line_end` | Normal: `$`, Normal: `gl`, Normal: `<End>`, Select: `$`, Select: `gl`, Select: `<End>`, Insert: `<End>` | Move to the last grapheme of the line, or its end boundary in insert mode. |
-| `goto_file_start` | Normal: `gg`, Select: `gg` | Move to the start of the document. |
+| `goto_file_start` | Normal: `gg`, Select: `gg` | Move to the start of the document, or to the counted one-based line, clamped to the last content line. Select mode extends to the destination. |
 | `goto_file_end` | Normal: `ge`, Select: `ge` | Move to the end-of-file boundary. |
 | `select_line` | Normal: `x`, Select: `x` | Expand each selection to whole logical lines, including line endings, facing forward. If already line-aligned, extend below by the count; otherwise alignment counts as the first step.  Repeated x keeps earlier lines selected. Counts clamp at EOF and overlapping ranges merge while retaining the primary selection. |
 | `select_all` | Normal: `%`, Select: `%` | Select the entire document as one forward range, retaining normal/select mode. Empty documents retain a single EOF cursor. |

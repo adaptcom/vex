@@ -8,7 +8,10 @@ use crate::{Editor, Error, Mode};
 pub struct CommandContext<'a> {
     pub editor: &'a mut Editor,
     pub count: NonZeroUsize,
+    /// Distinguish an explicit 1 from an omitted count for commands such as G.
+    pub count_given: bool,
     pub text: Option<&'a str>,
+    pub character: Option<char>,
 }
 
 impl<'a> CommandContext<'a> {
@@ -16,9 +19,19 @@ impl<'a> CommandContext<'a> {
         Self {
             editor,
             count: NonZeroUsize::MIN,
+            count_given: false,
             text: None,
+            character: None,
         }
     }
+}
+
+/// Input a keybinding must collect before invoking the command function.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CommandInput {
+    #[default]
+    None,
+    Character,
 }
 
 #[derive(Debug)]
@@ -26,6 +39,7 @@ pub struct Command {
     pub name: &'static str,
     pub documentation: &'static str,
     pub run: fn(&mut CommandContext<'_>) -> Result<(), Error>,
+    pub input: CommandInput,
 }
 
 impl Command {
@@ -42,15 +56,17 @@ pub fn find(name: &str) -> Option<&'static Command> {
 // Each doc comment is emitted both as Rustdoc and as command metadata. Adding a
 // command here creates an ordinary public function and registers it for help.
 macro_rules! commands {
-    ($($(#[doc = $doc:literal])+ fn $name:ident($ctx:ident) $body:block)+) => {
+    ($($(#[doc = $doc:literal])+ fn $name:ident($ctx:ident) $([$input:ident])? $body:block)+) => {
         $(
             $(#[doc = $doc])+
             pub fn $name($ctx: &mut CommandContext<'_>) -> Result<(), Error> $body
         )+
         pub static COMMANDS: &[Command] = &[
-            $(Command { name: stringify!($name), documentation: concat!($($doc, "\n",)+), run: $name },)+
+            $(Command { name: stringify!($name), documentation: concat!($($doc, "\n",)+), run: $name, input: commands!(@input $($input)?) },)+
         ];
     };
+    (@input $input:ident) => { CommandInput::$input };
+    (@input) => { CommandInput::None };
 }
 
 fn replace_ranges(editor: &mut Editor, ranges: &SelectionSet, text: &str) -> Result<(), Error> {
@@ -222,6 +238,61 @@ fn enter_insert(editor: &mut Editor, append: bool) -> Result<(), Error> {
     editor.mode = Mode::Insert;
     editor.preferred_columns = None;
     Ok(())
+}
+
+fn find_character(
+    ctx: &mut CommandContext<'_>,
+    direction: vex_core::search::Direction,
+    inclusive: bool,
+) -> Result<(), Error> {
+    let character = ctx.character.ok_or(Error::MissingCharacter)?;
+    let editor = &mut *ctx.editor;
+    editor.finish_undo_group();
+    let text = editor.document.text();
+    let ranges = editor
+        .selections
+        .ranges()
+        .iter()
+        .map(|&selection| {
+            let origin = position(editor, selection)?;
+            let Some(destination) = motion::find_char(
+                text,
+                origin,
+                character,
+                ctx.count.get(),
+                direction,
+                inclusive,
+            )?
+            else {
+                return Ok(selection);
+            };
+            if editor.mode == Mode::Insert {
+                return Ok(Selection::cursor(destination));
+            }
+            // Normal mode selects the traversed span. Select mode keeps the original
+            // anchor, including when the destination crosses it.
+            let from = if editor.mode == Mode::Select {
+                selection
+            } else {
+                motion::block(text, origin)?
+            };
+            Ok(motion::put_cursor(text, from, destination, true)?)
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    editor.selections = SelectionSet::new(ranges, editor.selections.primary_index())?;
+    editor.preferred_columns = None;
+    Ok(())
+}
+
+fn goto_counted_line(ctx: &mut CommandContext<'_>) -> Result<(), Error> {
+    move_to(ctx, |editor, _, count| {
+        let text = editor.document.text();
+        let mut last = text.len_lines() - 1;
+        if last > 0 && text.line(last).len_chars() == 0 {
+            last -= 1;
+        }
+        Ok(CharOffset(text.line_to_char((count - 1).min(last))))
+    })
 }
 
 /// Preserve the exact whitespace prefix, independent of language or tab width.
@@ -575,6 +646,53 @@ commands! {
     /// Select through the next word end, excluding following whitespace.
     fn move_word_end(ctx) { word(ctx, motion::word_end) }
 
+    /// Select through the next whitespace-separated WORD start, keeping punctuation within each WORD; accepts a count.
+    fn move_long_word_forward(ctx) { word(ctx, motion::long_word_forward) }
+
+    /// Select backward to a whitespace-separated WORD start; accepts a count.
+    fn move_long_word_backward(ctx) { word(ctx, motion::long_word_backward) }
+
+    /// Select through the next whitespace-separated WORD end, excluding following whitespace; accepts a count.
+    fn move_long_word_end(ctx) { word(ctx, motion::long_word_end) }
+
+    /// Select through the next occurrence of the supplied character, across line boundaries without wrapping; accepts a count. Enter targets a logical line ending; Tab targets a tab. Unmatched selections stay unchanged.
+    fn find_next_char(ctx) [Character] { find_character(ctx, vex_core::search::Direction::Forward, true) }
+
+    /// Select backward through the supplied character, across line boundaries without wrapping; accepts a count. Unmatched selections stay unchanged.
+    fn find_prev_char(ctx) [Character] { find_character(ctx, vex_core::search::Direction::Backward, true) }
+
+    /// Select until just before the next supplied character, skipping an adjacent match so repeated finds advance; accepts a count and crosses lines.
+    fn find_till_char(ctx) [Character] { find_character(ctx, vex_core::search::Direction::Forward, false) }
+
+    /// Select backward until just after the previous supplied character, skipping an adjacent match so repeated finds advance; accepts a count and crosses lines.
+    fn till_prev_char(ctx) [Character] { find_character(ctx, vex_core::search::Direction::Backward, false) }
+
+    /// Move to the first non-whitespace grapheme of each cursor's line. Whitespace-only lines keep their selections unchanged.
+    fn goto_first_nonwhitespace(ctx) {
+        let editor = &mut *ctx.editor;
+        editor.finish_undo_group();
+        let ranges = editor.selections.ranges().iter().map(|&selection| {
+            match motion::first_nonwhitespace(editor.document.text(), position(editor, selection)?)? {
+                Some(destination) => at_destination(editor, selection, destination),
+                None => Ok(selection),
+            }
+        }).collect::<Result<Vec<_>, Error>>()?;
+        editor.selections = SelectionSet::new(ranges, editor.selections.primary_index())?;
+        editor.preferred_columns = None;
+        Ok(())
+    }
+
+    /// Move to the counted one-based grapheme column (default 1), clamped to each cursor's logical line. Tabs and wide graphemes each count as one column.
+    fn goto_column(ctx) {
+        move_to(ctx, |editor, selection, count| Ok(motion::at_grapheme_column(editor.document.text(), position(editor, selection)?, count - 1)?))
+    }
+
+    /// Move to the explicitly counted one-based line, clamping to the last content line. With no count, do nothing; select mode extends to the destination.
+    fn goto_line(ctx) {
+        if !ctx.count_given { return Ok(()); }
+        goto_counted_line(ctx)
+    }
+
     /// Move to the beginning of the current logical line.
     fn goto_line_start(ctx) {
         move_to(ctx, |editor, selection, _| Ok(motion::line_start(editor.document.text(), position(editor, selection)?)?))
@@ -592,8 +710,8 @@ commands! {
         })
     }
 
-    /// Move to the start of the document.
-    fn goto_file_start(ctx) { move_to(ctx, |_, _, _| Ok(CharOffset(0))) }
+    /// Move to the start of the document, or to the counted one-based line, clamped to the last content line. Select mode extends to the destination.
+    fn goto_file_start(ctx) { goto_counted_line(ctx) }
 
     /// Move to the end-of-file boundary.
     fn goto_file_end(ctx) { move_to(ctx, |editor, _, _| Ok(CharOffset(editor.document.text().len_chars()))) }
@@ -817,6 +935,43 @@ commands! {
 mod tests {
     use super::*;
     use vex_core::Document;
+
+    #[test]
+    fn find_commands_are_callable_with_character_context_and_preserve_unmatched_selections() {
+        let mut editor = Editor::new(Document::from("a:b\nc:d\nlast"));
+        editor
+            .set_selections(
+                SelectionSet::new(
+                    vec![
+                        Selection::cursor(CharOffset(0)),
+                        Selection::cursor(CharOffset(4)),
+                        Selection::cursor(CharOffset(8)),
+                    ],
+                    2,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let before = editor.selections().clone();
+        assert_eq!(
+            find_next_char(&mut CommandContext::new(&mut editor)),
+            Err(Error::MissingCharacter)
+        );
+        assert_eq!(editor.selections(), &before);
+        let mut context = CommandContext::new(&mut editor);
+        context.character = Some(':');
+        find_next_char(&mut context).unwrap();
+        assert_eq!(
+            editor.selections().ranges(),
+            &[
+                Selection::new(CharOffset(0), CharOffset(2)),
+                Selection::new(CharOffset(4), CharOffset(6)),
+                Selection::new(CharOffset(8), CharOffset(9)),
+            ]
+        );
+        assert_eq!(editor.selections().primary_index(), 2);
+        assert_eq!(editor.document().undo_depth(), 0);
+    }
 
     fn range(anchor: usize, head: usize) -> Selection {
         Selection::new(CharOffset(anchor), CharOffset(head))
@@ -1201,6 +1356,11 @@ mod tests {
             move_word_forward,
             move_word_backward,
             move_word_end,
+            move_long_word_forward,
+            move_long_word_backward,
+            move_long_word_end,
+            goto_first_nonwhitespace,
+            goto_column,
             goto_line_start,
             goto_line_end,
             goto_file_start,

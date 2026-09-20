@@ -160,6 +160,13 @@ impl Default for Keymap {
                 (vec![Char('w')], "move_word_forward"),
                 (vec![Char('b')], "move_word_backward"),
                 (vec![Char('e')], "move_word_end"),
+                (vec![Char('W')], "move_long_word_forward"),
+                (vec![Char('B')], "move_long_word_backward"),
+                (vec![Char('E')], "move_long_word_end"),
+                (vec![Char('f')], "find_next_char"),
+                (vec![Char('F')], "find_prev_char"),
+                (vec![Char('t')], "find_till_char"),
+                (vec![Char('T')], "till_prev_char"),
                 (vec![Char('x')], "select_line"),
                 (vec![Char('X')], "extend_to_line_bounds"),
                 (vec![Char('%')], "select_all"),
@@ -195,6 +202,9 @@ impl Default for Keymap {
                 (vec![Char('['), Char('d')], "goto_previous_diagnostic"),
                 (vec![Ctrl('r')], "redo"),
                 (vec![Char('g'), Char('g')], "goto_file_start"),
+                (vec![Char('G')], "goto_line"),
+                (vec![Char('g'), Char('|')], "goto_column"),
+                (vec![Char('g'), Char('s')], "goto_first_nonwhitespace"),
                 (vec![Char('g'), Char('e')], "goto_file_end"),
                 (vec![Char('g'), Char('h')], "goto_line_start"),
                 (vec![Char('g'), Char('l')], "goto_line_end"),
@@ -300,6 +310,7 @@ pub struct KeyHandler {
     pending: Vec<Key>,
     count: Option<usize>,
     mode: Option<Mode>,
+    character_command: Option<&'static Command>,
 }
 
 impl Default for KeyHandler {
@@ -315,6 +326,7 @@ impl KeyHandler {
             pending: Vec::new(),
             count: None,
             mode: None,
+            character_command: None,
         }
     }
 
@@ -329,12 +341,23 @@ impl KeyHandler {
     }
 
     pub fn hints(&self) -> Option<KeyHints<'_>> {
+        if self.character_command.is_some() {
+            return Some(KeyHints {
+                title: "Character",
+                entries: vec![
+                    (Key::Enter, "Line ending"),
+                    (Key::Tab, "Tab"),
+                    (Key::Escape, "Cancel"),
+                ],
+            });
+        }
         self.keymap.hints(self.mode?, &self.pending)
     }
 
     pub fn cancel(&mut self) {
         self.pending.clear();
         self.count = None;
+        self.character_command = None;
     }
 
     pub fn handle(&mut self, editor: &mut Editor, key: Key) -> Result<Dispatch, Error> {
@@ -351,6 +374,18 @@ impl KeyHandler {
             editor.execute("normal_mode", 1)?;
             self.mode = Some(editor.mode());
             return Ok(Dispatch::Executed("normal_mode"));
+        }
+        if let Some(command) = self.character_command {
+            let character = match key {
+                Key::Char(ch) if !ch.is_control() => ch,
+                Key::Enter => '\n',
+                Key::Tab => '\t',
+                _ => {
+                    self.cancel();
+                    return Ok(Dispatch::Ignored);
+                }
+            };
+            return self.invoke(editor, command, Some(character));
         }
         if editor.mode() != Mode::Insert
             && self.pending.is_empty()
@@ -376,13 +411,11 @@ impl KeyHandler {
             .get(&(editor.mode(), self.pending.clone()))
             .copied()
         {
-            let count = self.count.unwrap_or(1);
-            self.cancel();
-            let mut context = crate::CommandContext::new(editor);
-            context.count = std::num::NonZeroUsize::new(count).unwrap();
-            (command.run)(&mut context)?;
-            self.mode = Some(editor.mode());
-            return Ok(Dispatch::Executed(command.name));
+            if command.input == crate::CommandInput::Character {
+                self.character_command = Some(command);
+                return Ok(Dispatch::Pending);
+            }
+            return self.invoke(editor, command, None);
         }
         if self
             .keymap
@@ -406,6 +439,23 @@ impl KeyHandler {
         }
         Ok(Dispatch::Ignored)
     }
+
+    fn invoke(
+        &mut self,
+        editor: &mut Editor,
+        command: &'static Command,
+        character: Option<char>,
+    ) -> Result<Dispatch, Error> {
+        let count = self.count;
+        self.cancel();
+        let mut context = crate::CommandContext::new(editor);
+        context.count = std::num::NonZeroUsize::new(count.unwrap_or(1)).unwrap();
+        context.count_given = count.is_some();
+        context.character = character;
+        (command.run)(&mut context)?;
+        self.mode = Some(editor.mode());
+        Ok(Dispatch::Executed(command.name))
+    }
 }
 
 #[cfg(test)]
@@ -418,6 +468,170 @@ mod tests {
         for key in keys.chars() {
             handler.handle(editor, Key::Char(key)).unwrap();
         }
+    }
+
+    #[test]
+    fn character_arguments_preserve_counts_and_treat_digits_spaces_and_prefixes_literally() {
+        for (argument, source, expected) in [
+            ('1', "a1b1c1", "a1b1"),
+            (':', "a:b:c:d", "a:b:"),
+            (' ', "a b c d", "a b "),
+            ('g', "agbgcg", "agbg"),
+        ] {
+            let mut editor = Editor::new(Document::from(source));
+            let mut keys = KeyHandler::default();
+            press(&mut keys, &mut editor, "2f");
+            assert_eq!(keys.count(), Some(2));
+            assert_eq!(keys.pending_keys(), &[Key::Char('f')]);
+            assert_eq!(keys.hints().unwrap().title, "Character");
+            assert_eq!(
+                keys.handle(&mut editor, Key::Char(argument)).unwrap(),
+                Dispatch::Executed("find_next_char")
+            );
+            let selection = editor.selections().primary();
+            assert_eq!(
+                editor
+                    .document()
+                    .text()
+                    .slice(selection.start().0..selection.end().0),
+                expected
+            );
+            assert!(keys.pending_keys().is_empty());
+            assert_eq!(keys.count(), None);
+            assert_eq!(editor.document().revision().get(), 0);
+        }
+        let mut editor = Editor::new(Document::from("a\tb\r\nc"));
+        let mut keys = KeyHandler::default();
+        press(&mut keys, &mut editor, "f");
+        keys.handle(&mut editor, Key::Tab).unwrap();
+        assert_eq!(editor.selections().primary().end(), CharOffset(2));
+        press(&mut keys, &mut editor, "f");
+        keys.handle(&mut editor, Key::Enter).unwrap();
+        assert_eq!(editor.selections().primary().end(), CharOffset(5));
+    }
+
+    #[test]
+    fn pending_character_cancellation_keeps_select_mode_and_custom_bindings_work() {
+        for cancel in [Key::Escape, Key::Ctrl('c'), Key::Left, Key::PageDown] {
+            let mut editor = Editor::new(Document::from("abcabc"));
+            let mut keys = KeyHandler::default();
+            press(&mut keys, &mut editor, "v2f");
+            let selections = editor.selections().clone();
+            assert_eq!(keys.handle(&mut editor, cancel).unwrap(), Dispatch::Ignored);
+            assert_eq!(editor.selections(), &selections);
+            assert_eq!(editor.mode(), Mode::Select);
+            assert!(keys.pending_keys().is_empty());
+            assert_eq!(keys.count(), None);
+        }
+        let mut map = Keymap::empty();
+        map.bind(Mode::Normal, vec![Key::Char('q')], "find_next_char")
+            .unwrap();
+        let mut keys = KeyHandler::new(map);
+        let mut editor = Editor::new(Document::from("a!b!"));
+        press(&mut keys, &mut editor, "2q!");
+        assert_eq!(editor.selections().primary().end(), CharOffset(4));
+        press(&mut keys, &mut editor, "q");
+        editor.execute("insert_mode", 1).unwrap();
+        press(&mut keys, &mut editor, "x");
+        assert_eq!(editor.document().text(), "xa!b!");
+    }
+
+    #[test]
+    fn counted_line_and_grapheme_column_jumps_match_their_default_behavior() {
+        let mut editor = Editor::new(Document::from("\t界e\u{301}x\r\n  next\r\nlast\r\n"));
+        let mut keys = KeyHandler::default();
+        press(&mut keys, &mut editor, "3g|");
+        assert_eq!(editor.selections().primary().start(), CharOffset(2));
+        press(&mut keys, &mut editor, "G");
+        assert_eq!(editor.selections().primary().start(), CharOffset(2));
+        press(&mut keys, &mut editor, "999g|");
+        assert_eq!(editor.selections().primary().start(), CharOffset(5));
+        press(&mut keys, &mut editor, "2gggs");
+        assert_eq!(editor.selections().primary().start(), CharOffset(9));
+        press(&mut keys, &mut editor, "999G");
+        assert_eq!(editor.selections().primary().start(), CharOffset(15));
+        press(&mut keys, &mut editor, "v1G");
+        assert_eq!(editor.mode(), Mode::Select);
+        assert_eq!(editor.selections().primary().head, CharOffset(0));
+        assert_eq!(editor.selections().primary().anchor, CharOffset(16));
+        keys.handle(&mut editor, Key::Escape).unwrap();
+        press(&mut keys, &mut editor, "ge");
+        assert_eq!(
+            editor.selections().primary().head.0,
+            editor.document().text().len_chars()
+        );
+        press(&mut keys, &mut editor, "gg");
+        assert_eq!(editor.selections().primary().start(), CharOffset(0));
+    }
+
+    #[test]
+    fn find_and_till_ranges_follow_direction_and_select_mode_anchors() {
+        let mut editor = Editor::new(Document::from("a:b:c:d"));
+        let mut keys = KeyHandler::default();
+        press(&mut keys, &mut editor, "t:");
+        assert_eq!(
+            editor.selections().primary(),
+            vex_core::Selection::new(CharOffset(0), CharOffset(3))
+        );
+        press(&mut keys, &mut editor, "t:");
+        assert_eq!(
+            editor.selections().primary(),
+            vex_core::Selection::new(CharOffset(2), CharOffset(5))
+        );
+        press(&mut keys, &mut editor, "F:");
+        assert_eq!(
+            editor.selections().primary(),
+            vex_core::Selection::new(CharOffset(5), CharOffset(3))
+        );
+        press(&mut keys, &mut editor, "T:");
+        assert_eq!(
+            editor.selections().primary(),
+            vex_core::Selection::new(CharOffset(4), CharOffset(2))
+        );
+        press(&mut keys, &mut editor, ";vf:");
+        assert_eq!(
+            editor.selections().primary(),
+            vex_core::Selection::new(CharOffset(2), CharOffset(4))
+        );
+        press(&mut keys, &mut editor, "F:");
+        assert_eq!(
+            editor.selections().primary(),
+            vex_core::Selection::new(CharOffset(3), CharOffset(1))
+        );
+        let before = editor.selections().clone();
+        press(&mut keys, &mut editor, "9fx");
+        assert_eq!(editor.selections(), &before);
+    }
+
+    #[test]
+    fn word_bindings_and_blank_line_start_work_in_both_selection_modes() {
+        let mut editor = Editor::new(Document::from("foo.bar baz-qux\n \t\n"));
+        let mut keys = KeyHandler::default();
+        press(&mut keys, &mut editor, "E");
+        assert_eq!(
+            editor.selections().primary(),
+            vex_core::Selection::new(CharOffset(0), CharOffset(7))
+        );
+        press(&mut keys, &mut editor, "ggW");
+        assert_eq!(
+            editor.selections().primary(),
+            vex_core::Selection::new(CharOffset(0), CharOffset(8))
+        );
+        press(&mut keys, &mut editor, "glB");
+        assert_eq!(
+            editor.selections().primary(),
+            vex_core::Selection::new(CharOffset(15), CharOffset(8))
+        );
+        press(&mut keys, &mut editor, "ggv2E");
+        assert_eq!(
+            editor.selections().primary(),
+            vex_core::Selection::new(CharOffset(0), CharOffset(15))
+        );
+        editor.execute("normal_mode", 1).unwrap();
+        press(&mut keys, &mut editor, "2ggl");
+        let before = editor.selections().clone();
+        press(&mut keys, &mut editor, "gs");
+        assert_eq!(editor.selections(), &before);
     }
 
     #[test]
@@ -928,7 +1142,7 @@ mod tests {
         #[test]
         fn arbitrary_key_sequences_preserve_grapheme_and_mode_invariants(
             keys in prop::collection::vec(prop_oneof![
-                prop::sample::select("hjklwbevdciaxX%;,_uU025g$".chars().map(Key::Char).collect::<Vec<_>>()),
+                prop::sample::select("hjklwbeWBEfFtTvdciaxX%;,_uU025gGs|$".chars().map(Key::Char).collect::<Vec<_>>()),
                 Just(Key::Escape), Just(Key::Backspace), Just(Key::Delete), Just(Key::Enter),
                 Just(Key::Char('🦀')), Just(Key::Char('\u{301}')), Just(Key::Char('\u{200d}')),
                 Just(Key::Down), Just(Key::Up), Just(Key::Left), Just(Key::Right),

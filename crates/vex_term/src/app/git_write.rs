@@ -197,6 +197,8 @@ impl App {
         let id = self.editor.document().id();
         if self.active_git_view().is_some()
             || self.prompt.is_some()
+            || !self.keys.pending_keys().is_empty()
+            || self.keys.count().is_some()
             || !self.git_write.drafts.contains_key(&id)
         {
             self.git_write.prefix = None;
@@ -358,6 +360,20 @@ mod tests {
             KeyCode::Char(ch),
             KeyModifiers::CONTROL,
         )));
+    }
+
+    #[test]
+    fn cancelling_a_find_in_a_commit_draft_does_not_start_the_commit_prefix() {
+        let (_dir, mut app) = fixture();
+        press(&mut app, "ccsubject");
+        key(&mut app, KeyCode::Esc);
+        press(&mut app, "v2f");
+        ctrl(&mut app, 'c');
+        assert!(app.git_write.prefix.is_none());
+        assert_eq!(app.editor.mode(), vex_editor::Mode::Select);
+        assert!(app.keys.pending_keys().is_empty());
+        ctrl(&mut app, 'c');
+        assert_eq!(app.git_write.prefix, Some(app.editor.document().id()));
     }
     fn select_file(app: &mut App, group: Group) {
         let key = app.active_git_view().unwrap().clone();

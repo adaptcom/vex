@@ -10,7 +10,7 @@ should be deliberate and documented. Alt bindings are deferred for now.
 1. [x] Selection controls: `%` select all, `;` collapse, `,` keep primary, `X`
    extend to line boundaries, and `_` trim whitespace. Make repeated `x` extend
    to subsequent lines.
-2. [ ] Precise movement: `f`/`F`, `t`/`T`, `W`/`B`/`E`, `gs`, counted `gg`/`G`,
+2. [x] Precise movement: `f`/`F`, `t`/`T`, `W`/`B`/`E`, `gs`, counted `gg`/`G`,
    and counted `g|`. Add command input for a following character without losing
    counts or cancellation.
 3. [ ] Everyday edits: `I`, `A`, `r`, `>`, `<`, `J`, and `[Space`/`]Space`.
@@ -67,6 +67,8 @@ should be deliberate and documented. Alt bindings are deferred for now.
 
 ## Later editing and interface work
 
+- [ ] Add cancellable or bounded scanning for character finds and WORD motions
+  on very large files or with many selections; preserve counts and input ordering.
 - [ ] Replace two-second polling of visible files with filesystem notifications.
   Watch parent directories as well as files so atomic saves and deletion/recreation
   remain observable; coalesce notifications through the background event queue.

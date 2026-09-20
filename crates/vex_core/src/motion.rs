@@ -56,11 +56,11 @@ enum Class {
     Punctuation,
 }
 
-fn class(text: &Rope, position: CharOffset) -> Option<Class> {
+fn class(text: &Rope, position: CharOffset, long: bool) -> Option<Class> {
     text.get_char(position.0).map(|ch| {
         if ch.is_whitespace() {
             Class::Space
-        } else if ch.is_alphanumeric() || ch == '_' {
+        } else if long || ch.is_alphanumeric() || ch == '_' {
             Class::Word
         } else {
             Class::Punctuation
@@ -72,12 +72,27 @@ fn class(text: &Rope, position: CharOffset) -> Option<Class> {
 /// underscore as words, punctuation as a separate run, and whitespace as gaps.
 /// Repeats continue from the previous result; no whole-line allocation is needed.
 pub fn word_forward(text: &Rope, selection: Selection, count: usize) -> Result<Selection, Error> {
-    word_forward_impl(text, selection, count, false)
+    word_forward_impl(text, selection, count, false, false)
 }
 
 /// Select through the next word end, excluding following whitespace.
 pub fn word_end(text: &Rope, selection: Selection, count: usize) -> Result<Selection, Error> {
-    word_forward_impl(text, selection, count, true)
+    word_forward_impl(text, selection, count, true, false)
+}
+
+/// Select through the next whitespace-separated WORD start; punctuation belongs
+/// to the surrounding run. Counts and selections behave like word_forward.
+pub fn long_word_forward(
+    text: &Rope,
+    selection: Selection,
+    count: usize,
+) -> Result<Selection, Error> {
+    word_forward_impl(text, selection, count, false, true)
+}
+
+/// Select through the end of a whitespace-separated WORD.
+pub fn long_word_end(text: &Rope, selection: Selection, count: usize) -> Result<Selection, Error> {
+    word_forward_impl(text, selection, count, true, true)
 }
 
 fn word_forward_impl(
@@ -85,6 +100,7 @@ fn word_forward_impl(
     selection: Selection,
     count: usize,
     end: bool,
+    long: bool,
 ) -> Result<Selection, Error> {
     if count == 0 {
         return Ok(selection);
@@ -94,12 +110,12 @@ fn word_forward_impl(
     if head.0 == text.len_chars() {
         return Ok(selection);
     }
-    let mut previous = class(text, start);
+    let mut previous = class(text, start, long);
     let mut scanner = grapheme::Cursor::new(text, head)?;
     for step in 0..count {
         let initial = head;
         loop {
-            let current = class(text, head);
+            let current = class(text, head, long);
             let target = previous != current
                 && if end {
                     previous != Some(Class::Space)
@@ -129,6 +145,24 @@ fn word_forward_impl(
 
 /// Select backward to a word start, including intervening whitespace.
 pub fn word_backward(text: &Rope, selection: Selection, count: usize) -> Result<Selection, Error> {
+    word_backward_impl(text, selection, count, false)
+}
+
+/// Select backward to a whitespace-separated WORD start.
+pub fn long_word_backward(
+    text: &Rope,
+    selection: Selection,
+    count: usize,
+) -> Result<Selection, Error> {
+    word_backward_impl(text, selection, count, true)
+}
+
+fn word_backward_impl(
+    text: &Rope,
+    selection: Selection,
+    count: usize,
+    long: bool,
+) -> Result<Selection, Error> {
     if count == 0 {
         return Ok(selection);
     }
@@ -138,12 +172,16 @@ pub fn word_backward(text: &Rope, selection: Selection, count: usize) -> Result<
     }
     let mut start = grapheme::next(text, position, 1)?;
     let mut head = position;
-    let mut right = class(text, head);
+    let mut right = class(text, head, long);
     for step in 0..count {
         let initial = head;
         loop {
             let left = grapheme::previous(text, head, 1)?;
-            let left_class = if head.0 == 0 { None } else { class(text, left) };
+            let left_class = if head.0 == 0 {
+                None
+            } else {
+                class(text, left, long)
+            };
             let target = right != left_class && right != Some(Class::Space);
             if target {
                 if head != initial {
@@ -164,6 +202,105 @@ pub fn word_backward(text: &Rope, selection: Selection, count: usize) -> Result<
         }
     }
     Ok(Selection::new(start, head))
+}
+
+/// Find the counted character beyond the current grapheme without wrapping or
+/// stopping at line boundaries. A newline target matches any logical line ending.
+/// Matches inside one grapheme count once, and destinations are whole graphemes.
+/// Exclusive finds skip the adjacent grapheme so repeating a till motion advances.
+/// Missing the requested occurrence returns None rather than a partial move.
+pub fn find_char(
+    text: &Rope,
+    position: CharOffset,
+    character: char,
+    count: usize,
+    direction: crate::search::Direction,
+    inclusive: bool,
+) -> Result<Option<CharOffset>, Error> {
+    use crate::search::Direction;
+    let position = grapheme::floor(text, position)?;
+    if count == 0 {
+        return Ok(None);
+    }
+    let start = match direction {
+        Direction::Forward => grapheme::next(text, position, if inclusive { 1 } else { 2 })?,
+        Direction::Backward if !inclusive => grapheme::previous(text, position, 1)?,
+        Direction::Backward => position,
+    };
+    let mut chars = text.chars_at(start.0);
+    let mut offset = start.0;
+    let mut remaining = count;
+    let mut last = None;
+    loop {
+        let (index, ch) = match direction {
+            Direction::Forward => {
+                let Some(ch) = chars.next() else { break };
+                let index = offset;
+                offset += 1;
+                (index, ch)
+            }
+            Direction::Backward => {
+                let Some(ch) = chars.prev() else { break };
+                offset -= 1;
+                (offset, ch)
+            }
+        };
+        let matches = if character == '\n' {
+            matches!(
+                ch,
+                '\n' | '\r' | '\u{000b}' | '\u{000c}' | '\u{0085}' | '\u{2028}' | '\u{2029}'
+            )
+        } else {
+            ch == character
+        };
+        if !matches {
+            continue;
+        }
+        let found = grapheme::floor(text, CharOffset(index))?;
+        if last == Some(found) {
+            continue;
+        }
+        last = Some(found);
+        remaining -= 1;
+        if remaining == 0 {
+            return Ok(Some(match (inclusive, direction) {
+                (true, _) => found,
+                (false, Direction::Forward) => grapheme::previous(text, found, 1)?,
+                (false, Direction::Backward) => grapheme::next(text, found, 1)?,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// First non-whitespace grapheme of the current logical line; None on blank lines.
+pub fn first_nonwhitespace(text: &Rope, position: CharOffset) -> Result<Option<CharOffset>, Error> {
+    let start = line_start(text, position)?;
+    let end = line_end(text, position)?;
+    text.slice(start.0..end.0)
+        .chars()
+        .position(|ch| !ch.is_whitespace())
+        .map(|offset| grapheme::floor(text, CharOffset(start.0 + offset)))
+        .transpose()
+}
+
+/// Position at a zero-based grapheme column in this line. Tabs and wide glyphs
+/// each count once; oversized columns stop at the line-ending boundary.
+pub fn at_grapheme_column(
+    text: &Rope,
+    position: CharOffset,
+    column: usize,
+) -> Result<CharOffset, Error> {
+    let mut position = line_start(text, position)?;
+    let end = line_end(text, position)?;
+    let mut scanner = grapheme::Cursor::new(text, position)?;
+    for _ in 0..column {
+        if position == end {
+            break;
+        }
+        position = scanner.next().unwrap_or(end).min(end);
+    }
+    Ok(position)
 }
 
 /// Start of the logical line containing a position.
@@ -258,6 +395,144 @@ mod tests {
     fn selected(text: &Rope, selection: Selection) -> String {
         text.slice(selection.start().0..selection.end().0)
             .to_string()
+    }
+
+    #[test]
+    fn long_words_keep_punctuation_together_and_counts_stop_at_document_edges() {
+        let text = Rope::from_str("foo.bar + baz-qux\nnext");
+        let initial = block(&text, CharOffset(0)).unwrap();
+        assert_eq!(
+            selected(&text, word_forward(&text, initial, 1).unwrap()),
+            "foo"
+        );
+        let first = long_word_forward(&text, initial, 1).unwrap();
+        assert_eq!(selected(&text, first), "foo.bar ");
+        assert_eq!(
+            selected(&text, long_word_forward(&text, first, 2).unwrap()),
+            "+ baz-qux\n"
+        );
+        assert_eq!(
+            selected(&text, long_word_end(&text, initial, 1).unwrap()),
+            "foo.bar"
+        );
+        assert_eq!(
+            selected(&text, long_word_end(&text, initial, 3).unwrap()),
+            "foo.bar + baz-qux"
+        );
+        let end = block(&text, CharOffset(text.len_chars())).unwrap();
+        assert_eq!(
+            selected(&text, long_word_backward(&text, end, 1).unwrap()),
+            "next"
+        );
+        assert_eq!(
+            long_word_backward(&text, end, usize::MAX).unwrap().head,
+            CharOffset(0)
+        );
+        assert_eq!(
+            long_word_forward(&text, initial, usize::MAX)
+                .unwrap()
+                .head
+                .0,
+            text.len_chars()
+        );
+        assert_eq!(long_word_end(&text, initial, 0).unwrap(), initial);
+    }
+
+    #[test]
+    fn character_finds_cross_lines_and_till_skips_adjacent_matches() {
+        use crate::search::Direction::{Backward, Forward};
+        let text = Rope::from_str("a:b:c\n:a");
+        for (position, count, direction, inclusive, expected) in [
+            (0, 1, Forward, true, Some(1)),
+            (0, 2, Forward, true, Some(3)),
+            (0, 3, Forward, true, Some(6)),
+            (0, 4, Forward, true, None),
+            (0, 1, Forward, false, Some(2)),
+            (2, 1, Forward, false, Some(5)),
+            (7, 1, Backward, true, Some(6)),
+            (7, 2, Backward, true, Some(3)),
+            (7, 1, Backward, false, Some(4)),
+            (0, usize::MAX, Forward, true, None),
+        ] {
+            assert_eq!(
+                find_char(
+                    &text,
+                    CharOffset(position),
+                    ':',
+                    count,
+                    direction,
+                    inclusive
+                )
+                .unwrap(),
+                expected.map(CharOffset)
+            );
+        }
+        let text = Rope::from_str(&format!("{}🦀", "x".repeat(4096)));
+        assert_eq!(
+            find_char(&text, CharOffset(0), '🦀', 1, Forward, true).unwrap(),
+            Some(CharOffset(4096))
+        );
+        assert_eq!(
+            find_char(&text, CharOffset(4096), 'x', 4096, Backward, true).unwrap(),
+            Some(CharOffset(0))
+        );
+    }
+
+    #[test]
+    fn character_finds_keep_combining_clusters_emoji_and_mixed_line_endings_whole() {
+        use crate::search::Direction::{Backward, Forward};
+        let text = Rope::from_str("e\u{301}👩\u{200d}💻:🦀:");
+        assert_eq!(
+            find_char(&text, CharOffset(0), ':', 1, Forward, false).unwrap(),
+            Some(CharOffset(2))
+        );
+        assert_eq!(
+            find_char(&text, CharOffset(0), '\u{200d}', 1, Forward, true).unwrap(),
+            Some(CharOffset(2))
+        );
+        assert_eq!(
+            find_char(&text, CharOffset(5), '\u{301}', 1, Backward, true).unwrap(),
+            Some(CharOffset(0))
+        );
+        let text = Rope::from_str("a\r\nb\nc\rd");
+        for (count, expected) in [(1, 1), (2, 4), (3, 6)] {
+            assert_eq!(
+                find_char(&text, CharOffset(0), '\n', count, Forward, true).unwrap(),
+                Some(CharOffset(expected))
+            );
+        }
+        assert_eq!(
+            find_char(&text, CharOffset(0), '\n', 1, Forward, false).unwrap(),
+            Some(CharOffset(3))
+        );
+        assert_eq!(
+            find_char(&text, CharOffset(7), '\n', 2, Backward, true).unwrap(),
+            Some(CharOffset(4))
+        );
+        assert_eq!(
+            find_char(&text, CharOffset(7), '\n', 1, Backward, false).unwrap(),
+            Some(CharOffset(5))
+        );
+    }
+
+    #[test]
+    fn grapheme_columns_and_first_nonwhitespace_are_bounded_by_the_current_line() {
+        let text = Rope::from_str("\t界e\u{301}x\r\n \t\n");
+        for (column, expected) in [(0, 0), (1, 1), (2, 2), (3, 4), (usize::MAX, 5)] {
+            assert_eq!(
+                at_grapheme_column(&text, CharOffset(2), column).unwrap(),
+                CharOffset(expected)
+            );
+        }
+        assert_eq!(
+            first_nonwhitespace(&text, CharOffset(4)).unwrap(),
+            Some(CharOffset(1))
+        );
+        assert_eq!(first_nonwhitespace(&text, CharOffset(8)).unwrap(), None);
+        assert_eq!(
+            first_nonwhitespace(&Rope::new(), CharOffset(0)).unwrap(),
+            None
+        );
     }
 
     #[test]

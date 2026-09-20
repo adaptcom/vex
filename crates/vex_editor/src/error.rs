@@ -8,6 +8,7 @@ pub enum Error {
     UnknownCommand(String),
     WrongMode { expected: Mode, actual: Mode },
     MissingText,
+    MissingCharacter,
     EmptyBinding,
     ConflictingBinding,
     ReservedBinding,
@@ -37,6 +38,9 @@ impl fmt::Display for Error {
                 "command requires {expected:?} mode, current mode is {actual:?}"
             ),
             Self::MissingText => write!(f, "command requires text in its command context"),
+            Self::MissingCharacter => {
+                write!(f, "command requires a character in its command context")
+            }
             Self::EmptyYankRegister => write!(f, "nothing yanked; use y, d, or c first"),
             Self::EmptyBinding => write!(f, "a keybinding cannot be empty"),
             Self::ConflictingBinding => write!(

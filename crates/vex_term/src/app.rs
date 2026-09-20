@@ -203,12 +203,12 @@ impl App {
             Event::FocusGained => true,
             Event::Paste(text) => {
                 self.clear_message();
+                self.keys.cancel();
                 if let Some(mut prompt) = self.prompt.take() {
                     prompt.input.insert(&text);
                     self.preview_search(&prompt);
                     self.prompt = Some(prompt);
                 } else if self.editor.mode() == Mode::Insert {
-                    self.keys.cancel();
                     if let Err(error) = self.editor.insert_paste(&text) {
                         self.fail(error);
                     }
@@ -269,8 +269,10 @@ impl App {
                             }
                         }
                         Key::Ctrl('c') => {
+                            let pending =
+                                !self.keys.pending_keys().is_empty() || self.keys.count().is_some();
                             self.keys.cancel();
-                            if let Err(error) = self.editor.execute("normal_mode", 1) {
+                            if !pending && let Err(error) = self.editor.execute("normal_mode", 1) {
                                 self.fail(error);
                             }
                         }
@@ -341,7 +343,7 @@ impl App {
         if !argument.is_empty() || force {
             return Err(io::Error::other("unknown command or unsupported arguments"));
         }
-        self.editor.execute(name, 1).map_err(io::Error::other)?;
+        self.editor.execute(name, 0).map_err(io::Error::other)?;
         self.open_search_prompt();
         self.apply_application_action();
         Ok(())
@@ -1138,6 +1140,42 @@ mod tests {
         frame.reset(1, 1).unwrap();
         app.paint(&mut frame).unwrap();
         assert_eq!(app.size(), (1, 1));
+    }
+
+    #[test]
+    fn character_find_arguments_bypass_prompts_and_cancellation_keeps_select_mode() {
+        let mut app = App::from_document(Document::from("a:b\tc\r\nnext"), (80, 24));
+        press(&mut app, "f:");
+        assert!(app.prompt.is_none());
+        assert_eq!(
+            app.editor.selections().primary().end(),
+            vex_core::CharOffset(2)
+        );
+        press(&mut app, "f");
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.editor.selections().primary().end(),
+            vex_core::CharOffset(4)
+        );
+        press(&mut app, "f");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.editor.selections().primary().end(),
+            vex_core::CharOffset(7)
+        );
+        press(&mut app, "v2f");
+        let before = app.editor.selections().clone();
+        app.handle(Event::Resize(81, 25));
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.editor.mode(), Mode::Select);
+        assert_eq!(app.editor.selections(), &before);
+        assert!(app.keys.pending_keys().is_empty());
+        assert_eq!(app.keys.count(), None);
+        press(&mut app, ":");
+        assert!(app.prompt.is_some());
     }
 
     #[test]

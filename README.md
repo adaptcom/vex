@@ -152,7 +152,11 @@ Keybindings resolve to named, ordinary Rust functions in
 [`vex_editor::commands`](crates/vex_editor/src/commands.rs). A small declaration
 macro emits each function's `///` documentation into both Rustdoc and the runtime
 command registry. The registry exposes its stable name, description, and function
-pointer for help, command search, and direct invocation. Motion calculations in
+pointer for help, command search, and direct invocation. Commands can declare
+`CommandInput::Character`; the key handler collects that argument and passes it
+through `CommandContext::character`. Direct callers set the same context field.
+`count_given` distinguishes an explicit count from its default; `Editor::execute`
+treats a zero count as omitted. Motion calculations in
 `vex_core::motion` and `vex_core::grapheme` do not depend on input events or modes.
 
 ```rust
@@ -185,7 +189,8 @@ the current line's indentation before the caret. Tab inserts a literal tab.
 Text events call `Editor::insert_text`; paste events call `Editor::insert_paste`
 to get a separate undo step.
 
-The implemented commands cover `hjkl`, arrows, `w`/`b`/`e`, line/document bounds,
+The implemented commands cover `hjkl`, arrows, `w`/`b`/`e`, `W`/`B`/`E`,
+cross-line `f`/`F`/`t`/`T`, `gs`, counted `gg`/`G` and `g|`, line/document bounds,
 `Ctrl-u`/`Ctrl-d` for half-page movement and scrolling in normal/select mode,
 line selection, mode changes, deletion/change, insertion, `o`/`O` to open lines
 below/above selections, insert-mode Backspace/`Ctrl-h`, and undo/redo.
