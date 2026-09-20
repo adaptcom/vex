@@ -7,6 +7,7 @@ pub mod files;
 mod git_status;
 pub mod input;
 mod picker;
+mod prompt;
 pub mod render;
 pub mod screen;
 mod sections;

@@ -36,6 +36,7 @@ pub(crate) enum BackgroundEvent {
     Files(FileResult),
     Symbols(SymbolResult),
     Buffers(BufferResult),
+    Prompt(crate::prompt::Result),
     Preview(PreviewResult),
     Git(vex_git::Result),
     GitStatus(vex_git::status::Result),
@@ -109,7 +110,8 @@ impl EventQueue {
                 BackgroundEvent::Syntax(_) => 1,
                 BackgroundEvent::Files(_)
                 | BackgroundEvent::Symbols(_)
-                | BackgroundEvent::Buffers(_) => 2,
+                | BackgroundEvent::Buffers(_)
+                | BackgroundEvent::Prompt(_) => 2,
                 BackgroundEvent::Preview(_) => 3,
                 BackgroundEvent::Git(_) => 4,
                 BackgroundEvent::GitStatus(_) => 5,
@@ -287,6 +289,7 @@ enum PickerJob {
     Files(FileJob),
     Symbols(SymbolJob),
     Buffers(BufferJob),
+    Prompt(crate::prompt::Job),
 }
 
 impl Job for PickerJob {
@@ -295,6 +298,7 @@ impl Job for PickerJob {
             Self::Files(job) => job.cancellation.clone(),
             Self::Symbols(job) => job.cancellation.clone(),
             Self::Buffers(job) => job.cancellation.clone(),
+            Self::Prompt(job) => job.cancellation.clone(),
         }
     }
 }
@@ -536,6 +540,7 @@ impl Runtime {
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::Buffers)
             }
+            PickerJob::Prompt(job) => job.run().map(BackgroundEvent::Prompt),
         })?;
         let preview = LatestWorker::spawn("vex-preview", events.clone(), |job: PreviewJob| {
             job.run().map(BackgroundEvent::Preview)
@@ -611,6 +616,9 @@ impl Runtime {
     }
     pub(crate) fn submit_buffers(&self, job: BufferJob) {
         self.files.as_ref().unwrap().submit(PickerJob::Buffers(job));
+    }
+    pub(crate) fn submit_prompt(&self, job: crate::prompt::Job) {
+        self.files.as_ref().unwrap().submit(PickerJob::Prompt(job));
     }
     pub(crate) fn submit_preview(&self, job: PreviewJob) {
         self.preview.as_ref().unwrap().submit(job);
@@ -769,6 +777,9 @@ mod tests {
             }
             AppEvent::Background(BackgroundEvent::Buffers(result)) => {
                 app.handle_buffer_result(result);
+            }
+            AppEvent::Background(BackgroundEvent::Prompt(result)) => {
+                app.handle_prompt_completion(result);
             }
             AppEvent::Background(BackgroundEvent::Preview(result)) => {
                 app.handle_preview_result(result);
@@ -1071,6 +1082,32 @@ mod tests {
         drop(state);
         release.send(()).unwrap();
         joining.join().unwrap();
+    }
+
+    #[test]
+    fn early_prompt_tab_waits_before_queued_enter_and_document_edits() {
+        let mut app = App::from_document(Document::from("source"), (80, 24));
+        press(&mut app, ":language rus");
+        app.handle(key(KeyCode::Tab));
+        let job = app.take_prompt_completion_job().unwrap();
+        let events = EventQueue::default();
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Char('i'),
+            KeyCode::Char('X'),
+            KeyCode::Esc,
+        ] {
+            events.terminal(key(code));
+        }
+        assert!(app.input_waiting());
+        assert!(events.next(Duration::ZERO, app.input_waiting()).is_none());
+        events.background(BackgroundEvent::Prompt(job.run().unwrap()));
+        while let Some(event) = events.next(Duration::ZERO, app.input_waiting()) {
+            deliver(&mut app, event);
+        }
+        assert_eq!(app.editor.language(), Some(vex_editor::Language::Rust));
+        assert_eq!(app.editor.document().text().to_string(), "Xsource");
+        assert!(!app.input_waiting());
     }
 
     #[test]

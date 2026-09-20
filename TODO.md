@@ -49,9 +49,10 @@ selections, and measure operations that could affect input latency.
   replay waits for current clipboard contents and preserves input/undo ordering.
 - [x] Insert-mode word deletion and line kills: Ctrl-w, Ctrl-u, Ctrl-k, plus
   Ctrl-d/Ctrl-j aliases for Delete/Enter.
-- [ ] Prompt history, command/path completion, word movement, and line kills.
-  History, Unicode-aware movement/deletion, and viewport-bounded prompt drawing
-  are implemented; command/path completion remains.
+- [x] Prompt history, command/path completion, word movement, and line kills.
+  History is bounded and shared across buffers. Prompt editing/drawing visits
+  nearby graphemes. Command metadata and path suggestions use the picker worker;
+  Tab/BackTab cycling preserves queued input and rejects stale results.
 - [ ] Decide whether to track explicit linewise selection intent so a final line
   without a trailing newline can paste as a whole line rather than as characters.
 
@@ -110,8 +111,9 @@ selections, and measure operations that could affect input latency.
 - [x] Explicit insert undo checkpoints with Ctrl-s, without saving.
 - [ ] Label-based word navigation (`gw`); debugger integration is a separate,
   lower-priority project.
-- [ ] Alt support: represent modifiers in the key model and terminal
-  adapter, then add selection reversal, splitting/merging/filtering, cursor-above,
+- [ ] Remaining Alt bindings: modifiers are represented in the key model and
+  terminal adapter; prompt word editing is implemented. Add selection reversal,
+  splitting/merging/filtering, cursor-above,
   syntax expansion/siblings, non-yanking deletion, motion repeat, and related
   picker/insert/prompt variants.
 

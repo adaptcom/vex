@@ -165,6 +165,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
         if let Some(job) = app.take_clipboard_job() {
             runtime.submit_clipboard(job);
         }
+        if let Some(job) = app.take_prompt_completion_job() {
+            runtime.submit_prompt(job);
+        }
         while let Some(job) = app.take_git_write() {
             runtime.submit_git_write(job);
         }
@@ -233,6 +236,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Buffers(result)) => {
                     redraw |= app.handle_buffer_result(result)
                 }
+                AppEvent::Background(BackgroundEvent::Prompt(result)) => {
+                    redraw |= app.handle_prompt_completion(result);
+                }
                 AppEvent::Background(BackgroundEvent::Preview(result)) => {
                     redraw |= app.handle_preview_result(result)
                 }
@@ -257,6 +263,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(job) = app.take_clipboard_job() {
                 runtime.submit_clipboard(job);
+            }
+            if let Some(job) = app.take_prompt_completion_job() {
+                runtime.submit_prompt(job);
             }
             if let Some(update) = app.take_lsp_update() {
                 runtime.update_lsp(update);

@@ -39,6 +39,7 @@ struct ActivePrompt {
     kind: PromptKind,
     register: char,
     history_position: Option<usize>,
+    completion: prompt::Completion,
 }
 
 impl ActivePrompt {
@@ -48,6 +49,7 @@ impl ActivePrompt {
             kind: PromptKind::Command,
             register: ':',
             history_position: None,
+            completion: prompt::Completion::default(),
         }
     }
     fn prefix(&self) -> &'static str {
@@ -432,6 +434,7 @@ impl App {
                 .as_ref()
                 .map(|p| (p.prefix(), p.input.text(), p.input.cursor())),
         );
+        self.paint_prompt_completion(frame);
         self.paint_active_picker(frame);
         self.paint_key_hints(frame);
         Ok(())
@@ -606,6 +609,7 @@ impl App {
                 input: Prompt::default(),
                 register: self.editor.search_prompt_register().unwrap_or('/'),
                 history_position: None,
+                completion: prompt::Completion::default(),
                 kind: PromptKind::Search {
                     operation,
                     viewport: self.viewport,
@@ -650,6 +654,20 @@ impl App {
             }
             self.prompt = Some(prompt);
             return;
+        }
+        if matches!(prompt.kind, PromptKind::Command) {
+            if matches!(key, Key::Tab | Key::BackTab) {
+                prompt
+                    .completion
+                    .cycle(&mut prompt.input, key == Key::BackTab);
+                self.prompt = Some(prompt);
+                return;
+            }
+            if key == Key::Enter && prompt.completion.directory_selected(&prompt.input) {
+                prompt.completion.recalculate(&prompt.input);
+                self.prompt = Some(prompt);
+                return;
+            }
         }
         match key {
             Key::Escape | Key::Ctrl('c') => {
@@ -740,18 +758,36 @@ pub struct Command {
     pub aliases: &'static [&'static str],
     pub documentation: &'static str,
     pub run: fn(&mut App, &str, bool) -> io::Result<()>,
+    pub completion: ArgumentCompletion,
+}
+
+/// Argument suggestions supplied by the command completion worker.
+#[derive(Clone, Copy)]
+pub enum ArgumentCompletion {
+    None,
+    Path,
+    Language,
+    Command,
+    AutoCompletion,
 }
 
 macro_rules! commands {
-    ($($(#[doc = $doc:literal])+ fn $function:ident($app:ident, $arg:ident, $force:ident) [$name:literal $(, $alias:literal)*] $body:block)+) => {
+    (@completion) => { ArgumentCompletion::None };
+    (@completion $kind:ident) => { ArgumentCompletion::$kind };
+    ($($(#[doc = $doc:literal])+ fn $function:ident($app:ident, $arg:ident, $force:ident) [$name:literal $(, $alias:literal)*] $(complete $completion:ident)? $body:block)+) => {
         $( $(#[doc = $doc])+ pub fn $function($app: &mut App, $arg: &str, $force: bool) -> io::Result<()> $body )+
         pub static COMMANDS: &[Command] = &[
-            $(Command { name: $name, aliases: &[$($alias,)*], documentation: concat!($($doc, "\n",)+), run: $function },)+
+            $(Command { name: $name, aliases: &[$($alias,)*], documentation: concat!($($doc, "\n",)+), run: $function, completion: commands!(@completion $($completion)?) },)+
         ];
     };
 }
 
 commands! {
+    /// Open PATH in the current pane, retaining unsaved buffers and recording the previous location.
+    fn open_file(app, argument, force) ["open", "o", "edit", "e"] complete Path {
+        if force || argument.is_empty() { return Err(io::Error::other("open requires a path and does not accept !")); }
+        app.open_window_from_picker(Path::new(argument))
+    }
     /// Reload the current file from disk as one undo step. Unsaved edits require :reload!; failed reads keep the buffer intact.
     fn reload_file(app, argument, force) ["reload"] {
         if !argument.is_empty() { return Err(io::Error::other("reload takes no arguments")); }
@@ -809,13 +845,13 @@ commands! {
         app.close_git_status(); Ok(())
     }
     /// Split vertically, optionally opening PATH in the new right-hand window.
-    fn vertical_split(app, argument, force) ["vsplit", "vs"] {
+    fn vertical_split(app, argument, force) ["vsplit", "vs"] complete Path {
         if force { return Err(io::Error::other("vsplit does not accept !")); }
         app.split_with_path(true, argument)
     }
 
     /// Split horizontally, optionally opening PATH in the new lower window.
-    fn horizontal_split(app, argument, force) ["hsplit", "hs", "split", "sp"] {
+    fn horizontal_split(app, argument, force) ["hsplit", "hs", "split", "sp"] complete Path {
         if force { return Err(io::Error::other("hsplit does not accept !")); }
         app.split_with_path(false, argument)
     }
@@ -833,7 +869,7 @@ commands! {
     }
 
     /// Show or configure automatic completion for this session: on, off, delay MS (0..10000), or min-length N (1..256). Defaults to on, 100 ms, and 2 characters; Ctrl-x always remains available.
-    fn auto_completion(app, argument, force) ["auto-completion"] {
+    fn auto_completion(app, argument, force) ["auto-completion"] complete AutoCompletion {
         if force { return Err(io::Error::other("auto-completion does not accept !")); }
         app.configure_completion(argument)
     }
@@ -846,7 +882,7 @@ commands! {
     }
 
     /// Write the buffer atomically. Accepts an optional path; ! permits overwriting external changes or an existing destination.
-    fn write_file(app, argument, force) ["write", "w"] {
+    fn write_file(app, argument, force) ["write", "w"] complete Path {
         if app.git_write.drafts.contains_key(&app.editor.document().id()) {
             return Err(io::Error::other("commit drafts are retained in memory; Ctrl-c Ctrl-c commits, Ctrl-c Ctrl-k returns"));
         }
@@ -891,13 +927,13 @@ commands! {
     }
 
     /// Write and quit after a successful save. Accepts the same path and ! options as :write.
-    fn write_quit(app, argument, force) ["write-quit", "wq", "x"] {
+    fn write_quit(app, argument, force) ["write-quit", "wq", "x"] complete Path {
         write_file(app, argument, force)?;
         quit(app, "", false)
     }
 
     /// Show or set the language by its registry name or alias; text disables language support, and auto detects the filename or shebang.
-    fn set_language(app, argument, force) ["language", "lang"] {
+    fn set_language(app, argument, force) ["language", "lang"] complete Language {
         if force { return Err(io::Error::other("language does not accept !")); }
         if !argument.is_empty() {
             let language = match argument {
@@ -913,7 +949,7 @@ commands! {
     }
 
     /// Show basic keys, or the documentation for a named editing or file command.
-    fn help(app, argument, force) ["help", "h"] {
+    fn help(app, argument, force) ["help", "h"] complete Command {
         if force { return Err(io::Error::other("help does not accept !")); }
         app.message = if argument.is_empty() {
             "i/a insert  Esc normal  v select  hjkl/wbe move  /? search  n/N next/previous  u/U undo/redo  :w [PATH] write  :q[!] quit  :help COMMAND".into()

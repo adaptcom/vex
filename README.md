@@ -30,7 +30,8 @@ Use `"ay` to copy into a named register, `"ap` to paste it, and Ctrl-r `a` to
 insert it while typing or editing a prompt. See [registers](docs/registers.md).
 
 The interface includes line numbers, selection highlighting, cursor-following
-scrolling, a status line, and an editable command prompt. Unicode graphemes,
+scrolling, a status line, and an editable command prompt with history and
+background command/path completion. Unicode graphemes,
 wide characters, tabs, bracketed paste, and terminal resizing are supported.
 Use `/` or `?` for incremental regex search, Enter to accept, Escape to restore
 your selections and scroll position, and `n` / `N` to search forward/backward.

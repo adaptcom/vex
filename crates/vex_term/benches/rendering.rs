@@ -333,6 +333,22 @@ fn clipboard(c: &mut Criterion) {
 
 fn prompt_input(c: &mut Criterion) {
     let mut group = c.benchmark_group("prompt_input");
+    for bytes in [1usize << 20, 100 << 20] {
+        let document = Document::from("source\n".repeat(bytes.div_ceil(7)).as_str());
+        let mut app = App::from_document(document, (120, 40));
+        group.bench_function(BenchmarkId::new("completion_request_cancel", bytes), |b| {
+            b.iter(|| {
+                app.handle(Event::Key(KeyEvent::new(
+                    KeyCode::Char(':'),
+                    KeyModifiers::NONE,
+                )));
+                app.handle(Event::Paste("write src/main".into()));
+                app.handle(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+                app.handle(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+                black_box(app.editor.document().revision());
+            });
+        });
+    }
     for bytes in [1024usize, 64 * 1024, 1024 * 1024] {
         let text = "word ".repeat(bytes.div_ceil(5));
         let mut prompt = vex_term::input::Prompt::default();

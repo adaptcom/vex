@@ -582,6 +582,29 @@ def main():
             assert register_path.read_text() == "cat dog cat "
         print("PASS: named search register, queued repeat/cut, and last-command insertion")
 
+        prompt_directory = Path(directory) / "prompt files"
+        prompt_directory.mkdir()
+        prompt_path = prompt_directory / "alpha file.txt"
+        prompt_path.write_text("original\n")
+        with Terminal([binary]) as terminal:
+            terminal.start()
+            # Tab must complete before the queued Enter opens this literal path.
+            mark = terminal.send(f":open {prompt_directory}/alph".encode() + b"\t\riX")
+            terminal.expect(b"INS", mark)
+            # Escape followed immediately by ':' encodes Alt-: on legacy PTYs.
+            mark = terminal.send(b"\x1b")
+            terminal.expect(b"NOR", mark)
+            mark = terminal.send(b":w\r")
+            terminal.expect(b"wrote", mark)
+            assert prompt_path.read_text() == "Xoriginal\n"
+            # Raw escape sequences cover Alt-word movement and Ctrl-Delete,
+            # then history recall and command-name completion in one stream.
+            terminal.send(b":help garbage\x1bb\x1b[3;5~write\r:lang rus\t\r")
+            terminal.expect(b"language: rust")
+            terminal.send(b":\x10\r:qui\t\r")
+            terminal.finish()
+        print("PASS: background prompt completion, literal paths, modified keys, history, queued Enter")
+
         with Terminal([binary]) as terminal:
             terminal.start()
             mark = terminal.send(b"i")

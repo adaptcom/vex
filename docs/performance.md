@@ -19,6 +19,17 @@ back from the caret only far enough to fill the visible row. Unicode clusters
 can require surrounding context, and inserting in the middle of a flat prompt
 still shifts its trailing bytes. History is capped at 100 entries / 256 KiB.
 
+The `prompt_input/completion_request_cancel` cases measure opening `:`, pasting
+`write src/main`, requesting Tab completion, and cancelling. Request setup and
+cancellation took **0.204 µs** with a 1 MiB document and **0.203 µs** with a 100 MiB
+document (same Criterion settings). Document construction, worker wakeup, directory
+reads, result application, drawing, and opening/saving files are excluded. The
+request owns only a bounded prompt string, cursor, revision stamp, and cancellation
+token. The existing picker worker processes the latest request; completion adds
+no thread or dependency. Path jobs retain at most 128 candidates and inspect at
+most 10,000 directory entries, with a cooperative 250 ms scan deadline. The
+frontend skips completion for prompts larger than 8 KiB, before copying text.
+
 Recorded on 2026-09-19 on the development machine: arm64, macOS 26.6.2,
 Rust 1.98.1. CPU model was not available to the sandbox. These measurements are
 a local baseline, not a hardware-independent performance guarantee.

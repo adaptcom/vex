@@ -142,6 +142,13 @@ impl Prompt {
         self.cursor = 0;
         self.insert(text);
     }
+    /// Apply a validated completion to this exact prompt revision.
+    pub(crate) fn complete(&mut self, range: std::ops::Range<usize>, text: &str) {
+        self.stamp.revision += 1;
+        self.cursor = range.start + text.len();
+        self.text.replace_range(range, text);
+        self.snap_cursor();
+    }
     pub fn insert(&mut self, text: &str) {
         self.stamp.revision += 1;
         self.register_pending = false;

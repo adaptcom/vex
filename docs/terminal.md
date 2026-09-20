@@ -234,6 +234,7 @@ on matches, `K` filters selections, and `*` remembers selected text for search. 
 | `:quit-all[!]`, `:qa[!]` | Quit all panes, with ! to discard unsaved text |
 | `:write-quit [PATH]`, `:wq [PATH]`, `:x [PATH]` | Save, then close the current pane only if saving succeeds |
 | `:help [COMMAND]`, `:h [COMMAND]` | Show help or a command's documentation |
+| `:open PATH`, `:o PATH`, `:edit PATH`, `:e PATH` | Open a file in this pane, retaining unsaved buffers |
 | `:language [NAME/text/auto]`, `:lang [...]` | Show or set the language |
 | `:lsp-restart` | Restart the configured language server for the current file |
 | `:file_picker` | Open the fuzzy project file picker |
@@ -253,6 +254,7 @@ trailing whitespace is trimmed. Prompt editing follows grapheme boundaries:
 | Ctrl-u, Ctrl-k | Delete to the start or end |
 | Backspace / Ctrl-h, Delete / Ctrl-d | Delete one character |
 | Up / Ctrl-p, Down / Ctrl-n | Previous or next history entry |
+| Tab, Shift-Tab | Next or previous command/path completion |
 | Enter | Submit; empty input repeats the latest history entry |
 | Escape / Ctrl-c | Cancel |
 
@@ -263,6 +265,27 @@ duplicates. Submitted search attempts are remembered; ordinary register values
 still contain only accepted queries. Editing keys also work in pickers unless
 reserved for result navigation. Prompt movement, editing, and drawing visit
 nearby graphemes and the affected text rather than scanning the entire prefix.
+
+Command suggestions appear above the prompt in a grey-selection box. Tab writes
+the selected suggestion into the prompt; subsequent Tab/Shift-Tab cycle the same
+list, and Enter executes the resulting command. Enter on a selected directory
+lists its contents. A sole directory candidate expands immediately on Tab.
+Command names and aliases come from the documented registries; `:help` completes
+command arguments, and `:language` uses the language registry. File commands
+complete one literal path relative to the working directory, including spaces
+and Unicode. Matching uses a case-sensitive prefix. Dotfiles appear when the
+current component starts with a dot. Shell expansion and quoting are still not
+interpreted.
+
+Completion uses the existing background picker worker. Prompt identity and
+revision guard results; typing, moving the caret, entering a register prefix, or
+closing the prompt invalidates older requests. An early Tab waits for its current
+result before processing following keys, so Tab/Enter cannot execute a partial
+path. Escape/Ctrl-c can cancel the wait. Path scans retain at most 128 entries,
+check cancellation between entries, and stop after 10,000 entries or 250 ms of
+elapsed scanning time. The menu reports truncation and directory errors.
+Completion is disabled beyond 8 KiB of prompt text; editing remains available.
+Individual filesystem calls can exceed that scan deadline, on the worker.
 
 File commands are also ordinary documented functions. A declaration macro uses
 each function's Rustdoc for the runtime registry, so `:help write` shares its

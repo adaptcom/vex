@@ -303,6 +303,7 @@ impl App {
             || self.clipboard_waiting()
             || self.editor.repeat_pending()
             || self.completion_waiting()
+            || self.prompt_completion_waiting()
             || self
                 .picker
                 .active
