@@ -37,10 +37,6 @@ pub enum Style {
     PrimaryCursor(Option<Highlight>),
     /// Keep the glyph's colors; the terminal draws the primary insert caret.
     InsertCursor(Option<Highlight>),
-    /// Yellow bracket text with the ordinary reversed cursor's background.
-    MatchingCursor(Option<Highlight>),
-    /// Yellow bracket text beneath the terminal's insert bar.
-    MatchingInsertCursor,
     /// Retain syntax so unfocused panes can remove the matching decoration.
     MatchingBracket(Option<Highlight>),
     MatchingSelection,
@@ -58,8 +54,6 @@ impl Style {
             Self::StatusLine
                 | Self::InactiveStatus
                 | Self::PopupTitle
-                | Self::MatchingCursor(_)
-                | Self::MatchingInsertCursor
                 | Self::MatchingBracket(_)
                 | Self::MatchingSelection
                 | Self::MatchingSecondaryCursor
@@ -67,7 +61,7 @@ impl Style {
     }
 
     fn reversed(self) -> bool {
-        matches!(self, Self::PrimaryCursor(_) | Self::MatchingCursor(_))
+        matches!(self, Self::PrimaryCursor(_))
     }
 
     fn underlined(self) -> bool {
@@ -125,13 +119,7 @@ impl Style {
             Self::Message | Self::PopupTitle => (DarkCyan, Reset),
             Self::Error => (Red, Reset),
             Self::Selection => (Black, Grey),
-            Self::MatchingCursor(highlight) => {
-                // Reverse swaps these channels: retain the original foreground
-                // as the cursor background, and make the bracket glyph yellow.
-                let (foreground, _) = highlight.map_or(Self::Text, Self::Syntax).colors();
-                (foreground, Yellow)
-            }
-            Self::MatchingInsertCursor | Self::MatchingBracket(_) => (Yellow, Reset),
+            Self::MatchingBracket(_) => (Yellow, Reset),
             Self::MatchingSelection => (Yellow, Grey),
             Self::MatchingSecondaryCursor => (Yellow, DarkCyan),
             Self::PrimaryCursor(highlight) | Self::InsertCursor(highlight) => {
@@ -217,8 +205,6 @@ impl Frame {
                 Style::Status | Style::StatusLine => Style::InactiveStatus,
                 Style::PrimaryCursor(_)
                 | Style::InsertCursor(_)
-                | Style::MatchingCursor(_)
-                | Style::MatchingInsertCursor
                 | Style::MatchingSecondaryCursor
                 | Style::SecondaryCursor => Style::InactiveCursor,
                 Style::MatchingBracket(highlight) => highlight.map_or(Style::Text, Style::Syntax),
@@ -485,44 +471,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matching_pairs_are_yellow_and_bold_with_cursor_background_and_partner_underline() {
-        for highlight in [None, Some(Highlight::Comment), Some(Highlight::Keyword)] {
-            let cursor = Style::MatchingCursor(highlight);
-            let ordinary = Style::PrimaryCursor(highlight);
-            // With reverse enabled, the second channel is the visible glyph,
-            // and the first is the cursor background inherited from syntax.
-            assert_eq!(cursor.colors(), (ordinary.colors().0, Color::Yellow));
-            assert!(cursor.reversed());
-            assert!(cursor.bold());
-            assert!(!cursor.underlined());
-        }
+    fn matching_partner_is_yellow_bold_and_underlined_without_changing_the_cursor() {
         assert_eq!(
             Style::MatchingBracket(None).colors(),
             (Color::Yellow, Color::Reset)
         );
         assert!(Style::MatchingBracket(None).bold());
         assert!(Style::MatchingBracket(None).underlined());
-        assert_eq!(
-            Style::MatchingInsertCursor.colors(),
-            (Color::Yellow, Color::Reset)
-        );
-        assert!(Style::MatchingInsertCursor.bold());
-        assert!(!Style::MatchingInsertCursor.reversed());
-        assert!(!Style::MatchingInsertCursor.underlined());
         let mut renderer = Renderer::default();
         let frame = renderer.frame(4, 1).unwrap();
-        frame.put(0, 0, "(", Style::MatchingCursor(None));
+        frame.put(0, 0, "(", Style::PrimaryCursor(None));
         frame.put(1, 0, "x", Style::Text);
         frame.put(2, 0, ")", Style::MatchingBracket(None));
         let mut output = Vec::new();
         renderer.present(&mut output).unwrap();
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("\x1b[1m\x1b[7m("));
-        assert!(output.contains("\x1b[22m\x1b[27mx"));
+        assert!(output.contains("\x1b[7m("));
+        assert!(!output.contains("\x1b[1m\x1b[7m("));
+        assert!(output.contains("\x1b[27mx"));
         assert!(output.contains("\x1b[1m\x1b[4m)"));
         assert!(output.contains("\x1b[24m "));
         let frame = renderer.frame(4, 1).unwrap();
-        frame.put(0, 0, "(", Style::MatchingCursor(None));
+        frame.put(0, 0, "(", Style::PrimaryCursor(None));
         frame.put(1, 0, "x", Style::Text);
         frame.put(2, 0, ")", Style::MatchingBracket(None));
         assert_eq!(renderer.present(&mut Vec::new()).unwrap(), 0);

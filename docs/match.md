@@ -64,11 +64,11 @@ the typing undo group. Dot-repeat replays the pair decisions at each destination
 Direct `insert_text`, paste, registers, and completion preserve literal text.
 Quotes, backticks, and angle brackets do not auto-close yet.
 
-When the primary cursor is on a matched bracket, both brackets are yellow and bold.
-Only the partner is underlined, with no background fill. The cursor retains its
-ordinary background in normal/select mode and its bar in insert mode. Existing
-selection and secondary-cursor backgrounds are preserved. Unfocused panes restore
-the partner's syntax colors and dim their cursor.
+When the primary cursor is on a matched bracket, only its partner becomes yellow,
+bold, and underlined, with no background fill. The bracket under the cursor retains
+its syntax colors, ordinary background in normal/select mode, and bar in insert
+mode. Existing selection and secondary-cursor backgrounds are preserved.
+Unfocused panes restore the partner's syntax colors and dim their cursor.
 
 Decoration reuses the current Tree-sitter tree without parsing during drawing.
 Without a tree it balances the bracket kind in plain text, checking at most

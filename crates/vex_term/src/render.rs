@@ -261,13 +261,6 @@ pub(crate) fn paint_view(
                 Style::Syntax(highlight) => Some(highlight),
                 _ => None,
             };
-            if matching_bracket.is_some() {
-                return if editor.mode() == Mode::Insert {
-                    Style::MatchingInsertCursor
-                } else {
-                    Style::MatchingCursor(highlight)
-                };
-            }
             return if editor.mode() == Mode::Insert {
                 Style::InsertCursor(highlight)
             } else {
@@ -680,9 +673,9 @@ mod tests {
             assert_eq!(
                 frame.style_at(5, 0),
                 Some(if mode == "insert_mode" {
-                    Style::MatchingInsertCursor
+                    Style::InsertCursor(None)
                 } else {
-                    Style::MatchingCursor(None)
+                    Style::PrimaryCursor(None)
                 })
             );
             assert_eq!(frame.style_at(8, 0), Some(Style::MatchingBracket(None)));
@@ -705,7 +698,7 @@ mod tests {
             .unwrap();
         let frame = render(&editor, 30, 5, &mut Viewport::default());
         assert_eq!(frame.style_at(5, 0), Some(Style::MatchingBracket(None)));
-        assert_eq!(frame.style_at(8, 0), Some(Style::MatchingCursor(None)));
+        assert_eq!(frame.style_at(8, 0), Some(Style::PrimaryCursor(None)));
         editor
             .set_selections(SelectionSet::single(Selection::cursor(CharOffset(4))))
             .unwrap();
@@ -725,7 +718,7 @@ mod tests {
             .unwrap();
         let frame = render(&editor, 20, 4, &mut Viewport::default());
         assert_eq!(frame.style_at(5, 0), Some(Style::MatchingSelection));
-        assert_eq!(frame.style_at(7, 0), Some(Style::MatchingCursor(None)));
+        assert_eq!(frame.style_at(7, 0), Some(Style::PrimaryCursor(None)));
         editor
             .set_selections(
                 SelectionSet::new(
@@ -742,21 +735,30 @@ mod tests {
         assert_eq!(frame.style_at(5, 0), Some(Style::MatchingSecondaryCursor));
         frame.inactive();
         assert_eq!(frame.style_at(5, 0), Some(Style::InactiveCursor));
-        let mut editor = Editor::new(Document::from("// (x)"));
-        editor.set_language(Some(vex_editor::Language::Rust));
-        editor
-            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(3))))
-            .unwrap();
-        let mut frame = render(&editor, 20, 4, &mut Viewport::default());
-        assert_eq!(
-            frame.style_at(10, 0),
-            Some(Style::MatchingBracket(Some(vex_editor::Highlight::Comment)))
-        );
-        frame.inactive();
-        assert_eq!(
-            frame.style_at(10, 0),
-            Some(Style::Syntax(vex_editor::Highlight::Comment))
-        );
+        for mode in ["normal_mode", "insert_mode"] {
+            let mut editor = Editor::new(Document::from("// (x)"));
+            editor.set_language(Some(vex_editor::Language::Rust));
+            editor.execute(mode, 1).unwrap();
+            editor
+                .set_selections(SelectionSet::single(Selection::cursor(CharOffset(3))))
+                .unwrap();
+            let mut frame = render(&editor, 20, 4, &mut Viewport::default());
+            let syntax = Some(vex_editor::Highlight::Comment);
+            assert_eq!(
+                frame.style_at(8, 0),
+                Some(if mode == "insert_mode" {
+                    Style::InsertCursor(syntax)
+                } else {
+                    Style::PrimaryCursor(syntax)
+                })
+            );
+            assert_eq!(frame.style_at(10, 0), Some(Style::MatchingBracket(syntax)));
+            frame.inactive();
+            assert_eq!(
+                frame.style_at(10, 0),
+                Some(Style::Syntax(vex_editor::Highlight::Comment))
+            );
+        }
     }
 
     #[test]

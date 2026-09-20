@@ -415,12 +415,11 @@ encoding. It has no UI framework or Ratatui dependency:
   Focus gain invalidates the grid; resizing rebuilds it.
 
 The primary cursor is a reversed block in normal/select mode and a terminal bar
-in insert mode. When on a matched `()`, `[]`, or `{}` bracket, both brackets are
-yellow and bold. Only the partner is underlined and uses the default background;
-the cursor keeps its ordinary background, and insert mode retains its terminal
-bar. Selection and secondary-cursor backgrounds are preserved, and unfocused panes
-remove matching decoration. Elsewhere, the bar preserves the underlying text's
-syntax colors. Other
+in insert mode. When on a matched `()`, `[]`, or `{}` bracket, only the partner is
+yellow, bold, and underlined. The bracket under the cursor retains its syntax
+colors and ordinary cursor styling. Matching decoration preserves selection and
+secondary-cursor backgrounds; unfocused panes remove it. The insert bar preserves
+the underlying text's syntax colors. Other
 cursors and selected ranges use cell styles. The status line shows mode, unsaved
 changes (`[+]`), pending keys/count, path, primary position, and a count for multiple
 selections. Labels sit within a thin grey border on the normal terminal

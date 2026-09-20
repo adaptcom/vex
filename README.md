@@ -220,8 +220,9 @@ returns an error and clears the count. An unbound sequence also clears pending
 input; sticky groups keep their prefix active. Insert mode treats unbound printable
 characters through `insert_character`, which auto-closes `()`, `[]`, and `{}`.
 An existing closer is stepped over; Backspace between an empty pair removes both.
-Paste, completion, and `insert_text` preserve their literal text. Matching brackets
-use bold yellow text, underlining the partner and retaining the cursor background;
+Paste, completion, and `insert_text` preserve their literal text. A bracket's
+matching partner uses bold yellow text with an underline. The bracket under the
+cursor retains its syntax colors and ordinary cursor styling;
 see [bracket behavior](docs/match.md#automatic-pairs-and-highlighting). Enter is bound to
 `insert_newline`, which uses the loaded line ending (LF by default) and copies
 the current line's indentation before the caret. Tab calls `insert_tab` to insert
