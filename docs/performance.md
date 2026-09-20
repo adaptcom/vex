@@ -924,9 +924,12 @@ without sending extra input to wake the loop.
 
 Rust-analyzer runs in a child process. The UI submits shared rope snapshots;
 JSON encoding, UTF-16 indexing, and protocol handling run on the LSP service
-thread, with separate threads for blocking pipe I/O. Updates debounce for 20 ms
-with a 100 ms maximum batching delay. The terminal gives input a turn between
-background completions, including LSP events.
+thread, with separate threads for blocking pipe I/O. Routine updates wait for
+300 ms without another edit; saves and requests bypass the wait. Diagnostic
+display uses the same idle interval even when completion flushes changes early.
+The UI compares fixed-size revision metadata and keeps one pending diagnostic
+result, while the service coalesces edits into one shared snapshot. The terminal
+gives input a turn between background completions, including LSP events.
 
 The initial implementation sends full document contents and rebuilds its line
 index after changes, so worker CPU and allocation costs scale with document

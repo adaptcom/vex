@@ -70,8 +70,14 @@ Long lines wrap within the panel, which leaves the surrounding file visible.
 Diagnostic gutter markers and counts update asynchronously; the message at the
 cursor appears on the bottom line when
 no other message or prompt is active. Errors take precedence over other markers
-on the same line. Editing clears diagnostics immediately until a current result
-arrives. Diagnostic jumps select the complete range, retain normal/select mode,
+on the same line. Editing clears stale diagnostics immediately. New results wait
+until 300 ms after the latest edit before updating gutter markers, counts, and the
+cursor message. Continued typing resets that quiet interval, including when
+completion or signature help requests current server state earlier. Only the
+latest result for the current revision is retained; a later edit, buffer switch,
+or server restart discards pending results. Idle expiry repaints without another
+keypress. Initial diagnostics and saves bypass this display delay. Diagnostic
+jumps select the complete range, retain normal/select mode,
 and record the origin in jump history. Like Helix, they stop at the first/last
 diagnostic and ignore numeric prefixes. Selection preparation uses the navigation
 worker with cancellation and stale-origin checks.
@@ -382,8 +388,11 @@ are written first, so synchronization traffic cannot crowd out configuration
 responses or block the reader. Client document notifications retain FIFO order.
 
 The UI sends cheap rope snapshots through a latest-update mailbox. Routine edits
-debounce for 20 ms, with a 100 ms maximum batching delay; submitted requests and
-session changes wake immediately. Text is serialized on the service thread.
+wait for 300 ms without another text change; continuous typing keeps postponing
+the update. Saves, submitted requests (including completion and signature help),
+and session changes wake immediately. Metadata-only refreshes do not extend the
+idle deadline, and protocol replies continue while updates wait. Text is
+serialized on the service thread.
 `didOpen`, full-content `didChange`, `didSave` when supported, and `didClose` are
 sent in order. Full replacement is supported even when the server advertises
 incremental synchronization. Changes are sent before requests for their positions.

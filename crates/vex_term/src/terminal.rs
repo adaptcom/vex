@@ -168,8 +168,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             ));
         }
         // Deadline processing also runs after an idle wait, so automatic
-        // completion never depends on another terminal event arriving.
+        // completion and diagnostics never depend on another terminal event arriving.
         redraw |= app.advance_repeat();
+        redraw |= app.poll_diagnostics(Instant::now());
         if let Some(job) = app.editor.take_search_job() {
             runtime.submit(job);
         }
@@ -248,6 +249,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
             app.completion_deadline()
                 .into_iter()
                 .chain(app.signature_deadline())
+                .chain(app.diagnostic_deadline())
                 .chain(app.symbol_deadline())
                 .chain(app.workspace_search_deadline())
                 .chain(app.git_deadline())

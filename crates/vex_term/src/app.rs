@@ -238,6 +238,7 @@ impl App {
     }
 
     fn handle_at(&mut self, event: Event, now: std::time::Instant) -> bool {
+        let diagnostic_changed = self.poll_diagnostics(now);
         self.invalidate_clipboard();
         self.observe_buffer_revision();
         self.observe_signature(now, false);
@@ -247,7 +248,7 @@ impl App {
         let changed = self.handle_event_at(event, now);
         self.observe_buffer_revision();
         self.observe_signature(now, inserted);
-        changed
+        self.poll_diagnostics(now) || changed || diagnostic_changed
     }
 
     fn handle_event_at(&mut self, event: Event, now: std::time::Instant) -> bool {

@@ -23,6 +23,21 @@ struct Pending {
     automatic: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DiagnosticContext {
+    epoch: u64,
+    document: DocumentId,
+    revision: Revision,
+    saved: u64,
+}
+
+#[derive(Default)]
+struct DiagnosticDelay {
+    observed: Option<DiagnosticContext>,
+    due: Option<Instant>,
+    pending: Option<Vec<Diagnostic>>,
+}
+
 #[derive(Default)]
 pub(super) struct State {
     enabled: bool,
@@ -36,6 +51,7 @@ pub(super) struct State {
     pub(super) diagnostic_catalog: vex_lsp::diagnostics::Catalog,
     diagnostics: Vec<Diagnostic>,
     diagnostic_revision: Option<(DocumentId, Revision)>,
+    diagnostic_delay: DiagnosticDelay,
     popup: Option<crate::documentation::Popup>,
     status: &'static str,
     completion: Option<CompletionOptions>,
@@ -514,14 +530,9 @@ impl App {
             Event::Diagnostics {
                 epoch,
                 revision,
-                mut diagnostics,
+                diagnostics,
             } => {
-                if !self.current_language_revision(epoch, revision) {
-                    return false;
-                }
-                diagnostics.sort_by_key(|diagnostic| (diagnostic.start, diagnostic.severity));
-                self.language.diagnostics = diagnostics;
-                self.language.diagnostic_revision = Some((self.editor.document().id(), revision));
+                return self.receive_diagnostics(epoch, revision, diagnostics, Instant::now());
             }
             Event::Answer {
                 epoch,
@@ -723,15 +734,93 @@ impl App {
     }
 
     pub(super) fn refresh_diagnostics(&mut self) {
-        if self.language.diagnostic_revision
-            != Some((
-                self.editor.document().id(),
-                self.editor.document().revision(),
-            ))
+        self.observe_diagnostics(Instant::now());
+    }
+
+    fn receive_diagnostics(
+        &mut self,
+        epoch: u64,
+        revision: Revision,
+        diagnostics: Vec<Diagnostic>,
+        now: Instant,
+    ) -> bool {
+        if !self.current_language_revision(epoch, revision) {
+            return false;
+        }
+        let redraw = self.poll_diagnostics(now);
+        if self.language.diagnostic_delay.due.is_some() {
+            self.language.diagnostic_delay.pending = Some(diagnostics);
+            return redraw;
+        }
+        self.publish_diagnostics(diagnostics);
+        true
+    }
+
+    fn observe_diagnostics(&mut self, now: Instant) -> bool {
+        let current = DiagnosticContext {
+            epoch: self.language.epoch,
+            document: self.editor.document().id(),
+            revision: self.editor.document().revision(),
+            saved: self.language.saved,
+        };
+        let delay = &mut self.language.diagnostic_delay;
+        let previous = delay.observed.replace(current);
+        let session_changed = previous
+            .is_none_or(|old| old.epoch != current.epoch || old.document != current.document);
+        let edited = previous.is_some_and(|old| old.revision != current.revision);
+        if session_changed || edited {
+            delay.pending = None;
+            delay.due = (!session_changed).then_some(now + vex_lsp::EDIT_IDLE_DELAY);
+        }
+        if previous.is_some_and(|old| old.saved != current.saved) {
+            delay.due = None;
+        }
+        let mut redraw = false;
+        if self.language.diagnostic_revision != Some((current.document, current.revision))
+            || session_changed
         {
+            redraw = !self.language.diagnostics.is_empty();
             self.language.diagnostics.clear();
             self.language.diagnostic_revision = None;
         }
+        redraw
+    }
+
+    /// Diagnostic display waits for the latest edit even when completion or
+    /// signature help flushes didChange before the ordinary sync deadline.
+    /// Only callers that propagate redraws publish deferred results.
+    pub(crate) fn poll_diagnostics(&mut self, now: Instant) -> bool {
+        let mut redraw = self.observe_diagnostics(now);
+        let delay = &mut self.language.diagnostic_delay;
+        if delay.due.is_some_and(|due| now >= due) {
+            delay.due = None;
+        }
+        if delay.due.is_none()
+            && let Some(diagnostics) = delay.pending.take()
+        {
+            self.publish_diagnostics(diagnostics);
+            redraw = true;
+        }
+        redraw
+    }
+
+    pub(crate) fn diagnostic_deadline(&self) -> Option<Instant> {
+        self.language.diagnostic_delay.pending.as_ref()?;
+        Some(
+            self.language
+                .diagnostic_delay
+                .due
+                .unwrap_or_else(Instant::now),
+        )
+    }
+
+    fn publish_diagnostics(&mut self, mut diagnostics: Vec<Diagnostic>) {
+        diagnostics.sort_by_key(|diagnostic| (diagnostic.start, diagnostic.severity));
+        self.language.diagnostics = diagnostics;
+        self.language.diagnostic_revision = Some((
+            self.editor.document().id(),
+            self.editor.document().revision(),
+        ));
     }
 
     pub(super) fn diagnostic_message(&self) -> String {
@@ -840,6 +929,135 @@ mod tests {
     fn press(app: &mut App, code: KeyCode) {
         app.handle(TerminalEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
         app.take_lsp_update();
+    }
+
+    fn diagnostics_at(app: &mut App, message: Option<&str>, now: Instant) -> bool {
+        let diagnostics = message
+            .into_iter()
+            .map(|message| Diagnostic {
+                start: CharOffset(0),
+                end: CharOffset(1),
+                line: 0,
+                severity: 1,
+                message: message.into(),
+            })
+            .collect();
+        app.receive_diagnostics(
+            app.language.epoch,
+            app.editor.document().revision(),
+            diagnostics,
+            now,
+        )
+    }
+
+    #[test]
+    fn diagnostics_wait_for_idle_even_when_requests_flush_current_text() {
+        use std::time::Duration;
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = app(directory.path());
+        let now = Instant::now();
+        assert!(diagnostics_at(&mut app, Some("initial"), now));
+        assert_eq!(app.language.diagnostics[0].message, "initial");
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.handle_at(
+            TerminalEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+            now,
+        );
+        assert!(app.language.diagnostics.is_empty());
+        assert!(!diagnostics_at(&mut app, Some("incomplete syntax"), now));
+        let due = now + vex_lsp::EDIT_IDLE_DELAY;
+        assert_eq!(app.diagnostic_deadline(), Some(due));
+        let (_, revision, _) = issue(&mut app, "signature_help");
+        assert_eq!(revision, app.editor.document().revision());
+        assert_eq!(app.diagnostic_deadline(), Some(due));
+        app.handle_at(
+            TerminalEvent::Resize(80, 12),
+            now + Duration::from_millis(100),
+        );
+        assert_eq!(app.diagnostic_deadline(), Some(due));
+        assert!(!app.poll_diagnostics(due - Duration::from_millis(1)));
+        assert!(!diagnostics_at(
+            &mut app,
+            Some("latest result"),
+            due - Duration::from_millis(1)
+        ));
+        assert!(app.language.diagnostics.is_empty());
+        // Metadata refresh during event batching must not consume the pending
+        // repaint before the event loop polls the deadline.
+        app.observe_diagnostics(due);
+        assert!(app.language.diagnostics.is_empty());
+        assert_eq!(app.diagnostic_deadline(), Some(due));
+        assert!(
+            app.poll_diagnostics(due),
+            "idle deadline must request a redraw without a key"
+        );
+        assert_eq!(app.language.diagnostics[0].message, "latest result");
+        assert!(app.diagnostic_deadline().is_none());
+        assert!(!app.poll_diagnostics(due + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn more_typing_discards_pending_diagnostics_and_coalesces_clears() {
+        use std::time::Duration;
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = app(directory.path());
+        let now = Instant::now();
+        app.poll_diagnostics(now);
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.editor.insert_text("x").unwrap();
+        app.poll_diagnostics(now);
+        diagnostics_at(&mut app, Some("old syntax"), now);
+        let old_revision = app.editor.document().revision();
+        app.editor.insert_text("y").unwrap();
+        let edited = now + Duration::from_millis(200);
+        app.poll_diagnostics(edited);
+        assert!(app.language.diagnostic_delay.pending.is_none());
+        assert!(!app.receive_diagnostics(app.language.epoch, old_revision, Vec::new(), edited));
+        diagnostics_at(&mut app, Some("temporary error"), edited);
+        diagnostics_at(&mut app, None, edited + Duration::from_millis(50));
+        assert_eq!(
+            app.diagnostic_deadline(),
+            Some(edited + vex_lsp::EDIT_IDLE_DELAY)
+        );
+        assert!(!app.poll_diagnostics(now + vex_lsp::EDIT_IDLE_DELAY));
+        assert!(app.poll_diagnostics(edited + vex_lsp::EDIT_IDLE_DELAY));
+        assert!(app.language.diagnostics.is_empty());
+        assert_eq!(
+            app.language.diagnostic_revision,
+            Some((app.editor.document().id(), app.editor.document().revision()))
+        );
+    }
+
+    #[test]
+    fn saves_flush_diagnostic_display_and_restart_discards_pending_results() {
+        use std::time::Duration;
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = app(directory.path());
+        let now = Instant::now();
+        app.poll_diagnostics(now);
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.editor.insert_text("x").unwrap();
+        app.poll_diagnostics(now);
+        diagnostics_at(&mut app, Some("saved error"), now);
+        app.execute("w").unwrap();
+        assert!(app.poll_diagnostics(now + Duration::from_millis(1)));
+        assert_eq!(app.language.diagnostics[0].message, "saved error");
+        assert!(app.diagnostic_deadline().is_none());
+        app.editor.insert_text("y").unwrap();
+        app.poll_diagnostics(now + Duration::from_millis(2));
+        diagnostics_at(
+            &mut app,
+            Some("retired session"),
+            now + Duration::from_millis(2),
+        );
+        let epoch = app.language.epoch;
+        app.restart_language_server();
+        app.poll_diagnostics(now + Duration::from_millis(3));
+        assert!(app.language.diagnostic_delay.pending.is_none());
+        assert!(app.diagnostic_deadline().is_none());
+        assert!(!app.receive_diagnostics(epoch, app.editor.document().revision(), Vec::new(), now));
+        assert!(!app.poll_diagnostics(now + Duration::from_secs(1)));
+        assert!(app.language.diagnostics.is_empty());
     }
 
     #[test]

@@ -57,12 +57,10 @@ def main():
             terminal.start()
             terminal.resize(140, 24)
             terminal.expect_screen(b"RA:ready")
-            terminal.send(b"/add\\(1\r")
-            # Search includes the first argument; inserting before it puts the
-            # caret inside the call. Retry insert entry if indexing is still busy.
-            terminal.send(b";")
+            # Restore the argument position on each indexing retry. Escape from
+            # insert mode moves the cursor left, outside the call on later tries.
             for attempt in range(3):
-                terminal.send(b"i")
+                terminal.send(b"/add\\(1\r;i")
                 try:
                     terminal.expect_screen_idle("Signature")
                     terminal.expect_screen_idle("left: u32")

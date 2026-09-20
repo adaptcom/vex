@@ -45,6 +45,8 @@ use vex_core::{CharOffset, Revision, Selection, Snapshot};
 use vex_editor::{Language, background::Cancellation};
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 << 20;
+/// Quiet interval for routine document synchronization and diagnostic display.
+pub const EDIT_IDLE_DELAY: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionTrigger {
@@ -221,9 +223,9 @@ pub enum Event {
 struct InboxState {
     update: Option<Update>,
     workspace: Option<WorkspaceUpdate>,
-    update_started: Option<Instant>,
     update_due: Option<Instant>,
-    last_epoch: Option<u64>,
+    update_immediate: bool,
+    last_document: Option<(u64, vex_core::DocumentId, Revision, u64)>,
     wire: VecDeque<Value>,
     diagnostics: diagnostics::Pending,
     failure: Option<String>,
@@ -288,17 +290,35 @@ impl Inbox {
         }
     }
     fn update(&self, update: Update) {
+        self.update_at(update, Instant::now());
+    }
+    fn update_at(&self, update: Update, now: Instant) {
         let mut state = self.0.lock().unwrap();
-        let now = Instant::now();
-        let epoch = update.document.as_ref().map(|document| document.epoch);
-        let immediate = update.request.is_some() || epoch != state.last_epoch || epoch.is_none();
-        let first = *state.update_started.get_or_insert(now);
-        state.update_due = Some(if immediate {
-            now
-        } else {
-            (now + Duration::from_millis(20)).min(first + Duration::from_millis(100))
+        let document = update.document.as_ref().map(|document| {
+            (
+                document.epoch,
+                document.snapshot.id(),
+                document.snapshot.revision(),
+                document.saved,
+            )
         });
-        state.last_epoch = epoch;
+        let session_changed = document.map(|(epoch, id, _, _)| (epoch, id))
+            != state.last_document.map(|(epoch, id, _, _)| (epoch, id));
+        let edited = document.map(|(_, _, revision, _)| revision)
+            != state.last_document.map(|(_, _, revision, _)| revision);
+        let saved = document.map(|(_, _, _, saved)| saved)
+            != state.last_document.map(|(_, _, _, saved)| saved);
+        // Preserve an urgent pending save/request when later edits coalesce.
+        state.update_immediate |=
+            update.request.is_some() || session_changed || document.is_none() || saved;
+        state.update_due = Some(if state.update_immediate {
+            now
+        } else if edited {
+            now + EDIT_IDLE_DELAY
+        } else {
+            state.update_due.unwrap_or(now)
+        });
+        state.last_document = document;
         state.update = Some(update);
         Self::wake(&mut state);
     }
@@ -330,7 +350,7 @@ impl Inbox {
         state.waker = Some(cx.waker().clone());
         state.stopped
     }
-    fn poll(&self, cx: &Context<'_>, executor: &Executor) -> Poll<Input> {
+    fn poll(&self, cx: &Context<'_>, executor: &Executor, now: Instant) -> Poll<Input> {
         let mut state = self.0.lock().unwrap();
         state.waker = Some(cx.waker().clone());
         if state.stopped {
@@ -340,9 +360,9 @@ impl Inbox {
             return Poll::Ready(Input::Failed(error));
         }
         if let Some(deadline) = state.update_due {
-            if Instant::now() >= deadline {
+            if now >= deadline {
                 state.update_due = None;
-                state.update_started = None;
+                state.update_immediate = false;
                 if let Some(update) = state.update.take() {
                     return Poll::Ready(Input::Update(update));
                 }
@@ -483,7 +503,7 @@ async fn serve(
     loop {
         let update = match next.take() {
             Some(update) => update,
-            None => match poll_fn(|cx| inbox.poll(cx, executor)).await {
+            None => match poll_fn(|cx| inbox.poll(cx, executor, Instant::now())).await {
                 Input::Update(update) => update,
                 Input::Stop => return,
                 _ => continue,
@@ -640,7 +660,7 @@ async fn session(
         let latest = {
             let mut state = inbox.0.lock().unwrap();
             state.update_due = None;
-            state.update_started = None;
+            state.update_immediate = false;
             state.update.take()
         };
         if let Some(update) = latest {
@@ -682,7 +702,7 @@ async fn session(
                     if request.cancellation.is_cancelled() { return Poll::Ready(Input::Answer(Err("cancelled".into()))) }
                     if let Poll::Ready(answer) = Pin::new(response).poll(cx) { return Poll::Ready(Input::Answer(answer)) }
                 }
-                inbox.poll(cx, executor)
+                inbox.poll(cx, executor, Instant::now())
             }).await;
             match input {
                 Input::Stop => return Ok(None),
@@ -1167,6 +1187,185 @@ mod tests {
             position: CharOffset(position),
             cancellation: Cancellation::default(),
         }
+    }
+
+    fn poll_inbox(inbox: &Inbox, now: Instant) -> Poll<Input> {
+        inbox.poll(
+            &Context::from_waker(Waker::noop()),
+            &Executor::default(),
+            now,
+        )
+    }
+
+    fn edit_document(text: &mut TextDocument, document: &mut Document) {
+        let mut selections = SelectionSet::default();
+        let edit = text.replace_selections(&selections, "x").unwrap();
+        text.apply(edit, &mut selections).unwrap();
+        document.snapshot = text.snapshot();
+    }
+
+    #[test]
+    fn routine_updates_wait_for_typing_to_stop_and_keep_only_the_latest_snapshot() {
+        let inbox = Inbox::default();
+        let mut text = TextDocument::from("fn main() {}");
+        let mut doc = document(PathBuf::from("main.rs"), &text);
+        let start = Instant::now();
+        inbox.update_at(
+            Update {
+                document: Some(doc.clone()),
+                request: None,
+            },
+            start,
+        );
+        assert!(matches!(
+            poll_inbox(&inbox, start),
+            Poll::Ready(Input::Update(_))
+        ));
+        let mut now = start;
+        for _ in 0..12 {
+            now += Duration::from_millis(100);
+            edit_document(&mut text, &mut doc);
+            inbox.update_at(
+                Update {
+                    document: Some(doc.clone()),
+                    request: None,
+                },
+                now,
+            );
+            assert!(poll_inbox(&inbox, now + Duration::from_millis(99)).is_pending());
+        }
+        // Metadata refreshes do not restart the quiet interval. Wire replies
+        // still progress while routine synchronization is waiting.
+        now += Duration::from_millis(200);
+        inbox.update_at(
+            Update {
+                document: Some(doc.clone()),
+                request: None,
+            },
+            now,
+        );
+        inbox.wire(json!({"id": 7, "result": null}));
+        assert!(matches!(
+            poll_inbox(&inbox, now),
+            Poll::Ready(Input::Wire(_))
+        ));
+        assert!(poll_inbox(&inbox, now + Duration::from_millis(99)).is_pending());
+        let Poll::Ready(Input::Update(update)) =
+            poll_inbox(&inbox, now + Duration::from_millis(100))
+        else {
+            panic!("latest edit must be delivered at the idle deadline");
+        };
+        assert_eq!(
+            update.document.unwrap().snapshot.revision(),
+            doc.snapshot.revision()
+        );
+        assert!(poll_inbox(&inbox, now + Duration::from_secs(1)).is_pending());
+    }
+
+    #[test]
+    fn requests_saves_and_session_changes_bypass_routine_debounce() {
+        let inbox = Inbox::default();
+        let mut text = TextDocument::from("fn main() {}");
+        let mut doc = document(PathBuf::from("main.rs"), &text);
+        let mut now = Instant::now();
+        inbox.update_at(
+            Update {
+                document: Some(doc.clone()),
+                request: None,
+            },
+            now,
+        );
+        assert!(matches!(
+            poll_inbox(&inbox, now),
+            Poll::Ready(Input::Update(_))
+        ));
+        for kind in [
+            RequestKind::Hover,
+            RequestKind::Completion(CompletionTrigger::Invoked),
+            RequestKind::SignatureHelp,
+        ] {
+            now += Duration::from_millis(1);
+            edit_document(&mut text, &mut doc);
+            inbox.update_at(
+                Update {
+                    document: Some(doc.clone()),
+                    request: None,
+                },
+                now,
+            );
+            assert!(poll_inbox(&inbox, now).is_pending());
+            inbox.update_at(
+                Update {
+                    document: Some(doc.clone()),
+                    request: Some(request(7, kind, 0)),
+                },
+                now,
+            );
+            let Poll::Ready(Input::Update(update)) = poll_inbox(&inbox, now) else {
+                panic!("request delayed")
+            };
+            assert_eq!(update.request.unwrap().id, 7);
+            assert_eq!(
+                update.document.unwrap().snapshot.revision(),
+                doc.snapshot.revision()
+            );
+        }
+        doc.saved += 1;
+        doc.saved_snapshot = Some(doc.snapshot.clone());
+        let saved_revision = doc.snapshot.revision();
+        inbox.update_at(
+            Update {
+                document: Some(doc.clone()),
+                request: None,
+            },
+            now,
+        );
+        edit_document(&mut text, &mut doc);
+        inbox.update_at(
+            Update {
+                document: Some(doc.clone()),
+                request: None,
+            },
+            now,
+        );
+        let Poll::Ready(Input::Update(update)) = poll_inbox(&inbox, now) else {
+            panic!("save delayed by following typing")
+        };
+        let delivered = update.document.unwrap();
+        assert_eq!(delivered.saved_snapshot.unwrap().revision(), saved_revision);
+        assert_eq!(delivered.snapshot.revision(), doc.snapshot.revision());
+        edit_document(&mut text, &mut doc);
+        inbox.update_at(
+            Update {
+                document: Some(doc.clone()),
+                request: None,
+            },
+            now,
+        );
+        assert!(poll_inbox(&inbox, now).is_pending());
+        doc.epoch += 1;
+        inbox.update_at(
+            Update {
+                document: Some(doc.clone()),
+                request: None,
+            },
+            now,
+        );
+        assert!(matches!(
+            poll_inbox(&inbox, now),
+            Poll::Ready(Input::Update(_))
+        ));
+        inbox.update_at(
+            Update {
+                document: None,
+                request: None,
+            },
+            now,
+        );
+        assert!(matches!(
+            poll_inbox(&inbox, now),
+            Poll::Ready(Input::Update(Update { document: None, .. }))
+        ));
     }
     fn until(receiver: &mpsc::Receiver<Event>, predicate: impl Fn(&Event) -> bool) -> Event {
         let deadline = Instant::now() + Duration::from_secs(10);

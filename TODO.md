@@ -117,6 +117,9 @@ selections, and measure operations that could affect input latency.
   debounce, server triggers, grey active-parameter highlighting, Markdown docs,
   and Alt-p/Alt-n overload navigation. It follows Helix popup scrolling, waits
   behind completion requests, avoids overlapping menus, and rejects stale replies.
+- [ ] Expose the LSP edit/diagnostic idle delay in configuration. Routine sync and
+  diagnostic display currently wait for 300 ms after the latest edit; saves and
+  requests bypass the sync delay, while completion/signature responses stay fast.
 - [ ] Git change navigation: `[g`/`]g`, `[G`/`]G`, and change textobjects.
 - [ ] Remap cached Git gutter markers across line insertions/deletions while
   a background diff is pending.
