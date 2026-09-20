@@ -152,6 +152,16 @@ impl Positions {
             start + line.utf16_cu_to_char((wanted.character as usize).min(line.len_utf16_cu())),
         ))
     }
+
+    /// Edits may clamp columns beyond EOL (LSP's rule), but cannot split a
+    /// surrogate pair. Navigation's backward clamping is unsafe for replacement.
+    pub fn edit_offset(&self, text: &Rope, wanted: Position) -> Option<CharOffset> {
+        let offset = self.offset(text, wanted)?;
+        let actual = self.position(text, offset)?;
+        (actual.character == wanted.character
+            || offset.0 == self.line_end(text, wanted.line as usize))
+        .then_some(offset)
+    }
 }
 
 /// Convert a scalar position to LSP UTF-16 coordinates.

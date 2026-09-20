@@ -1,0 +1,60 @@
+# Workspace text edits
+
+The shared workspace-edit path is implemented as a prerequisite for LSP rename,
+code actions, and formatting. Those commands and server-initiated `applyEdit`
+are not enabled yet. The transport continues to reject `workspace/applyEdit`;
+connecting it requires ordered replies and request-time synchronization of all
+participating buffers.
+
+`App::workspace_edit_context` captures the origin and named buffers' immutable
+text and view state before a request. `App::begin_workspace_edit` accepts a parsed
+edit with the exact document versions synchronized by its protocol adapter.
+Preparation shares the picker worker; it does not create another runtime,
+thread pool, or dependency. Another pending editor operation must finish first.
+Subsequent editing keys wait in FIFO order, while Escape/Ctrl-c can cancel when
+next in that order. Resize and service events continue.
+
+The worker resolves file identities, reuses captured unsaved buffers, and reads
+previously unopened files. It converts UTF-16 positions, validates edit batches,
+materializes the resulting ropes, and maps and normalizes every view's selections.
+Cancellation is checked between reads, edits, and selections. Individual rope
+insertions and selection sorts are not interruptible. Limits apply to decoded
+requests: 4,096 documents, 65,536 text edits, and 16 MiB of replacement text and
+paths. Exceeding a limit fails the entire request.
+
+Before changing anything, the UI validates every retained document's identity,
+revision, file path, views, modes, and selections. A file opened during preparation
+also invalidates a proposed new buffer. Only after all checks succeed does the
+UI install prepared text and view state. Each affected buffer gets one undo step;
+new files become hidden buffers, focus stays put, and all edits remain unsaved.
+An invalid batch changes neither text nor the buffer catalog. Undo operates on
+each buffer independently, as with other editing commands.
+
+The core `PreparedChange` retains regular undo/redo maps, change extents, and
+bookmark remapping. `PreparedExternalEdit` additionally prepares all editor views.
+Existing interactive text commands retain their direct application path.
+Delivery work depends on affected buffers and selection metadata; it does not
+repeat text insertion or grapheme scans. History eviction and dropping discarded
+prepared data can still require memory reclamation proportional to that data.
+
+The decoder follows the [LSP workspace-edit formats](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#workspaceEdit):
+
+- `documentChanges` takes precedence over `changes`. Conflicting versions,
+  malformed edits, non-file URIs, and overlapping replacements fail the batch.
+- Multiple insertions at the same position preserve server order. They may be
+  followed by one replacement at that position. No-op edits create no revision
+  or undo entry.
+- Columns beyond line end clamp to EOL according to LSP; invalid lines and
+  offsets inside UTF-16 surrogate pairs are rejected for edits.
+- A versioned edit needs the matching server version and editor snapshot.
+  An unsaved buffer must have been synchronized before the request. For an open
+  clean buffer without a known server snapshot, disk contents must still match.
+  Unversioned unopened files use their current disk contents; the server supplies
+  no older snapshot to compare. The normal save conflict checks remain active.
+- Resource creation, file renaming/deletion, and confirmation-required change
+  annotations are rejected before any text changes. These capabilities are not
+  advertised. Paths that alias the same file within a batch are also rejected.
+
+Inline tests exercise multi-buffer preparation, hidden unsaved text, independent
+undo, cancellation, stale destination/view rejection, queued editing, UTF-16
+coordinates, ordered insertions, and zero disk writes during application.

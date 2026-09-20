@@ -29,6 +29,8 @@ mod prompt;
 mod reload;
 mod status;
 mod windows;
+pub mod workspace;
+pub(crate) use workspace::{Job as WorkspaceEditJob, Result as WorkspaceEditResult};
 
 enum PromptKind {
     Command,
@@ -87,6 +89,7 @@ pub struct App {
     reload: reload::State,
     jump_navigation: jumps::State,
     navigation: navigation::State,
+    workspace: workspace::State,
 }
 
 impl App {
@@ -128,6 +131,7 @@ impl App {
             reload: reload::State::default(),
             jump_navigation: jumps::State::default(),
             navigation: navigation::State::default(),
+            workspace: workspace::State::default(),
         }
     }
 
@@ -223,6 +227,14 @@ impl App {
     }
 
     fn handle_event_at(&mut self, event: Event, now: std::time::Instant) -> bool {
+        if self.workspace_edit_waiting()
+            && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release
+                && matches!(input::key(*key), Some(Key::Escape | Key::Ctrl('c'))))
+        {
+            self.cancel_workspace_edit();
+            self.clear_message();
+            return true;
+        }
         if (self.location_navigation_waiting() || self.language_waiting())
             && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release
                 && matches!(input::key(*key), Some(Key::Escape | Key::Ctrl('c'))))

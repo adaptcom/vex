@@ -940,3 +940,30 @@ Reproduce these isolated measurements with:
 ```sh
 cargo test -p vex_editor -p vex_lsp --release --locked benchmark_ -- --ignored --nocapture
 ```
+
+## Prepared workspace edits
+
+Text replacement, sticky cursor mapping, and grapheme normalization for all views
+run before UI delivery. A local release microbenchmark measured a single
+`Editor::apply_external_edit` call with three views, using 50 fresh documents per
+case. The edit count also equals the selection count in each view:
+
+| Document size | Edits / selections per view | Median delivery | Sample p95 |
+|---|---:|---:|---:|
+| 1 MiB | 1 | 0.917 µs | 3.000 µs |
+| 1 MiB | 1,000 | 3.125 µs | 9.000 µs |
+| 100 MiB | 1 | 0.167 µs | 0.250 µs |
+| 100 MiB | 1,000 | 1.959 µs | 2.166 µs |
+
+These short measurements are sensitive to allocator, cache, and scheduling noise;
+the larger document is not inherently faster. They exclude plan capture, worker
+preparation, frontend batch preflight, I/O, and rendering. The cases use plain
+text with no language parse, and teardown is outside the measured interval.
+Delivery still validates and copies selection metadata for history. Text content
+is installed from its prepared rope without repeating insertions or scans.
+
+```sh
+cargo test -p vex_editor --release --locked benchmark_external_edit_delivery -- --ignored --nocapture
+```
+
+See [workspace edit behavior and remaining integration work](workspace-edits.md).

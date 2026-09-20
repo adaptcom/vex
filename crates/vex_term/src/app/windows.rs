@@ -845,6 +845,106 @@ impl App {
             .collect()
     }
 
+    pub(super) fn capture_workspace_buffers(
+        &self,
+    ) -> std::sync::Arc<[super::workspace::CapturedDocument]> {
+        std::iter::once((&self.editor, &self.files))
+            .chain(
+                self.windows
+                    .buffers
+                    .values()
+                    .map(|buffer| (&buffer.editor, &buffer.files)),
+            )
+            .filter_map(|(editor, files)| {
+                files
+                    .target()
+                    .map(|path| super::workspace::CapturedDocument {
+                        path: path.into(),
+                        plan: editor.external_edit_plan(),
+                        dirty: files.is_dirty(editor.document()),
+                        language: editor.language(),
+                    })
+            })
+            .collect()
+    }
+
+    pub(super) fn commit_workspace_edit(
+        &mut self,
+        changes: Vec<super::workspace::Change>,
+    ) -> io::Result<usize> {
+        let mut prepared = Vec::with_capacity(changes.len());
+        let mut paths: std::collections::HashSet<PathBuf> = self
+            .files
+            .target()
+            .map(Path::to_path_buf)
+            .into_iter()
+            .chain(
+                self.windows
+                    .buffers
+                    .values()
+                    .filter_map(|buffer| buffer.files.target().map(Path::to_path_buf)),
+            )
+            .collect();
+        // No text, history, focus, or buffer-catalog mutations occur until every
+        // destination and view has passed this preflight.
+        for change in changes {
+            let id = change.edit.document_id();
+            let new = if let Some((document, files)) = change.new_file {
+                if !paths.insert(change.path.clone()) {
+                    return Err(io::Error::other(
+                        "workspace destination was opened during preparation",
+                    ));
+                }
+                let mut editor = Editor::with_session(document, self.editor.session());
+                editor.set_background_syntax(true);
+                editor.set_display_name(files.display_name());
+                editor.set_language(Language::detect(files.path(), editor.document().text()));
+                editor.set_background_search(true);
+                editor.set_deferred_repeat(true);
+                editor
+                    .validate_external_edit(&change.edit)
+                    .map_err(io::Error::other)?;
+                Some(Buffer {
+                    editor,
+                    files,
+                    automatic_language: true,
+                })
+            } else {
+                self.with_file_buffer_mut(id, |editor, files, _| {
+                    if files.target() != Some(change.path.as_path()) {
+                        return Err(io::Error::other("workspace file identity changed"));
+                    }
+                    editor
+                        .validate_external_edit(&change.edit)
+                        .map_err(io::Error::other)
+                })
+                .ok_or_else(|| io::Error::other("workspace buffer was closed"))??;
+                None
+            };
+            prepared.push((id, new, change.edit));
+        }
+        let count = prepared.len();
+        for (id, new, edit) in prepared {
+            if let Some(mut buffer) = new {
+                buffer
+                    .editor
+                    .apply_external_edit(edit)
+                    .expect("preflighted new buffer");
+                self.windows.accessed.insert(id, 0);
+                self.windows.buffers.insert(id, buffer);
+            } else {
+                self.with_file_buffer_mut(id, |editor, _, _| {
+                    editor
+                        .apply_external_edit(edit)
+                        .expect("preflighted retained buffer")
+                })
+                .expect("retained buffer");
+            }
+            self.refresh_picker_buffer(id);
+        }
+        Ok(count)
+    }
+
     pub(super) fn open_workspace_hit(
         &mut self,
         hit: &crate::picker::search::Hit,

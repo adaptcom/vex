@@ -7,6 +7,7 @@ mod navigation;
 mod protocol;
 mod symbols;
 mod transport;
+pub mod workspace_edit;
 
 pub use completion::{CompletionItem, Completions};
 use executor::Executor;

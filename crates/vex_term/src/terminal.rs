@@ -185,6 +185,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             if let Some(job) = app.take_location_job() {
                 runtime.submit_locations(job);
             }
+            if let Some(job) = app.take_workspace_edit() {
+                runtime.submit_workspace_edit(job);
+            }
             if let Some(job) = app.take_location_navigation() {
                 runtime.submit_location_navigation(job);
             }
@@ -252,6 +255,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Locations(result)) => {
                     app.handle_location_result(result);
                 }
+                AppEvent::Background(BackgroundEvent::WorkspaceEdit(result)) => {
+                    app.handle_workspace_edit(result);
+                }
                 AppEvent::Background(BackgroundEvent::LocationNavigation(result)) => {
                     app.handle_location_navigation(result);
                 }
@@ -318,6 +324,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(job) = app.take_location_job() {
                 runtime.submit_locations(job);
+            }
+            if let Some(job) = app.take_workspace_edit() {
+                runtime.submit_workspace_edit(job);
             }
             if let Some(job) = app.take_location_navigation() {
                 runtime.submit_location_navigation(job);

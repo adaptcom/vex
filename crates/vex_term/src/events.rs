@@ -37,6 +37,7 @@ pub(crate) enum BackgroundEvent {
     Symbols(SymbolResult),
     Locations(crate::picker::locations::Result),
     LocationNavigation(crate::app::LocationNavigationResult),
+    WorkspaceEdit(crate::app::WorkspaceEditResult),
     Buffers(BufferResult),
     Jumps(crate::picker::jumps::Result),
     JumpNavigation(crate::app::JumpNavigationResult),
@@ -117,6 +118,7 @@ impl EventQueue {
                 | BackgroundEvent::Symbols(_)
                 | BackgroundEvent::Locations(_)
                 | BackgroundEvent::LocationNavigation(_)
+                | BackgroundEvent::WorkspaceEdit(_)
                 | BackgroundEvent::Buffers(_)
                 | BackgroundEvent::Jumps(_)
                 | BackgroundEvent::JumpNavigation(_)
@@ -300,6 +302,7 @@ enum PickerJob {
     Symbols(SymbolJob),
     Locations(crate::picker::locations::Job),
     LocationNavigation(crate::app::LocationNavigationJob),
+    WorkspaceEdit(crate::app::WorkspaceEditJob),
     Buffers(BufferJob),
     Jumps(crate::picker::jumps::Job),
     JumpNavigation(crate::app::JumpNavigationJob),
@@ -314,6 +317,7 @@ impl Job for PickerJob {
             Self::Symbols(job) => job.cancellation.clone(),
             Self::Locations(job) => job.cancellation.clone(),
             Self::LocationNavigation(job) => job.cancellation.clone(),
+            Self::WorkspaceEdit(job) => job.cancellation.clone(),
             Self::Buffers(job) => job.cancellation.clone(),
             Self::Jumps(job) => job.cancellation.clone(),
             Self::JumpNavigation(job) => job.cancellation.clone(),
@@ -559,6 +563,11 @@ impl Runtime {
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::Locations)
             }
+            PickerJob::WorkspaceEdit(job) => {
+                workspace_search = crate::picker::search::Worker::default();
+                file_state = FileWorker::default();
+                job.run().map(BackgroundEvent::WorkspaceEdit)
+            }
             PickerJob::LocationNavigation(job) => {
                 workspace_search = crate::picker::search::Worker::default();
                 file_state = FileWorker::default();
@@ -670,6 +679,12 @@ impl Runtime {
             .as_ref()
             .unwrap()
             .submit(PickerJob::Locations(job));
+    }
+    pub(crate) fn submit_workspace_edit(&self, job: crate::app::WorkspaceEditJob) {
+        self.files
+            .as_ref()
+            .unwrap()
+            .submit(PickerJob::WorkspaceEdit(job));
     }
     pub(crate) fn submit_location_navigation(&self, job: crate::app::LocationNavigationJob) {
         self.files
@@ -856,6 +871,9 @@ mod tests {
             AppEvent::Background(BackgroundEvent::Locations(result)) => {
                 app.handle_location_result(result);
             }
+            AppEvent::Background(BackgroundEvent::WorkspaceEdit(result)) => {
+                app.handle_workspace_edit(result);
+            }
             AppEvent::Background(BackgroundEvent::LocationNavigation(result)) => {
                 app.handle_location_navigation(result);
             }
@@ -914,6 +932,59 @@ mod tests {
             vex_core::ByteOffset(0)..vex_core::ByteOffset(editor.document().text().len_bytes()),
         );
         editor.take_syntax_job().unwrap()
+    }
+
+    #[test]
+    fn workspace_edits_keep_later_undo_queued_and_escape_cancels_preparation() {
+        use vex_lsp::{
+            Position, Range,
+            workspace_edit::{DocumentEdit, TextEdit, WorkspaceEdit},
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("main.rs");
+        std::fs::write(&path, "foo\n").unwrap();
+        let mut app = App::open(Some(&path), (80, 24)).unwrap();
+        let edit = WorkspaceEdit {
+            documents: vec![DocumentEdit {
+                path,
+                version: None,
+                edits: vec![TextEdit {
+                    range: Range {
+                        start: Position {
+                            line: 0,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: 0,
+                            character: 3,
+                        },
+                    },
+                    new_text: "bar".into(),
+                }],
+            }],
+        };
+        app.begin_workspace_edit(app.workspace_edit_context(), edit.clone(), Vec::new())
+            .unwrap();
+        let result = app.take_workspace_edit().unwrap().run().unwrap();
+        let events = EventQueue::default();
+        events.terminal(key(KeyCode::Char('u')));
+        assert!(events.next(Duration::ZERO, app.input_waiting()).is_none());
+        events.background(BackgroundEvent::WorkspaceEdit(result));
+        let event = events.next(Duration::ZERO, app.input_waiting()).unwrap();
+        deliver(&mut app, event);
+        assert_eq!(app.editor.document().text(), "bar\n");
+        let event = events.next(Duration::ZERO, app.input_waiting()).unwrap();
+        deliver(&mut app, event);
+        assert_eq!(app.editor.document().text(), "foo\n");
+        app.begin_workspace_edit(app.workspace_edit_context(), edit, Vec::new())
+            .unwrap();
+        let job = app.take_workspace_edit().unwrap();
+        events.terminal(key(KeyCode::Esc));
+        let event = events.next(Duration::ZERO, app.input_waiting()).unwrap();
+        deliver(&mut app, event);
+        assert!(job.run().is_none());
+        assert!(!app.input_waiting());
+        assert_eq!(app.editor.document().text(), "foo\n");
     }
 
     #[test]

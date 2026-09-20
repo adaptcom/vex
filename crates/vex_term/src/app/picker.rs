@@ -290,7 +290,7 @@ impl App {
         }
     }
 
-    fn close_picker(&mut self) {
+    pub(super) fn close_picker(&mut self) {
         if let Some(mut active) = self.picker.active.take() {
             active.cancellation.cancel();
             active.preview_cancel.cancel();
@@ -427,6 +427,7 @@ impl App {
             || self.jump_navigation_waiting()
             || self.location_navigation_waiting()
             || self.language_waiting()
+            || self.workspace_edit_waiting()
             || self.clipboard_waiting()
             || self.editor.repeat_pending()
             || self.completion_waiting()
