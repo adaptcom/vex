@@ -29,6 +29,7 @@ pub enum Error {
     ReadOnlyRegister(char),
     ExternalRegister(char),
     ClipboardChanged,
+    ExternalEditChanged,
     SurroundNotFound,
     SurroundOverlap,
     SurroundAmbiguous,
@@ -45,6 +46,9 @@ impl From<vex_core::Error> for Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ExternalEditChanged => {
+                write!(f, "document views changed while preparing workspace edits")
+            }
             Self::Core(error) => error.fmt(f),
             Self::UnknownCommand(name) => write!(f, "unknown command: {name}"),
             Self::WrongMode { expected, actual } => write!(

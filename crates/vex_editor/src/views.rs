@@ -4,6 +4,92 @@ use crate::{Editor, Mode};
 use std::collections::BTreeMap;
 use vex_core::{Revision, SelectionSet};
 
+/// Immutable text and view state captured before a workspace edit request.
+/// Preparation owns no editor session or terminal state and can run on a worker.
+#[derive(Clone, Debug)]
+pub struct ExternalEditPlan {
+    snapshot: vex_core::Snapshot,
+    active: ViewId,
+    views: BTreeMap<ViewId, (Mode, SelectionSet)>,
+}
+
+#[derive(Debug)]
+pub struct PreparedExternalEdit {
+    plan: ExternalEditPlan,
+    change: vex_core::PreparedChange,
+    mapped: BTreeMap<ViewId, SelectionSet>,
+    newline: &'static str,
+}
+
+impl ExternalEditPlan {
+    /// Capture the initial view of a document loaded by a background worker.
+    /// The frontend must install it into an otherwise untouched new Editor.
+    pub fn new_document(document: &vex_core::Document) -> Self {
+        Self {
+            snapshot: document.snapshot(),
+            active: ViewId(0),
+            views: BTreeMap::from([(
+                ViewId(0),
+                (
+                    Mode::Normal,
+                    SelectionSet::single(
+                        vex_core::motion::block(document.text(), vex_core::CharOffset(0))
+                            .expect("valid BOF"),
+                    ),
+                ),
+            )]),
+        }
+    }
+
+    pub fn snapshot(&self) -> &vex_core::Snapshot {
+        &self.snapshot
+    }
+
+    /// Build text and normalize every view's selections before delivery.
+    pub fn prepare(
+        self,
+        transaction: vex_core::Transaction,
+        cancellation: &crate::background::Cancellation,
+    ) -> Result<PreparedExternalEdit, crate::Error> {
+        let change = self
+            .snapshot
+            .prepare_change(transaction, || cancellation.is_cancelled())?
+            .ok_or(crate::Error::Cancelled)?;
+        let mut mapped = BTreeMap::new();
+        for (&id, (mode, selections)) in &self.views {
+            let selections = change
+                .map_sticky_selections(selections, || cancellation.is_cancelled())?
+                .ok_or(crate::Error::Cancelled)?;
+            mapped.insert(
+                id,
+                crate::prepared_selection::normalize(change.text(), selections, *mode, || {
+                    cancellation.is_cancelled()
+                })?,
+            );
+        }
+        let change = change.with_selections(mapped[&self.active].clone())?;
+        let newline = crate::line_ending(change.text());
+        Ok(PreparedExternalEdit {
+            plan: self,
+            change,
+            mapped,
+            newline,
+        })
+    }
+}
+
+impl PreparedExternalEdit {
+    pub fn document_id(&self) -> vex_core::DocumentId {
+        self.change.document_id()
+    }
+    pub fn revision(&self) -> Revision {
+        self.change.revision()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.change.is_empty()
+    }
+}
+
 /// A view identity scoped to its editor/document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ViewId(u64);
@@ -35,6 +121,80 @@ impl Views {
 }
 
 impl Editor {
+    pub fn external_edit_plan(&self) -> ExternalEditPlan {
+        ExternalEditPlan {
+            snapshot: self.document.snapshot(),
+            active: self.views.active,
+            views: std::iter::once((self.views.active, (self.mode, self.selections.clone())))
+                .chain(
+                    self.views
+                        .inactive
+                        .iter()
+                        .map(|(&id, view)| (id, (view.mode, view.selections.clone()))),
+                )
+                .collect(),
+        }
+    }
+
+    /// Validate all buffers in a workspace edit before applying the first one.
+    /// View changes also invalidate preparation, even without a text edit.
+    pub fn validate_external_edit(
+        &self,
+        prepared: &PreparedExternalEdit,
+    ) -> Result<(), crate::Error> {
+        self.document.validate_prepared_change(&prepared.change)?;
+        if self.views.active != prepared.plan.active
+            || self.views.inactive.len() + 1 != prepared.plan.views.len()
+            || prepared
+                .plan
+                .views
+                .get(&self.views.active)
+                .is_none_or(|(mode, selections)| {
+                    *mode != self.mode || selections != &self.selections
+                })
+            || self.views.inactive.iter().any(|(id, view)| {
+                prepared
+                    .plan
+                    .views
+                    .get(id)
+                    .is_none_or(|(mode, selections)| {
+                        *mode != view.mode || selections != &view.selections
+                    })
+            })
+        {
+            return Err(crate::Error::ExternalEditChanged);
+        }
+        Ok(())
+    }
+
+    /// Commit preflighted text as one undo step and install all prepared views.
+    /// No file content is read, inserted, or normalized on this path.
+    pub fn apply_external_edit(
+        &mut self,
+        prepared: PreparedExternalEdit,
+    ) -> Result<bool, crate::Error> {
+        self.validate_external_edit(&prepared)?;
+        self.cancel_repeat();
+        self.finish_undo_group();
+        let changed = self
+            .document
+            .apply_prepared_change(prepared.change, &mut self.selections)?;
+        for (id, selections) in prepared.mapped {
+            if id != self.views.active {
+                let view = self.views.inactive.get_mut(&id).expect("validated view");
+                view.selections = selections;
+                view.preferred_columns = None;
+            }
+        }
+        self.views.revision = self.document.revision();
+        self.synchronize_caches();
+        self.preferred_columns = None;
+        self.newline = prepared.newline;
+        self.language_action = None;
+        self.application_action = None;
+        Ok(changed)
+    }
+
     /// Apply a revision-checked external reload as one undo step. Preserve view
     /// modes and map cursors through unchanged text; within replaced text, keep
     /// their relative scalar offset, clamped to the replacement. All endpoints
@@ -195,6 +355,121 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use vex_core::{CharOffset, Document, Selection};
+
+    #[test]
+    #[ignore = "manual release-mode workspace edit delivery benchmark"]
+    fn benchmark_external_edit_delivery() {
+        use std::{hint::black_box, time::Instant};
+        for mib in [1usize, 100] {
+            let text = vex_core::Rope::from_str(&"foo \n".repeat((mib << 20) / 5));
+            for count in [1usize, 1000] {
+                let mut samples = Vec::with_capacity(50);
+                for _ in 0..50 {
+                    let mut editor = Editor::new(Document::from(text.clone()));
+                    editor
+                        .set_selections(
+                            SelectionSet::new(
+                                (0..count)
+                                    .map(|index| {
+                                        Selection::new(
+                                            CharOffset(index * 5),
+                                            CharOffset(index * 5 + 3),
+                                        )
+                                    })
+                                    .collect(),
+                                0,
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    editor.duplicate_view();
+                    editor.duplicate_view();
+                    let plan = editor.external_edit_plan();
+                    let transaction = plan
+                        .snapshot()
+                        .transaction((0..count).map(|index| {
+                            vex_core::Edit::new(
+                                CharOffset(index * 5)..CharOffset(index * 5 + 3),
+                                "longer",
+                            )
+                        }))
+                        .unwrap();
+                    let prepared = plan
+                        .prepare(transaction, &crate::background::Cancellation::default())
+                        .unwrap();
+                    let now = Instant::now();
+                    black_box(&mut editor)
+                        .apply_external_edit(black_box(prepared))
+                        .unwrap();
+                    samples.push(now.elapsed());
+                }
+                samples.sort_unstable();
+                println!(
+                    "{mib} MiB, {count} edits and selections, 3 views: UI delivery median {:?}, p95 {:?} (preparation excluded)",
+                    samples[25], samples[47]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_external_edits_map_all_views_and_preflight_before_any_change() {
+        let mut editor = Editor::new(Document::from("name e\u{301} name\r\n"));
+        editor
+            .set_selections(SelectionSet::single(vex_core::Selection::new(
+                CharOffset(4),
+                CharOffset(0),
+            )))
+            .unwrap();
+        let first = editor.active_view();
+        let second = editor.duplicate_view();
+        editor.focus_view(second);
+        editor.execute("insert_mode", 1).unwrap();
+        editor
+            .set_selections(SelectionSet::single(vex_core::Selection::cursor(
+                CharOffset(11),
+            )))
+            .unwrap();
+        let plan = editor.external_edit_plan();
+        let transaction = plan
+            .snapshot()
+            .transaction([
+                vex_core::Edit::new(CharOffset(0)..CharOffset(4), "longer"),
+                vex_core::Edit::new(CharOffset(8)..CharOffset(12), "longer"),
+            ])
+            .unwrap();
+        let prepared = plan
+            .prepare(transaction, &crate::background::Cancellation::default())
+            .unwrap();
+        assert!(editor.validate_external_edit(&prepared).is_ok());
+        assert!(editor.apply_external_edit(prepared).unwrap());
+        assert_eq!(editor.document().text(), "longer e\u{301} longer\r\n");
+        assert_eq!(editor.mode(), Mode::Insert);
+        assert_eq!(editor.selections().primary().head, CharOffset(16));
+        editor.focus_view(first);
+        assert_eq!(
+            editor.selections().primary(),
+            vex_core::Selection::new(CharOffset(6), CharOffset(0))
+        );
+        assert_eq!(editor.document().undo_depth(), 1);
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "name e\u{301} name\r\n");
+        let plan = editor.external_edit_plan();
+        let transaction = plan
+            .snapshot()
+            .transaction([vex_core::Edit::insert(CharOffset(0), "prefix")])
+            .unwrap();
+        let prepared = plan
+            .prepare(transaction, &crate::background::Cancellation::default())
+            .unwrap();
+        editor.duplicate_view();
+        assert_eq!(
+            editor.validate_external_edit(&prepared),
+            Err(crate::Error::ExternalEditChanged)
+        );
+        assert!(editor.apply_external_edit(prepared).is_err());
+        assert_eq!(editor.document().text(), "name e\u{301} name\r\n");
+    }
 
     #[test]
     fn external_replacements_preserve_view_modes_cursors_and_reject_stale_work() {

@@ -210,6 +210,22 @@ impl Transaction {
             }
         }
     }
+
+    pub(crate) fn apply_cancellable(&self, text: &mut Rope, cancelled: impl Fn() -> bool) -> bool {
+        for change in self.changes.iter().rev() {
+            if cancelled() {
+                return false;
+            }
+            let range = &change.edit.range;
+            if !range.is_empty() {
+                text.remove(range.start.0..range.end.0);
+            }
+            if !change.edit.text.is_empty() {
+                text.insert(range.start.0, &change.edit.text);
+            }
+        }
+        !cancelled()
+    }
 }
 
 #[cfg(test)]

@@ -39,7 +39,7 @@ mod selection;
 pub mod textobject;
 mod transaction;
 
-pub use document::{ChangeExtent, Document, DocumentId, Revision, Snapshot};
+pub use document::{ChangeExtent, Document, DocumentId, PreparedChange, Revision, Snapshot};
 pub use error::Error;
 pub use modification::Modification;
 pub use position::{ByteOffset, CharOffset};

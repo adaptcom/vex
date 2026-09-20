@@ -47,7 +47,7 @@ pub use search::{
 pub use syntax::{SyntaxJob, SyntaxResult, SyntaxWorker};
 pub use vex_core::search::Direction as SearchDirection;
 pub use vex_syntax::{Highlight, HighlightSpan, IndentStyle, Indentation, Language};
-pub use views::ViewId;
+pub use views::{ExternalEditPlan, PreparedExternalEdit, ViewId};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Mode {

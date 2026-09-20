@@ -68,6 +68,129 @@ impl Snapshot {
     pub fn transaction(&self, edits: impl IntoIterator<Item = Edit>) -> Result<Transaction, Error> {
         Transaction::new(self.id, self.revision, self.text.len_chars(), edits)
     }
+
+    /// Materialize a validated change on a worker. Cancellation discards the
+    /// private result; the live document and its history are never touched.
+    pub fn prepare_change(
+        &self,
+        transaction: Transaction,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Option<PreparedChange>, Error> {
+        validate_identity(
+            self.id,
+            self.revision,
+            transaction.document_id,
+            transaction.revision,
+        )?;
+        if cancelled() {
+            return Ok(None);
+        }
+        let mut text = self.text.clone();
+        let (next, map, change) = if transaction.is_empty() {
+            (self.revision, None, ChangeExtent::default())
+        } else {
+            let next = self.revision.next()?;
+            if !transaction.apply_cancellable(&mut text, &cancelled) {
+                return Ok(None);
+            }
+            let start = transaction.edits().next().unwrap().range().start;
+            let old_end = transaction.edits().last().unwrap().range().end;
+            (
+                next,
+                Some(Arc::new(PositionMap::new(&transaction))),
+                ChangeExtent {
+                    start,
+                    old_end,
+                    new_end: CharOffset(text.len_chars() - (self.text.len_chars() - old_end.0)),
+                },
+            )
+        };
+        Ok(Some(PreparedChange {
+            id: self.id,
+            revision: self.revision,
+            next,
+            old_len: self.text.len_chars(),
+            text,
+            map,
+            change,
+            selections: transaction.selections,
+        }))
+    }
+}
+
+fn validate_identity(
+    id: DocumentId,
+    revision: Revision,
+    expected_id: DocumentId,
+    expected_revision: Revision,
+) -> Result<(), Error> {
+    if id != expected_id {
+        return Err(Error::WrongDocument);
+    }
+    if revision != expected_revision {
+        return Err(Error::StaleRevision {
+            expected: expected_revision,
+            actual: revision,
+        });
+    }
+    Ok(())
+}
+
+/// A complete text replacement prepared against one immutable revision. Text
+/// and position maps are private; applying cannot repeat or reinterpret edits.
+#[derive(Debug)]
+pub struct PreparedChange {
+    id: DocumentId,
+    revision: Revision,
+    next: Revision,
+    old_len: usize,
+    text: Rope,
+    map: Option<Arc<PositionMap>>,
+    change: ChangeExtent,
+    selections: Option<SelectionSet>,
+}
+
+impl PreparedChange {
+    pub fn document_id(&self) -> DocumentId {
+        self.id
+    }
+    pub fn revision(&self) -> Revision {
+        self.revision
+    }
+    pub fn text(&self) -> &Rope {
+        &self.text
+    }
+    pub fn is_empty(&self) -> bool {
+        self.map.is_none()
+    }
+
+    pub fn with_selections(mut self, selections: SelectionSet) -> Result<Self, Error> {
+        selections.validate(self.text.len_chars())?;
+        self.selections = Some(selections);
+        Ok(self)
+    }
+
+    /// Preserve directional ranges using the same sticky endpoint affinities as
+    /// saved bookmarks. This retains selected identifiers across replacements.
+    pub fn map_sticky_selections(
+        &self,
+        selections: &SelectionSet,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Option<SelectionSet>, Error> {
+        selections.validate(self.old_len)?;
+        let mut ranges = Vec::with_capacity(selections.ranges().len());
+        for &selection in selections.ranges() {
+            if cancelled() {
+                return Ok(None);
+            }
+            ranges.push(
+                self.map
+                    .as_ref()
+                    .map_or(selection, |map| map.sticky_selection(selection, false)),
+            );
+        }
+        Ok(Some(SelectionSet::new(ranges, selections.primary_index())?))
+    }
 }
 
 /// Conservative scalar extent of one revision's changes, including grouped
@@ -246,6 +369,54 @@ impl Document {
         selections: &mut SelectionSet,
     ) -> Result<bool, Error> {
         self.apply_with_history(transaction, selections, false)
+    }
+
+    /// Preflight a worker result. A caller can validate every document in a
+    /// workspace batch before committing any of them on the owning thread.
+    pub fn validate_prepared_change(&self, prepared: &PreparedChange) -> Result<(), Error> {
+        validate_identity(self.id, self.revision, prepared.id, prepared.revision)
+    }
+
+    /// Install worker-prepared text as one undo step, retaining ordinary change
+    /// maps and bookmark history. No edit text is inserted or rescanned here.
+    pub fn apply_prepared_change(
+        &mut self,
+        prepared: PreparedChange,
+        selections: &mut SelectionSet,
+    ) -> Result<bool, Error> {
+        self.validate_prepared_change(&prepared)?;
+        selections.validate(self.text.len_chars())?;
+        let after_selections = match prepared.selections {
+            Some(after) => after,
+            None => match &prepared.map {
+                Some(map) => map.selections(selections, false)?,
+                None => selections.clone(),
+            },
+        };
+        let Some(map) = prepared.map else {
+            self.finish_undo_group();
+            *selections = after_selections;
+            return Ok(false);
+        };
+        let before = State {
+            text: self.text.clone(),
+            selections: selections.clone(),
+        };
+        let after = State {
+            text: prepared.text.clone(),
+            selections: after_selections.clone(),
+        };
+        self.history
+            .record(before, after, prepared.change, map.clone(), false);
+        let maps = PositionMaps::Single(map);
+        self.journal.record(prepared.next, &maps, false);
+        self.maps = Some(maps);
+        self.reverse_maps = false;
+        self.change = prepared.change;
+        self.text = prepared.text;
+        self.revision = prepared.next;
+        *selections = after_selections;
+        Ok(true)
     }
 
     /// Apply edits to the open undo group, starting one if needed. A group stores
@@ -442,6 +613,85 @@ mod tests {
     fn type_text(document: &mut Document, selections: &mut SelectionSet, text: &str) {
         let transaction = document.replace_selections(selections, text).unwrap();
         document.apply_grouped(transaction, selections).unwrap();
+    }
+
+    #[test]
+    fn prepared_changes_reject_stale_work_preserve_undo_maps_and_cancel_without_mutation() {
+        let mut document = Document::from("one 🦀 two\n");
+        let original = document.snapshot();
+        let mut selections = SelectionSet::single(range(9, 6));
+        let bookmark = document.bookmark();
+        let edits = [
+            Edit::insert(CharOffset(0), "prefix\n"),
+            Edit::new(CharOffset(6)..CharOffset(9), "three"),
+        ];
+        let transaction = document.transaction(edits.clone()).unwrap();
+        let mut change = original
+            .prepare_change(transaction, || false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(change.text(), "prefix\none 🦀 three\n");
+        let mapped = change
+            .map_sticky_selections(&selections, || false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(mapped.primary(), range(18, 13));
+        change = change.with_selections(mapped.clone()).unwrap();
+        document
+            .apply_prepared_change(change, &mut selections)
+            .unwrap();
+        assert_eq!(document.undo_depth(), 1);
+        assert_eq!(
+            document
+                .position_resolver()
+                .resolve(&bookmark, &SelectionSet::single(range(9, 6)), || false)
+                .unwrap(),
+            Some(mapped)
+        );
+        document.undo(&mut selections).unwrap();
+        assert_eq!(document.text(), original.text());
+        assert_eq!(selections.primary(), range(9, 6));
+        document.redo(&mut selections).unwrap();
+        assert_eq!(document.text(), "prefix\none 🦀 three\n");
+        let stale = original
+            .prepare_change(original.transaction(edits).unwrap(), || false)
+            .unwrap()
+            .unwrap();
+        assert!(
+            document
+                .apply_prepared_change(stale, &mut selections)
+                .is_err()
+        );
+        assert_eq!(document.undo_depth(), 1);
+        let snapshot = document.snapshot();
+        let calls = std::cell::Cell::new(0);
+        let cancelled = snapshot
+            .prepare_change(
+                snapshot
+                    .transaction([
+                        Edit::insert(CharOffset(0), "a"),
+                        Edit::insert(CharOffset(5), "b"),
+                    ])
+                    .unwrap(),
+                || {
+                    calls.set(calls.get() + 1);
+                    calls.get() == 3
+                },
+            )
+            .unwrap();
+        assert!(cancelled.is_none());
+        assert!(snapshot.text().is_instance(document.text()));
+        let empty = snapshot
+            .prepare_change(snapshot.transaction([]).unwrap(), || false)
+            .unwrap()
+            .unwrap();
+        assert!(empty.is_empty());
+        assert!(
+            !document
+                .apply_prepared_change(empty, &mut selections)
+                .unwrap()
+        );
+        assert_eq!(document.revision(), snapshot.revision());
     }
 
     #[test]
