@@ -26,6 +26,8 @@ pub struct WorkspaceDocument {
 #[derive(Clone, Debug)]
 pub struct WorkspaceUpdate {
     pub epoch: u64,
+    /// Monotonic frontend capture sequence, shared with application replies.
+    pub generation: u64,
     pub documents: std::sync::Arc<[WorkspaceDocument]>,
 }
 
@@ -55,6 +57,25 @@ pub(crate) struct Workspace {
 }
 
 impl Workspace {
+    pub(crate) fn versions(&self, active: &Document, version: i32) -> Vec<SynchronizedDocument> {
+        std::iter::once(SynchronizedDocument {
+            path: active.path.clone(),
+            version,
+            document: active.snapshot.id(),
+            revision: active.snapshot.revision(),
+        })
+        .chain(
+            self.documents
+                .iter()
+                .map(|(path, doc)| SynchronizedDocument {
+                    path: path.clone(),
+                    version: doc.version,
+                    document: doc.snapshot.id(),
+                    revision: doc.snapshot.revision(),
+                }),
+        )
+        .collect()
+    }
     /// Synchronize only this server's languages inside its workspace. Each
     /// queued message is bounded by the normal document limit; capacity wakes
     /// the executor, so a slow server never causes a busy loop or unbounded queue.
@@ -105,6 +126,15 @@ impl Workspace {
             if doc.snapshot.text().len_bytes() > crate::MAX_DOCUMENT_BYTES {
                 return Err(format!(
                     "buffer exceeds the 8 MiB LSP limit: {}",
+                    doc.path.display()
+                ));
+            }
+            if self.documents.get(&doc.path).is_some_and(|current| {
+                current.snapshot.id() == doc.snapshot.id()
+                    && current.snapshot.revision() > doc.snapshot.revision()
+            }) {
+                return Err(format!(
+                    "workspace capture is out of date: {}",
                     doc.path.display()
                 ));
             }
@@ -591,6 +621,7 @@ while True:
         // authority, even if typing advances after a workspace capture.
         service.update_workspace(WorkspaceUpdate {
             epoch: 1,
+            generation: 1,
             documents: captured.into(),
         });
         let cancelled = Cancellation::default();

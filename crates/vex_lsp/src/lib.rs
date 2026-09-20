@@ -1,6 +1,10 @@
 //! Language servers over stdio, with a small futures executor and immutable editor
 //! snapshots. The UI submits coalesced state and receives typed, ordered events.
 
+mod apply;
+pub use apply::{Applied, ApplyReply};
+mod command;
+pub use command::ServerCommand;
 mod completion;
 mod executor;
 mod navigation;
@@ -102,6 +106,10 @@ pub enum RequestKind {
         name: String,
         documents: Arc<[WorkspaceDocument]>,
     },
+    ExecuteCommand {
+        command: ServerCommand,
+        documents: Arc<[WorkspaceDocument]>,
+    },
 }
 
 #[derive(Debug)]
@@ -136,6 +144,7 @@ pub enum Answer {
     Completion(Completions),
     CompletionResolved(CompletionItem),
     RenamePrepared(String),
+    CommandExecuted,
     WorkspaceEdit {
         edit: workspace_edit::WorkspaceEdit,
         versions: Vec<workspace_edit::SynchronizedDocument>,
@@ -144,6 +153,18 @@ pub enum Answer {
 
 #[derive(Debug)]
 pub enum Event {
+    ApplyEdit {
+        epoch: u64,
+        request_id: u64,
+        edit: workspace_edit::WorkspaceEdit,
+        versions: Vec<workspace_edit::SynchronizedDocument>,
+        reply: ApplyReply,
+    },
+    ApplyEditFinished {
+        epoch: u64,
+        cancellation: Cancellation,
+        result: Result<(), String>,
+    },
     Capabilities {
         epoch: u64,
         completion: Option<CompletionOptions>,
@@ -183,6 +204,9 @@ struct InboxState {
 struct Inbox(Arc<Mutex<InboxState>>);
 
 impl Inbox {
+    fn take_wire(&self) -> Option<Value> {
+        self.0.lock().unwrap().wire.pop_front()
+    }
     fn update_workspace(&self, update: WorkspaceUpdate) {
         let mut state = self.0.lock().unwrap();
         state.workspace = Some(update);
@@ -307,6 +331,8 @@ enum Input {
     Failed(String),
     Stop,
     Answer(Result<Value, String>),
+    Applied(Result<Applied, String>),
+    NextEdit,
 }
 
 /// Owns the service and all its child-process threads. Updates never block on
@@ -497,7 +523,7 @@ async fn session(
                     "resolveSupport":{"properties":["documentation","detail","additionalTextEdits"]}
                 }}
             },
-            "workspace":{"configuration":true,"workspaceEdit":{"documentChanges":true,"failureHandling":"textOnlyTransactional"},"symbol":{"symbolKind":{"valueSet":(1..=26).collect::<Vec<_>>()}}}, "window":{"workDoneProgress":false}
+            "workspace":{"configuration":true,"applyEdit":true,"workspaceEdit":{"documentChanges":true,"failureHandling":"textOnlyTransactional"},"symbol":{"symbolKind":{"valueSet":(1..=26).collect::<Vec<_>>()}}}, "window":{"workDoneProgress":false}
         }
     }), Duration::from_secs(30))?;
     let initialized = poll_fn(|cx| {
@@ -516,7 +542,7 @@ async fn session(
         {
             return Poll::Ready(Err("initialization superseded".into()));
         }
-        Pin::new(&mut initialize).poll(cx)
+        transport.poll_lifecycle_response(inbox, &mut initialize, cx)
     })
     .await?;
     drop(initialize);
@@ -539,6 +565,9 @@ async fn session(
     let mut opened = false;
     let mut pending: Option<PendingRequest> = None;
     let mut workspace = workspace::Workspace::default();
+    let mut workspace_generation = 0;
+    let mut applying: Option<PendingApply> = None;
+    let mut queued_edits = VecDeque::new();
     let result = async {
         // Initialization may be slow; use the newest snapshot before didOpen.
         let latest = {
@@ -561,6 +590,7 @@ async fn session(
         emit(Event::Capabilities { epoch, completion: CompletionOptions::from_capabilities(&capabilities) });
         emit(Event::Status { epoch, message: format!("{} ready", server.command), failed: false });
         if let Some(update) = inbox.take_workspace(epoch) {
+            workspace_generation = update.generation;
             workspace.synchronize(&transport, executor, &document, version, &root, &update.documents,
                 |cx| inbox.session_interrupted(cx, epoch)).await?;
         }
@@ -572,8 +602,14 @@ async fn session(
                 // Register the inbox waker even while waiting for a reply, so
                 // edits, cancellation, and shutdown never wait for that reply.
                 if inbox.stopped(cx) { return Poll::Ready(Input::Stop) }
+                if let Some(edit) = &mut applying {
+                    if pending.as_ref().is_none_or(|pending| pending.request.id != edit.request || pending.request.cancellation.is_cancelled()) {
+                        edit.response.cancellation().cancel();
+                    }
+                    if let Poll::Ready(result) = Pin::new(&mut edit.response).poll(cx) { return Poll::Ready(Input::Applied(result)) }
+                } else if !queued_edits.is_empty() { return Poll::Ready(Input::NextEdit) }
                 if let Some(update) = inbox.take_workspace(epoch) { return Poll::Ready(Input::Workspace(update)) }
-                if let Some(PendingRequest { request, response, .. }) = &mut pending {
+                if applying.is_none() && let Some(PendingRequest { request, response, .. }) = &mut pending {
                     if request.cancellation.is_cancelled() { return Poll::Ready(Input::Answer(Err("cancelled".into()))) }
                     if let Poll::Ready(answer) = Pin::new(response).poll(cx) { return Poll::Ready(Input::Answer(answer)) }
                 }
@@ -582,13 +618,65 @@ async fn session(
             match input {
                 Input::Stop => return Ok(None),
                 Input::Failed(error) => return Err(error),
+                Input::NextEdit => {
+                    let (request, value) = queued_edits.pop_front().unwrap();
+                    applying = start_server_edit(&transport, executor, inbox, &document, &workspace, version, pending.as_mut(), request, value, emit).await?;
+                }
+                Input::Applied(result) => {
+                    let edit = applying.take().unwrap();
+                    let cancellation = edit.response.cancellation();
+                    let result = match result {
+                        Ok(applied) => {
+                            // Text has already been installed: synchronization failure
+                            // ends this session instead of falsely reporting applied:false.
+                            if applied.document.epoch != epoch || applied.workspace.epoch != epoch || applied.document.path != document.path
+                                || applied.document.language != document.language || applied.document.snapshot.id() != document.snapshot.id()
+                                || applied.document.snapshot.revision() < document.snapshot.revision() {
+                                return Err("invalid workspace application acknowledgement".into());
+                            }
+                            check_size(&applied.document)?;
+                            let mut synced = document.snapshot.clone();
+                            synchronize(&transport, executor, inbox, &uri, &mut version, &mut synced, &applied.document.snapshot).await?;
+                            if document.snapshot.revision() != applied.document.snapshot.revision() {
+                                positions = protocol::Positions::new(applied.document.snapshot.text());
+                            }
+                            document = applied.document;
+                            if applied.workspace.generation > workspace_generation {
+                                workspace_generation = applied.workspace.generation;
+                                workspace.synchronize(&transport, executor, &document, version, &root, &applied.workspace.documents,
+                                    |cx| inbox.session_interrupted(cx, epoch)).await?;
+                            }
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = &result && let Some(pending) = &mut pending {
+                        pending.edit_failure.get_or_insert_with(|| error.clone());
+                    }
+                    transport.reply_edit(executor, inbox, edit.wire_id, &result).await?;
+                    if let Some(pending) = &mut pending { pending.response.resume_timeout(); }
+                    emit(Event::ApplyEditFinished { epoch, cancellation, result });
+                }
                 Input::Workspace(update) => {
+                    if update.generation <= workspace_generation { continue }
+                    workspace_generation = update.generation;
                     workspace.synchronize(&transport, executor, &document, version, &root, &update.documents,
                         |cx| inbox.session_interrupted(cx, epoch)).await?;
                 }
                 Input::Update(update) => {
                     if update.document.as_ref().map(|doc| doc.epoch) != Some(epoch) { return Ok(Some(update)) }
                     let newer = update.document.unwrap();
+                    // An application acknowledgement can overtake an older
+                    // coalesced UI update. Never send that older text back over
+                    // the just-applied workspace edit (undo has a newer revision).
+                    if newer.snapshot.id() == document.snapshot.id()
+                        && newer.snapshot.revision() < document.snapshot.revision() {
+                        if let Some(request) = update.request {
+                            emit(Event::Answer { epoch, revision:newer.snapshot.revision(), id:request.id,
+                                result:Err("request snapshot was superseded by a workspace edit".into()) });
+                        }
+                        continue;
+                    }
                     check_size(&newer)?;
                     let mut synced = document.snapshot.clone();
                     if newer.saved != document.saved
@@ -603,7 +691,10 @@ async fn session(
                     }
                     synchronize(&transport, executor, inbox, &uri, &mut version, &mut synced, &newer.snapshot).await?;
                     if newer.snapshot.revision() != document.snapshot.revision() {
-                        pending.take();
+                        if pending.as_ref().is_some_and(|pending| !matches!(pending.request.kind, RequestKind::ExecuteCommand { .. })) {
+                            pending.take();
+                            transport.enable_edits(false);
+                        }
                         positions = protocol::Positions::new(newer.snapshot.text());
                     }
                     document = newer;
@@ -612,7 +703,8 @@ async fn session(
                     }
                 }
                 Input::Answer(result) => {
-                    let PendingRequest { request, versions, .. } = pending.take().unwrap();
+                    let PendingRequest { request, versions, edit_failure, .. } = pending.take().unwrap();
+                    transport.enable_edits(false);
                     if !request.cancellation.is_cancelled() {
                         let result = result.and_then(|value| match request.kind {
                             RequestKind::Hover => Ok(Answer::Hover(protocol::hover_text(&value))),
@@ -624,11 +716,25 @@ async fn session(
                             RequestKind::ResolveCompletion(item) => completion::resolve(&item, value, document.snapshot.text(), request.position).map(Answer::CompletionResolved),
                             RequestKind::PrepareRename { selection, .. } => rename::placeholder(&value, &document.snapshot, selection, request.position, &positions, &request.cancellation).map(Answer::RenamePrepared),
                             RequestKind::Rename { .. } => workspace_edit::parse(&value, &request.cancellation).map(|edit| Answer::WorkspaceEdit { edit, versions }),
+                            RequestKind::ExecuteCommand { .. } => edit_failure.map_or(Ok(Answer::CommandExecuted), |error| Err(format!("workspace edit failed: {error}"))),
                         });
                         emit(Event::Answer { epoch, revision: document.snapshot.revision(), id: request.id, result });
                     }
                 }
                 Input::Wire(value) => {
+                    if transport.receive_response(&value) { continue }
+                    if value["method"] == "workspace/applyEdit" {
+                        let request = pending.as_ref().map_or(0, |pending| pending.request.id);
+                        if applying.is_some() {
+                            if queued_edits.len() == 8 {
+                                if let Some(pending) = &mut pending { pending.edit_failure = Some("too many pending workspace edit requests".into()); }
+                                transport.reply_edit(executor, inbox, value["id"].clone(), &Err("too many pending workspace edit requests".into())).await?;
+                            } else { queued_edits.push_back((request, value)); }
+                        } else {
+                            applying = start_server_edit(&transport, executor, inbox, &document, &workspace, version, pending.as_mut(), request, value, emit).await?;
+                        }
+                        continue;
+                    }
                     if value["method"] == "textDocument/publishDiagnostics" {
                         let params = &value["params"];
                         if params["uri"] != uri { continue }
@@ -652,9 +758,11 @@ async fn session(
             }
         }
     }.await;
+    applying.take();
     pending.take();
+    transport.enable_edits(false);
     transport
-        .shutdown(executor, opened.then_some(uri.as_str()))
+        .shutdown(executor, inbox, opened.then_some(uri.as_str()))
         .await;
     result.map_err(|error| transport.error_context(&error))
 }
@@ -695,6 +803,68 @@ struct PendingRequest {
     request: Request,
     response: transport::Response,
     versions: Vec<workspace_edit::SynchronizedDocument>,
+    edit_failure: Option<String>,
+}
+
+struct PendingApply {
+    wire_id: Value,
+    request: u64,
+    response: apply::AwaitApply,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_server_edit(
+    transport: &transport::Transport,
+    executor: &Executor,
+    inbox: &Inbox,
+    document: &Document,
+    workspace: &workspace::Workspace,
+    version: i32,
+    pending: Option<&mut PendingRequest>,
+    request_id: u64,
+    value: Value,
+    emit: &impl Fn(Event),
+) -> Result<Option<PendingApply>, String> {
+    let parsed = (|| {
+        let pending = pending
+            .as_ref()
+            .filter(|pending| {
+                pending.request.id == request_id
+                    && !pending.request.cancellation.is_cancelled()
+                    && matches!(pending.request.kind, RequestKind::ExecuteCommand { .. })
+            })
+            .ok_or("workspace edits require an active server command")?;
+        let value = value["params"]
+            .get("edit")
+            .ok_or("workspace/applyEdit is missing its edit")?;
+        workspace_edit::parse(value, &pending.request.cancellation)
+    })();
+    match parsed {
+        Ok(edit) => {
+            let (reply, response) = apply::channel(executor);
+            emit(Event::ApplyEdit {
+                epoch: document.epoch,
+                request_id,
+                edit,
+                versions: workspace.versions(document, version),
+                reply,
+            });
+            Ok(Some(PendingApply {
+                wire_id: value["id"].clone(),
+                request: request_id,
+                response,
+            }))
+        }
+        Err(error) => {
+            if let Some(pending) = pending.filter(|pending| pending.request.id == request_id) {
+                pending.edit_failure.get_or_insert_with(|| error.clone());
+            }
+            transport
+                .reply_edit(executor, inbox, value["id"].clone(), &Err(error))
+                .await?;
+            Ok(None)
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -713,6 +883,7 @@ async fn start_request(
     emit: &impl Fn(Event),
 ) {
     pending.take();
+    transport.enable_edits(false);
     if request.cancellation.is_cancelled() {
         return;
     }
@@ -729,12 +900,20 @@ async fn start_request(
         RequestKind::ResolveCompletion(_) => ("completionItem/resolve", "completionProvider"),
         RequestKind::PrepareRename { .. } => ("textDocument/prepareRename", "renameProvider"),
         RequestKind::Rename { .. } => ("textDocument/rename", "renameProvider"),
+        RequestKind::ExecuteCommand { .. } => {
+            ("workspace/executeCommand", "executeCommandProvider")
+        }
     };
     let mut versions = Vec::new();
     let result = async {
         if capabilities[capability] != true && !capabilities[capability].is_object() {
             return Err("language server does not support this request".into());
         }
+        let command_params = if let RequestKind::ExecuteCommand { command, .. } = &request.kind {
+            Some(command.params(capabilities)?)
+        } else {
+            None
+        };
         if let RequestKind::Rename { name, .. } = &request.kind {
             rename::name(name)?;
             if name.is_empty() {
@@ -742,7 +921,8 @@ async fn start_request(
             }
         }
         if let RequestKind::PrepareRename { documents, .. }
-        | RequestKind::Rename { documents, .. } = &request.kind
+        | RequestKind::Rename { documents, .. }
+        | RequestKind::ExecuteCommand { documents, .. } = &request.kind
         {
             workspace::validate_origin(document, documents)?;
             versions = workspace
@@ -778,6 +958,7 @@ async fn start_request(
             RequestKind::DocumentSymbols => json!({"textDocument":{"uri":uri}}),
             RequestKind::WorkspaceSymbols(query) => json!({"query":query}),
             RequestKind::ResolveCompletion(item) => item.raw.clone(),
+            RequestKind::ExecuteCommand { .. } => command_params.unwrap(),
             kind => {
                 let position = position(document.snapshot.text(), request.position)
                     .ok_or("invalid request position")?;
@@ -800,6 +981,7 @@ async fn start_request(
                 params
             }
         };
+        transport.enable_edits(matches!(request.kind, RequestKind::ExecuteCommand { .. }));
         transport
             .request_wait(executor, method, params, |cx| {
                 inbox.interrupted(cx, document, &request.cancellation)
@@ -814,15 +996,19 @@ async fn start_request(
                 request,
                 response,
                 versions,
+                edit_failure: None,
             })
         }
         Ok(None) => {}
-        Err(message) => emit(Event::Answer {
-            epoch: document.epoch,
-            revision: document.snapshot.revision(),
-            id: request.id,
-            result: Err(message),
-        }),
+        Err(message) => {
+            transport.enable_edits(false);
+            emit(Event::Answer {
+                epoch: document.epoch,
+                revision: document.snapshot.revision(),
+                id: request.id,
+                result: Err(message),
+            });
+        }
     }
 }
 
@@ -1514,8 +1700,11 @@ while True:
                     result: Ok(Answer::Locations(Navigation::Definition, locations)),
                     ..
                 }) => {
-                    definition |=
-                        locations.items[0].path == path && locations.items[0].range.start.line == 0
+                    // The server can return no destinations while indexing.
+                    definition |= locations
+                        .items
+                        .iter()
+                        .any(|location| location.path == path && location.range.start.line == 0);
                 }
                 _ => {}
             }

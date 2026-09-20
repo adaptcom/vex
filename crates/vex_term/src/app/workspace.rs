@@ -32,6 +32,15 @@ pub struct Context {
 }
 
 impl Context {
+    pub(super) fn lsp_documents(&self) -> Arc<[vex_lsp::WorkspaceDocument]> {
+        self.documents()
+            .map(|(path, snapshot, language)| vex_lsp::WorkspaceDocument {
+                path: path.into(),
+                snapshot: snapshot.clone(),
+                language,
+            })
+            .collect()
+    }
     /// Shared named snapshots for synchronization before a workspace request.
     pub fn documents(
         &self,
@@ -56,15 +65,27 @@ impl Context {
 
 #[derive(Default)]
 pub(super) struct State {
-    pending: Option<(Context, Cancellation)>,
+    pending: Option<Pending>,
     job: Option<Job>,
     pub(super) synchronize: bool,
 }
 
+struct Pending {
+    context: Context,
+    cancellation: Cancellation,
+    server: Option<ServerEdit>,
+}
+
+struct ServerEdit {
+    epoch: u64,
+    request: u64,
+    reply: vex_lsp::ApplyReply,
+}
+
 impl Drop for State {
     fn drop(&mut self) {
-        if let Some((_, token)) = &self.pending {
-            token.cancel();
+        if let Some(pending) = &self.pending {
+            pending.cancellation.cancel();
         }
     }
 }
@@ -212,6 +233,16 @@ impl App {
         edit: WorkspaceEdit,
         versions: Vec<SynchronizedDocument>,
     ) -> io::Result<()> {
+        self.queue_workspace_edit(context, edit, versions, None)
+    }
+
+    fn queue_workspace_edit(
+        &mut self,
+        context: Context,
+        edit: WorkspaceEdit,
+        versions: Vec<SynchronizedDocument>,
+        server: Option<ServerEdit>,
+    ) -> io::Result<()> {
         if !context.current(self) {
             return Err(io::Error::other("workspace edit origin changed"));
         }
@@ -223,8 +254,14 @@ impl App {
         self.close_picker();
         self.prompt = None;
         self.cancel_workspace_edit();
-        let cancellation = Cancellation::default();
-        self.workspace.pending = Some((context.clone(), cancellation.clone()));
+        let cancellation = server
+            .as_ref()
+            .map_or_else(Cancellation::default, |server| server.reply.cancellation());
+        self.workspace.pending = Some(Pending {
+            context: context.clone(),
+            cancellation: cancellation.clone(),
+            server,
+        });
         self.workspace.job = Some(Job {
             context,
             edit,
@@ -236,8 +273,11 @@ impl App {
     }
 
     pub(super) fn cancel_workspace_edit(&mut self) {
-        if let Some((_, token)) = self.workspace.pending.take() {
-            token.cancel();
+        if let Some(pending) = self.workspace.pending.take() {
+            pending.cancellation.cancel();
+            if pending.server.is_some() {
+                self.cancel_language_request();
+            }
         }
         self.workspace.job = None;
     }
@@ -249,26 +289,104 @@ impl App {
         self.workspace.job.take()
     }
 
+    pub(super) fn receive_server_edit(
+        &mut self,
+        epoch: u64,
+        request: u64,
+        edit: WorkspaceEdit,
+        versions: Vec<SynchronizedDocument>,
+        reply: vex_lsp::ApplyReply,
+    ) -> bool {
+        if !self.command_current(epoch, request) {
+            reply.finish(Err("language server command is no longer current".into()));
+            return false;
+        }
+        self.command_waiting(false);
+        let result = self.queue_workspace_edit(
+            self.workspace_edit_context(),
+            edit,
+            versions,
+            Some(ServerEdit {
+                epoch,
+                request,
+                reply,
+            }),
+        );
+        self.command_waiting(true);
+        if let Err(error) = result {
+            self.fail(error);
+        }
+        true
+    }
+
+    pub(super) fn finish_server_edit(
+        &mut self,
+        epoch: u64,
+        cancellation: Cancellation,
+        result: std::result::Result<(), String>,
+    ) -> bool {
+        if !self.workspace.pending.as_ref().is_some_and(|pending| {
+            pending
+                .server
+                .as_ref()
+                .is_some_and(|server| server.epoch == epoch)
+                && pending.cancellation.same_request(&cancellation)
+        }) {
+            return false;
+        }
+        self.cancel_workspace_edit();
+        if let Err(error) = result {
+            self.fail(error);
+        }
+        true
+    }
+
+    pub(super) fn cancel_server_edit(&mut self) {
+        if self
+            .workspace
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.server.is_some())
+        {
+            self.cancel_workspace_edit();
+        }
+    }
+
     pub(crate) fn handle_workspace_edit(&mut self, result: Result) -> bool {
-        let Some((_, token)) = &self.workspace.pending else {
+        let Some(pending) = &self.workspace.pending else {
             return false;
         };
-        if !token.same_request(&result.cancellation) {
+        if !pending.cancellation.same_request(&result.cancellation) {
             return false;
         }
-        let (context, token) = self.workspace.pending.take().unwrap();
-        if token.is_cancelled() || !context.current(self) {
-            token.cancel();
+        let Pending {
+            context,
+            cancellation,
+            mut server,
+        } = self.workspace.pending.take().unwrap();
+        if cancellation.is_cancelled() || !context.current(self) {
+            cancellation.cancel();
+            if server.is_some() {
+                self.cancel_language_request();
+            }
             return true;
         }
-        token.cancel();
-        match result
-            .changes
-            .and_then(|changes| self.commit_workspace_edit(changes))
-        {
+        let outcome = result.changes.and_then(|changes| {
+            if let Some(server) = &mut server
+                && (!self.command_current(server.epoch, server.request) || !server.reply.claim())
+            {
+                return Err(io::Error::other(
+                    "language server edit is no longer current",
+                ));
+            }
+            self.commit_workspace_edit(changes)
+        });
+        match outcome {
             Ok(count) => {
-                self.workspace.synchronize |= count > 0;
-                self.dismiss_language_help();
+                if server.is_none() {
+                    self.workspace.synchronize |= count > 0;
+                    self.dismiss_language_help();
+                }
                 self.invalidate_completion();
                 self.refresh_git();
                 self.refresh_status();
@@ -278,9 +396,19 @@ impl App {
                 } else {
                     format!("updated {count} buffer(s) · changes are unsaved")
                 };
+                if let Some(server) = server {
+                    let applied = self.acknowledge_command_edit();
+                    server.reply.finish(Ok(applied));
+                }
             }
-            Err(error) => self.fail(error),
+            Err(error) => {
+                if let Some(server) = server {
+                    server.reply.finish(Err(error.to_string()));
+                }
+                self.fail(error);
+            }
         }
+        cancellation.cancel();
         true
     }
 }
@@ -441,5 +569,316 @@ mod tests {
         assert!(!app.handle_workspace_edit(result));
         assert_eq!(app.editor.document().text(), "foo\n");
         assert_eq!(app.editor.selections().primary().head, CharOffset(1));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod server_tests {
+    use super::*;
+    use crossterm::event::{Event as TerminalEvent, KeyCode, KeyEvent, KeyModifiers};
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+    use vex_lsp::{Answer, Event, Request, RequestKind, ServerCommand, Service, Update};
+
+    fn server(directory: &std::path::Path) -> PathBuf {
+        let path = directory.join("commands.py");
+        fs::write(&path,r#"#!/usr/bin/env python3
+import json, sys, os
+log = open(os.path.join(os.path.dirname(__file__), 'events.log'), 'w', buffering=1)
+documents = {}
+held = None
+requests = {}
+def send(value):
+    value['jsonrpc'] = '2.0'
+    body = json.dumps(value).encode()
+    sys.stdout.buffer.write(('Content-Length: %d\r\n\r\n' % len(body)).encode() + body)
+    sys.stdout.buffer.flush()
+def edits(name, advance=0):
+    changes = []
+    for uri, doc in documents.items():
+        at = doc['text'].index('foo'); prefix = doc['text'][:at]
+        line = prefix.count('\n'); column = len(prefix.split('\n')[-1].encode('utf-16-le')) // 2
+        changes.append({'textDocument':{'uri':uri,'version':doc['version'] + advance},'edits':[{'range':{'start':{'line':line,'character':column},'end':{'line':line,'character':column+3}},'newText':name}]})
+    return {'documentChanges':changes}
+def ask(id, edit, expected):
+    requests[id] = expected
+    send({'id':id,'method':'workspace/applyEdit','params':{'edit':edit}})
+while True:
+    length = None
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line: sys.exit(0)
+        if line == b'\r\n': break
+        if line.lower().startswith(b'content-length:'): length = int(line.split(b':')[1])
+    value = json.loads(sys.stdin.buffer.read(length))
+    method = value.get('method'); params = value.get('params', {})
+    if method == 'initialize':
+        assert params['capabilities']['workspace']['applyEdit']
+        send({'id':value['id'],'result':{'capabilities':{'textDocumentSync':2,'hoverProvider':True,'executeCommandProvider':{'commands':['test.early','test.multiple','test.bad','test.resource','test.hold']}}}})
+    elif method == 'textDocument/didOpen':
+        doc = params['textDocument']; documents[doc['uri']] = doc
+    elif method == 'textDocument/didChange':
+        doc = documents[params['textDocument']['uri']]
+        assert params['textDocument']['version'] == doc['version'] + 1
+        doc['version'] += 1; doc['text'] = params['contentChanges'][0]['text']
+        log.write('CHANGE ' + str(doc['version']) + '\n')
+    elif method == 'textDocument/didClose': documents.pop(params['textDocument']['uri'])
+    elif method == 'textDocument/hover': send({'id':value['id'],'result':{'contents':'|'.join(doc['text'] for doc in documents.values())}})
+    elif method == 'workspace/executeCommand':
+        command = params['command']; assert params['arguments'] == []
+        if command == 'test.resource': ask('apply-1', {'documentChanges':[{'kind':'delete','uri':next(iter(documents))}]}, None)
+        elif command == 'test.bad': ask('apply-1', edits('bar',99), None)
+        elif command == 'test.hold':
+            held = value['id']; ask('apply-1',edits('bar'),None); continue
+        else:
+            ask('apply-1',edits('bar'),'bar')
+            if command == 'test.multiple': ask(92,edits('baz',1),'baz')
+        # Deliberately complete before the client acknowledges its edit(s).
+        send({'id':value['id'],'result':None})
+    elif method == 'shutdown': send({'id':value['id'],'result':None})
+    elif method == 'exit': break
+    elif method is None and value.get('id') in requests:
+        expected = requests.pop(value['id'])
+        if expected is None:
+            assert value['result']['applied'] is False
+            assert value['result']['failureReason']
+            log.write('REJECTED\n')
+        else:
+            assert value['result']['applied'] is True
+            # Every didChange must have reached the server before applied:true.
+            assert all(expected in doc['text'] and 'foo' not in doc['text'] for doc in documents.values()), documents
+            log.write('APPLIED ' + expected + '\n')
+        if held is not None:
+            send({'id':held,'result':None}); held = None
+"#).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    }
+
+    fn fixture() -> (
+        tempfile::TempDir,
+        App,
+        Service,
+        mpsc::Receiver<Event>,
+        [PathBuf; 2],
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let paths = [root.join("main.rs"), root.join("hidden.rs")];
+        for path in &paths {
+            fs::write(path, "foo\n").unwrap();
+        }
+        let mut app = App::open(Some(&paths[0]), (100, 24)).unwrap();
+        app.open_window_file(&paths[1]).unwrap();
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.editor.insert_text("// unsaved\n").unwrap();
+        app.editor.execute("normal_mode", 1).unwrap();
+        app.open_window_file(&paths[0]).unwrap();
+        app.enable_lsp();
+        let (sender, receiver) = mpsc::channel();
+        let service = Service::with_program(server(&root), move |event| {
+            let _ = sender.send(event);
+        })
+        .unwrap();
+        flush(&mut app, &service);
+        (directory, app, service, receiver, paths)
+    }
+
+    fn flush(app: &mut App, service: &Service) {
+        if let Some(update) = app.take_lsp_update() {
+            service.update(update);
+        }
+        if let Some(update) = app.take_lsp_workspace_update() {
+            service.update_workspace(update);
+        }
+    }
+
+    fn receive(receiver: &mpsc::Receiver<Event>) -> Event {
+        let event = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("missing language event");
+        assert!(
+            !matches!(&event, Event::Status { failed: true, .. }),
+            "{event:?}"
+        );
+        event
+    }
+
+    fn invoke(app: &mut App, service: &Service, command: &str) -> Update {
+        app.execute_lsp_command(ServerCommand {
+            name: command.into(),
+            arguments: Arc::default(),
+        })
+        .unwrap();
+        let update = app.take_lsp_update().unwrap();
+        let copy = Update {
+            document: update.document.clone(),
+            request: None,
+        };
+        service.update(update);
+        assert!(app.input_waiting());
+        copy
+    }
+
+    fn complete(app: &mut App, service: &Service, receiver: &mpsc::Receiver<Event>) -> usize {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut edits = 0;
+        while app.input_waiting() {
+            assert!(Instant::now() < deadline, "command did not finish");
+            if let Some(job) = app.take_workspace_edit() {
+                let result = job.run().unwrap();
+                assert!(app.handle_workspace_edit(result));
+                edits += 1;
+                // A command must remain live across its own revision changes.
+                assert!(app.input_waiting());
+                flush(app, service);
+            } else {
+                let event = receive(receiver);
+                if matches!(
+                    &event,
+                    Event::Answer {
+                        result: Ok(Answer::CommandExecuted),
+                        ..
+                    }
+                ) {
+                    assert!(app.take_workspace_edit().is_none());
+                }
+                app.handle_lsp_event(event);
+                flush(app, service);
+            }
+        }
+        edits
+    }
+
+    #[test]
+    fn server_commands_apply_serial_batches_before_early_completion_sync_before_ack_and_preserve_undo()
+     {
+        let (directory, mut app, service, receiver, paths) = fixture();
+        app.workspace.synchronize = true;
+        let old_workspace = app.take_lsp_workspace_update().unwrap();
+        service.update_workspace(old_workspace.clone());
+        let old = invoke(&mut app, &service, "test.multiple");
+        assert_eq!(complete(&mut app, &service, &receiver), 2);
+        assert!(!app.error, "{}", app.message);
+        assert_eq!(app.editor.document().text(), "baz\n");
+        assert_eq!(
+            app.snapshot_for_path(&paths[1]).unwrap().text(),
+            "// unsaved\nbaz\n"
+        );
+        assert!(app.take_lsp_workspace_update().is_none()); // The reply carried these snapshots.
+        // Older queued metadata cannot roll active or hidden text back after an ack.
+        service.update_workspace(old_workspace);
+        let document = old.document.unwrap();
+        service.update(Update {
+            document: Some(document),
+            request: Some(Request {
+                id: 999,
+                kind: RequestKind::Hover,
+                position: vex_core::CharOffset(1),
+                cancellation: Cancellation::default(),
+            }),
+        });
+        loop {
+            if let Event::Answer {
+                id: 999, result, ..
+            } = receive(&receiver)
+            {
+                assert!(result.is_err());
+                break;
+            }
+        }
+        app.editor.execute("hover", 1).unwrap();
+        let update = app.take_lsp_update().unwrap();
+        let id = update.request.as_ref().unwrap().id;
+        service.update(update);
+        loop {
+            let event = receive(&receiver);
+            if let Event::Answer {
+                id: found,
+                result: Ok(Answer::Hover(text)),
+                ..
+            } = &event
+                && *found == id
+            {
+                assert!(text.contains("baz") && !text.contains("foo"));
+                app.handle_lsp_event(event);
+                break;
+            }
+            app.handle_lsp_event(event);
+        }
+        drop(service);
+        let log = fs::read_to_string(directory.path().join("events.log")).unwrap();
+        assert!(
+            log.contains("APPLIED bar\n") && log.contains("APPLIED baz\n"),
+            "{log}"
+        );
+        for path in &paths {
+            assert_eq!(fs::read_to_string(path).unwrap(), "foo\n");
+        }
+        app.editor.execute("undo", 1).unwrap();
+        assert_eq!(app.editor.document().text(), "bar\n");
+        app.editor.execute("undo", 1).unwrap();
+        assert_eq!(app.editor.document().text(), "foo\n");
+        app.open_window_file(&paths[1]).unwrap();
+        app.editor.execute("undo", 2).unwrap();
+        assert_eq!(app.editor.document().text(), "// unsaved\nfoo\n");
+    }
+
+    #[test]
+    fn rejected_server_batches_report_failure_and_cancellation_rejects_without_editing() {
+        for command in ["test.bad", "test.resource", "test.hold"] {
+            let (directory, mut app, service, receiver, paths) = fixture();
+            invoke(&mut app, &service, command);
+            if command == "test.hold" {
+                loop {
+                    let event = receive(&receiver);
+                    let edit = matches!(&event, Event::ApplyEdit { .. });
+                    app.handle_lsp_event(event);
+                    if edit {
+                        break;
+                    }
+                }
+                let job = app.take_workspace_edit().unwrap();
+                app.handle(TerminalEvent::Key(KeyEvent::new(
+                    KeyCode::Esc,
+                    KeyModifiers::NONE,
+                )));
+                assert!(!app.input_waiting());
+                assert!(job.run().is_none());
+                flush(&mut app, &service);
+                // Await the acknowledgement, without accepting a cancelled command reply.
+                loop {
+                    if matches!(
+                        receive(&receiver),
+                        Event::ApplyEditFinished { result: Err(_), .. }
+                    ) {
+                        break;
+                    }
+                }
+            } else {
+                complete(&mut app, &service, &receiver);
+                assert!(app.error, "{}", app.message);
+                assert!(
+                    app.message.contains("workspace edit failed"),
+                    "{}",
+                    app.message
+                );
+            }
+            drop(service);
+            assert_eq!(app.editor.document().text(), "foo\n");
+            assert_eq!(
+                app.snapshot_for_path(&paths[1]).unwrap().text(),
+                "// unsaved\nfoo\n"
+            );
+            assert!(
+                fs::read_to_string(directory.path().join("events.log"))
+                    .unwrap()
+                    .contains("REJECTED")
+            );
+        }
     }
 }

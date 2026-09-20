@@ -272,7 +272,8 @@ diagnostic traffic cannot starve editing. Server failures are displayed in the
 editor instead of terminating the terminal session.
 
 Initialization has a 30-second deadline; interactive requests have
-10-second deadlines. Dropped requests send `$/cancelRequest`. Closing attempts
+10-second deadlines. Commands pause that response deadline while their workspace
+edit is prepared and applied, then resume it after acknowledgement. Dropped requests send `$/cancelRequest`. Closing attempts
 `didClose`, `shutdown` (300 ms), and `exit`, with a 200 ms exit grace period, then
 terminates and reaps the server and joins its I/O threads. On Unix the server has
 its own process group so cleanup can also stop descendants that retain pipe
@@ -284,7 +285,7 @@ One server session is active at a time; changing file identity, Save As, or
 explicit restart starts a new session. Documents above 8 MiB stay editable but
 do not start language services. Frames are limited to 32 MiB, headers to 8 KiB,
 outgoing client messages to eight queued values and server-request replies to 32,
-incoming service notifications and UI
+incoming service packets and UI
 LSP events to 128 each, diagnostics to 512, and retained stderr to 8 KiB. An
 overloaded transport reports an error and can be restarted.
 
@@ -302,6 +303,12 @@ symbol-jump paths still load synchronously.
 Signature help, formatting, code actions,
 semantic tokens, multi-buffer server reuse, and configurable server settings are
 future work.
+
+The command/application backend for code actions is available through
+`App::execute_lsp_command`: advertised server commands can request validated edits
+across synchronized buffers. Ordered requests and replies preserve command
+completion, cancellation, and synchronization before `applied:true`. See
+[workspace edits](workspace-edits.md) for transaction boundaries and limits.
 
 ```sh
 cargo test --workspace --locked

@@ -20,7 +20,10 @@ def main():
     args = parser.parse_args()
     binary = str(args.binary.resolve(strict=True))
     if args.server:
-        os.environ["VEX_RUST_ANALYZER"] = str(args.server.resolve(strict=True))
+        # Rustup chooses its tool from argv[0]; resolving this symlink would
+        # invoke rustup itself instead of rust-analyzer.
+        args.server.stat()
+        os.environ["VEX_RUST_ANALYZER"] = str(args.server.absolute())
     with tempfile.TemporaryDirectory(prefix="vex-lsp-pty-") as directory:
         project = Path(directory).resolve()
         (project / "Cargo.toml").write_text(

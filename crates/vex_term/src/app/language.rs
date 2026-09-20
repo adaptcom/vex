@@ -17,6 +17,8 @@ struct Pending {
     mode: Mode,
     cancellation: Cancellation,
     waiting: bool,
+    executing: bool,
+    window: u64,
 }
 
 #[derive(Default)]
@@ -27,6 +29,8 @@ pub(super) struct State {
     force: bool,
     next_request: u64,
     pending: Option<Pending>,
+    command: Option<(super::workspace::Context, vex_lsp::ServerCommand)>,
+    workspace_generation: u64,
     diagnostics: Vec<Diagnostic>,
     diagnostic_revision: Option<(DocumentId, Revision)>,
     popup: Option<String>,
@@ -57,6 +61,85 @@ impl App {
         self.language.force = true;
     }
 
+    /// Execute an explicitly selected, advertised language-server command.
+    /// Used by code actions; arguments remain protocol data, never shell input.
+    pub fn execute_lsp_command(&mut self, command: vex_lsp::ServerCommand) -> io::Result<()> {
+        if self.input_waiting() {
+            return Err(io::Error::other("another editor operation is pending"));
+        }
+        if !self.language.enabled {
+            return Err(io::Error::other("language services are not enabled"));
+        }
+        self.close_picker();
+        self.dismiss_language_help();
+        self.language.command = Some((self.workspace_edit_context(), command));
+        Ok(())
+    }
+
+    fn take_command_request(&mut self) -> Option<RequestKind> {
+        let (context, command) = self.language.command.take()?;
+        if !context.current(self) {
+            self.fail("server command origin changed");
+            return None;
+        }
+        Some(RequestKind::ExecuteCommand {
+            command,
+            documents: context.lsp_documents(),
+        })
+    }
+
+    pub(super) fn command_current(&self, epoch: u64, request: u64) -> bool {
+        self.language.epoch == epoch
+            && self.language.pending.as_ref().is_some_and(|pending| {
+                pending.id == request
+                    && pending.executing
+                    && !pending.cancellation.is_cancelled()
+                    && pending.document == self.editor.document().id()
+                    && pending.revision == self.editor.document().revision()
+                    && pending.selections == *self.editor.selections()
+                    && pending.mode == self.editor.mode()
+                    && pending.window == self.focused_window_id()
+            })
+    }
+
+    pub(super) fn command_waiting(&mut self, waiting: bool) {
+        if let Some(pending) = &mut self.language.pending {
+            pending.waiting = waiting;
+        }
+    }
+
+    pub(super) fn acknowledge_command_edit(&mut self) -> vex_lsp::Applied {
+        let pending = self
+            .language
+            .pending
+            .as_mut()
+            .expect("validated executing command");
+        pending.revision = self.editor.document().revision();
+        pending.selections = self.editor.selections().clone();
+        let mut document = self
+            .language
+            .document
+            .clone()
+            .expect("named server document");
+        document.snapshot = self.editor.document().snapshot();
+        document.saved = self.language.saved;
+        document.saved_snapshot = self
+            .language
+            .saved_snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.id() == document.snapshot.id())
+            .cloned();
+        self.language.workspace_generation += 1;
+        vex_lsp::Applied {
+            document,
+            workspace: vex_lsp::WorkspaceUpdate {
+                epoch: self.language.epoch,
+                generation: self.language.workspace_generation,
+                documents: self.lsp_workspace_documents(),
+            },
+        }
+    }
+
     /// Only workspace application schedules this full catalog capture. Normal
     /// keystrokes keep their constant-size active-document update path.
     pub(crate) fn take_lsp_workspace_update(&mut self) -> Option<vex_lsp::WorkspaceUpdate> {
@@ -64,8 +147,10 @@ impl App {
             return None;
         }
         let epoch = self.language.document.as_ref()?.epoch;
+        self.language.workspace_generation += 1;
         Some(vex_lsp::WorkspaceUpdate {
             epoch,
+            generation: self.language.workspace_generation,
             documents: self.lsp_workspace_documents(),
         })
     }
@@ -86,6 +171,7 @@ impl App {
     pub(super) fn cancel_language_request(&mut self) {
         self.language.cancel();
         self.rename.clear();
+        self.language.command = None;
     }
 
     pub(super) fn restart_language_server(&mut self) {
@@ -118,6 +204,7 @@ impl App {
                 || pending.revision != self.editor.document().revision()
                 || pending.selections != *self.editor.selections()
                 || pending.mode != self.editor.mode()
+                || pending.window != self.focused_window_id()
         }) {
             self.cancel_language_request();
         }
@@ -197,7 +284,8 @@ impl App {
                 automatic: false,
             }),
             _ => self
-                .take_rename_request()
+                .take_command_request()
+                .or_else(|| self.take_rename_request())
                 .or_else(|| self.take_symbol_request(Instant::now()))
                 .map(|kind| super::completion::Request {
                     kind,
@@ -233,12 +321,15 @@ impl App {
                     selections: self.editor.selections().clone(),
                     mode: self.editor.mode(),
                     cancellation: cancellation.clone(),
+                    executing: matches!(kind, RequestKind::ExecuteCommand { .. }),
+                    window: self.focused_window_id(),
                     waiting: matches!(
                         kind,
                         RequestKind::Navigation(_)
                             | RequestKind::DocumentHighlights
                             | RequestKind::PrepareRename { .. }
                             | RequestKind::Rename { .. }
+                            | RequestKind::ExecuteCommand { .. }
                     ),
                 });
                 request = Some(vex_lsp::Request {
@@ -266,6 +357,22 @@ impl App {
 
     pub fn handle_lsp_event(&mut self, event: Event) -> bool {
         match event {
+            Event::ApplyEdit {
+                epoch,
+                request_id,
+                edit,
+                versions,
+                reply,
+            } => {
+                return self.receive_server_edit(epoch, request_id, edit, versions, reply);
+            }
+            Event::ApplyEditFinished {
+                epoch,
+                cancellation,
+                result,
+            } => {
+                return self.finish_server_edit(epoch, cancellation, result);
+            }
             Event::Capabilities { epoch, completion } => {
                 if epoch != self.language.epoch || self.language.document.is_none() {
                     return false;
@@ -288,6 +395,7 @@ impl App {
                     "starting"
                 };
                 if failed {
+                    self.cancel_server_edit();
                     self.language.completion = None;
                     self.language.cancel();
                     self.fail_language_request(message);
@@ -318,6 +426,7 @@ impl App {
                             && pending.selections == *self.editor.selections()
                             && pending.document == self.editor.document().id()
                             && pending.mode == self.editor.mode()
+                            && pending.window == self.focused_window_id()
                     })
                 {
                     return false;
@@ -346,6 +455,9 @@ impl App {
                     Ok(Answer::Symbols(symbols)) => self.receive_symbols(symbols),
                     Ok(Answer::CompletionResolved(item)) => self.receive_resolved_completion(item),
                     Ok(Answer::RenamePrepared(name)) => self.receive_rename_preparation(name),
+                    Ok(Answer::CommandExecuted) => {
+                        self.message = "language server command completed".into()
+                    }
                     Ok(Answer::WorkspaceEdit { edit, versions }) => {
                         self.receive_rename_edit(edit, versions)
                     }

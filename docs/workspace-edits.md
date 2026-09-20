@@ -1,9 +1,8 @@
 # Workspace text edits
 
-LSP rename (`Space-r`) uses the shared workspace-edit path. Code actions,
-formatting, and server-initiated `applyEdit` are not enabled yet. The transport
-continues to reject `workspace/applyEdit`; connecting it requires ordered frontend
-delivery and replies tied to application results.
+LSP rename (`Space-r`) uses the shared workspace-edit path. Server commands use
+the same path for `workspace/applyEdit`, with acknowledgements tied to actual
+application results. The code-action menu and formatting are not enabled yet.
 
 Before rename preparation and submission, the LSP worker synchronizes captured
 open buffers belonging to its configured languages and workspace, including
@@ -40,6 +39,28 @@ new files become hidden buffers, focus stays put, and all edits remain unsaved.
 An invalid batch changes neither text nor the buffer catalog. Undo operates on
 each buffer independently, as with other editing commands.
 
+`App::execute_lsp_command` accepts commands advertised by the active server.
+Their opaque arguments stay in the LSP protocol and are bounded to 8 MiB before
+cloning into an outgoing message. Captured buffers synchronize before execution.
+Only a pending explicitly invoked command can request workspace application;
+unsolicited requests receive `applied:false`.
+
+Incoming protocol packets are handled in wire order. A command's response waits
+for preceding application requests, including servers that return completion
+early. At most eight further edit requests wait behind one being prepared.
+Preparation has a ten-second deadline and cancellation token; immediately before
+UI preflight, claiming the reply prevents a timeout from racing installation.
+The service synchronizes the resulting active and hidden buffers before replying
+`applied:true`, so subsequent server work sees the applied text. A failure after
+installation while synchronizing ends the session rather than falsely reporting
+that the editor rejected the change. Older coalesced active snapshots and buffer
+catalog captures cannot overwrite the acknowledged snapshots.
+
+Each server batch is independently validated and undoable. Failure or cancellation
+of a later batch does not roll back earlier batches. A failed application remains
+an editor error even if the server reports command success. Rejecting, dropping,
+timing out, or cancelling an unapplied batch returns failure to the server.
+
 The core `PreparedChange` retains regular undo/redo maps, change extents, and
 bookmark remapping. `PreparedExternalEdit` additionally prepares all editor views.
 Existing interactive text commands retain their direct application path.
@@ -67,4 +88,6 @@ The decoder follows the [LSP workspace-edit formats](https://microsoft.github.io
 
 Inline tests exercise multi-buffer preparation, hidden unsaved text, independent
 undo, cancellation, stale destination/view rejection, queued editing, UTF-16
-coordinates, ordered insertions, and zero disk writes during application.
+coordinates, ordered insertions, and zero disk writes during application. Controlled
+stdio servers also exercise multiple application requests, early command completion,
+synchronization before acknowledgement, and stale captures after application.

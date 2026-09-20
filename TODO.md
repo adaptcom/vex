@@ -87,7 +87,10 @@ selections, and measure operations that could affect input latency.
   text. Rename now synchronizes captured buffers with the server, uses
   `prepareRename` where available, and opens a prefilled prompt. Its edits stay
   unsaved with per-buffer undo, cancellation, and stale-result guards.
-  Next: code-action resolution/execution and range formatting.
+  The server-command backend now processes `workspace/applyEdit` in order, applies
+  prepared batches with cancellation and undo, and synchronizes resulting buffers
+  before acknowledging success. Early command completion waits for its edits.
+  Next: code-action menu/resolution and range formatting.
 - [ ] Document/workspace diagnostic pickers (`<space>d`/`D`) and first/last
   diagnostic jumps (`[D`/`]D`). Retain diagnostics beyond the active document.
 - [ ] Scrollable hover documentation and signature help.

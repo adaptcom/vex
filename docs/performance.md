@@ -977,21 +977,27 @@ using one named buffer, three views, and 500 submissions per case:
 
 | Document size | Selections per view | Median submission | Sample p95 |
 |---|---:|---:|---:|
-| 1 MiB | 1 | 0.875 µs | 1.000 µs |
-| 1 MiB | 1,000 | 4.167 µs | 6.084 µs |
-| 8 MiB | 1 | 0.625 µs | 0.667 µs |
-| 8 MiB | 1,000 | 2.625 µs | 2.875 µs |
+| 1 MiB | 1 | 1.250 µs | 1.583 µs |
+| 1 MiB | 1,000 | 6.125 µs | 6.625 µs |
+| 8 MiB | 1 | 0.375 µs | 0.667 µs |
+| 8 MiB | 1,000 | 2.875 µs | 3.125 µs |
 
 These short, warmed measurements are sensitive to allocator/cache noise; the
 larger file is not inherently faster. They exclude setup, cancellation/destruction,
 drawing, service wakeup, JSON/pipe I/O, server latency, and edit preparation and
 application. Capture still scales with the number of open buffers, views, and
-selections. This measures UI submission, not end-to-end rename latency.
+selections. This measures UI submission, not end-to-end rename latency. These
+samples were rechecked after adding ordered server-command application.
 
 Protocol tests synchronize 160 buffers through an eight-message output queue,
 check that unchanged snapshots are not resent, and verify shutdown interrupts
 an output-capacity wait when the server stops reading. Server-request replies
 have separate bounded capacity so synchronization cannot crowd them out.
+Workspace-application acknowledgements follow the normal FIFO instead, after
+the resulting `didChange` messages. The service awaits UI acknowledgement without
+blocking input handling or pipe readers; edit preparation reuses the existing
+worker. Ordinary typing does not capture the full buffer catalog. Server-command
+validation counts serialized bytes without allocating an extra JSON byte buffer.
 
 ```sh
 cargo test -p vex_term --release --locked benchmark_rename_submission -- --ignored --nocapture

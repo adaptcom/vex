@@ -1,5 +1,6 @@
 //! Owned stdio transport. Blocking pipe reads/writes never run in Future::poll.
-//! Replies resolve request futures; notifications feed the service inbox.
+//! Protocol packets enter the service inbox in wire order. The service resolves
+//! request futures after processing preceding server requests and notifications.
 
 use crate::{
     executor::Executor,
@@ -13,7 +14,11 @@ use std::{
     path::Path,
     pin::Pin,
     process::{Child, Command, Stdio},
-    sync::{Arc, Condvar, Mutex, mpsc::TrySendError},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::TrySendError,
+    },
     task::{Context, Poll, Waker},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -144,6 +149,12 @@ impl Future for Response {
     }
 }
 
+impl Response {
+    pub fn resume_timeout(&mut self) {
+        self.deadline = Instant::now() + Duration::from_secs(10);
+    }
+}
+
 impl Drop for Response {
     fn drop(&mut self) {
         self.pending.lock().unwrap().replies.remove(&self.id);
@@ -164,6 +175,7 @@ pub(crate) struct Transport {
     stderr_thread: Option<JoinHandle<()>>,
     stderr: Arc<Mutex<Vec<u8>>>,
     next_id: u64,
+    accept_edits: Arc<AtomicBool>,
 }
 
 impl Transport {
@@ -195,6 +207,7 @@ impl Transport {
             stderr_thread: None,
             stderr: Arc::default(),
             next_id: 0,
+            accept_edits: Arc::default(),
         };
         let mut stdin = transport.child.stdin.take().unwrap();
         let stdout = transport.child.stdout.take().unwrap();
@@ -218,6 +231,7 @@ impl Transport {
             },
         )?);
         let pending = transport.pending.clone();
+        let accept_edits = transport.accept_edits.clone();
         transport.reader_thread = Some(thread::Builder::new().name("vex-lsp-read".into()).spawn(move || {
             let result = (|| -> io::Result<()> {
                 let mut reader = BufReader::new(stdout);
@@ -225,10 +239,14 @@ impl Transport {
                     if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0") { return Err(io::Error::other("invalid JSON-RPC version")) }
                     if let Some(method) = value["method"].as_str() {
                         if let Some(id) = value.get("id") {
+                            if method == "workspace/applyEdit" && accept_edits.load(Ordering::Acquire) {
+                                notify(value);
+                                continue;
+                            }
                             let response = match method {
                                 "workspace/configuration" => json!({"result": value["params"]["items"].as_array().map(|items| vec![Value::Null; items.len()]).unwrap_or_default()}),
                                 "window/workDoneProgress/create" => json!({"result":null}),
-                                "workspace/applyEdit" => json!({"result":{"applied":false,"failureReason":"workspace edits are not supported"}}),
+                                "workspace/applyEdit" => json!({"result":{"applied":false,"failureReason":"workspace edits require an active server command"}}),
                                 _ => json!({"error":{"code":-32601,"message":"unsupported client method"}}),
                             };
                             let mut response = response;
@@ -237,13 +255,8 @@ impl Transport {
                         } else if matches!(method, "textDocument/publishDiagnostics" | "window/showMessage") {
                             notify(value);
                         }
-                    } else if let Some(id) = value["id"].as_u64()
-                        && let Some(slot) = pending.lock().unwrap().replies.remove(&id) {
-                            let mut slot = slot.lock().unwrap();
-                            slot.result = Some(if value.get("error").is_some() {
-                                Err(value["error"]["message"].as_str().unwrap_or("language server request failed").into())
-                            } else { Ok(value.get("result").cloned().unwrap_or(Value::Null)) });
-                            if let Some(waker) = slot.waker.take() { waker.wake(); }
+                    } else {
+                        notify(value);
                     }
                 }
                 Err(io::Error::other("language server disconnected"))
@@ -271,6 +284,79 @@ impl Transport {
                 })?,
         );
         Ok(transport)
+    }
+
+    /// Resolve only when the service reaches this response in its ordered inbox.
+    /// Resolving on the reader thread would let an executeCommand response pass
+    /// an earlier workspace/applyEdit request that the service has not seen yet.
+    pub fn receive_response(&self, value: &Value) -> bool {
+        if value.get("method").is_some() {
+            return false;
+        }
+        if let Some(id) = value["id"].as_u64()
+            && let Some(slot) = self.pending.lock().unwrap().replies.remove(&id)
+        {
+            let mut slot = slot.lock().unwrap();
+            slot.result = Some(if value.get("error").is_some() {
+                Err(value["error"]["message"]
+                    .as_str()
+                    .unwrap_or("language server request failed")
+                    .into())
+            } else {
+                Ok(value.get("result").cloned().unwrap_or(Value::Null))
+            });
+            if let Some(waker) = slot.waker.take() {
+                waker.wake();
+            }
+        }
+        true
+    }
+
+    pub fn enable_edits(&self, enabled: bool) {
+        self.accept_edits.store(enabled, Ordering::Release);
+    }
+
+    pub async fn reply_edit(
+        &self,
+        executor: &Executor,
+        inbox: &crate::Inbox,
+        id: Value,
+        result: &Result<(), String>,
+    ) -> Result<(), String> {
+        let result = match result {
+            Ok(()) => json!({"applied":true}),
+            Err(error) => json!({"applied":false,"failureReason":error}),
+        };
+        // This reply must follow any didChange messages for the applied text.
+        self.send_wait(
+            executor,
+            json!({"jsonrpc":"2.0","id":id,"result":result}),
+            |cx| inbox.stopped(cx),
+        )
+        .await
+    }
+
+    /// Initialization and shutdown also use the ordered reader path. Neither
+    /// phase accepts application requests; the reader rejects those directly.
+    pub fn poll_lifecycle_response(
+        &self,
+        inbox: &crate::Inbox,
+        response: &mut Response,
+        cx: &mut Context<'_>,
+    ) -> Poll<Reply> {
+        inbox.stopped(cx); // Register even during the short shutdown grace period.
+        for index in 0..128 {
+            let Some(value) = inbox.take_wire() else {
+                break;
+            };
+            if !self.receive_response(&value) && value["method"] == "workspace/applyEdit" {
+                let _ = self.writer.as_ref().unwrap().reply(json!({"jsonrpc":"2.0","id":value["id"],"result":{"applied":false,"failureReason":"language server session is closing"}}));
+            }
+            if index == 127 {
+                cx.waker().wake_by_ref();
+            }
+        }
+        Pin::new(response).poll(cx)
     }
 
     fn send(&self, value: Value) -> Result<(), String> {
@@ -395,17 +481,18 @@ impl Transport {
         (response, message)
     }
 
-    pub async fn shutdown(&mut self, executor: &Executor, uri: Option<&str>) {
+    pub async fn shutdown(&mut self, executor: &Executor, inbox: &crate::Inbox, uri: Option<&str>) {
+        self.accept_edits.store(false, Ordering::Release);
         if let Some(uri) = uri {
             let _ = self.notify("textDocument/didClose", json!({"textDocument":{"uri":uri}}));
         }
-        if let Ok(response) = self.request(
+        if let Ok(mut response) = self.request(
             executor,
             "shutdown",
             Value::Null,
             Duration::from_millis(300),
         ) {
-            let _ = response.await;
+            let _ = poll_fn(|cx| self.poll_lifecycle_response(inbox, &mut response, cx)).await;
         }
         let _ = self.notify("exit", Value::Null);
         // The grace period runs on the service thread, after its last future.

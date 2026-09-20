@@ -20,7 +20,8 @@ def main():
     args = parser.parse_args()
     binary = str(args.binary.resolve(strict=True))
     if args.server:
-        os.environ["VEX_TYPESCRIPT_LANGUAGE_SERVER"] = str(args.server.resolve(strict=True))
+        args.server.stat()
+        os.environ["VEX_TYPESCRIPT_LANGUAGE_SERVER"] = str(args.server.absolute())
     with tempfile.TemporaryDirectory(prefix="vex-languages-pty-") as directory:
         project = Path(directory).resolve()
         (project / "tsconfig.json").write_text('{"compilerOptions":{"strict":true,"noEmit":true}}')
