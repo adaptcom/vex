@@ -66,8 +66,11 @@ selections, and measure operations that could affect input latency.
   `<space>'` retains file/buffer/symbol/search queries, selected results, and scroll
   positions across acceptance/cancellation.
 - [ ] Bidirectional jump history: Ctrl-i, `<space>j`, and `g.` to return to the
-  last modification. Ctrl-s now records full selection checkpoints in normal/select
-  mode, and Ctrl-o restores them, including in scratch buffers.
+  last modification. Ctrl-s records full selection checkpoints in normal/select
+  mode; counted Ctrl-o/Ctrl-i traverse each pane's bounded history, including
+  scratch buffers, and preserve a forward return path. The jump picker and `g.`
+  remain. Add lazy remapping of saved selections through edits/undo/reloads;
+  checkpoints currently retain scalar positions and clamp to valid text bounds.
 - [ ] LSP references (`gr`), type definition (`gy`), implementation (`gi`), and
   reference selections (`<space>h`). Reuse pickers for multiple destinations.
 - [ ] LSP rename (`<space>r`), code actions (`<space>a`), and formatting (`=`).

@@ -986,7 +986,7 @@ mod tests {
         assert!(!app.input_waiting());
         assert!(app.picker.active.is_none());
         assert_eq!(app.editor.document().text(), "beta contents");
-        app.editor.execute("jump_back", 1).unwrap();
+        app.execute("jump_backward").unwrap();
         app.take_lsp_update();
         assert_eq!(app.editor.document().text(), "alpha contents");
         assert_eq!(app.editor.selections().primary().start().0, 2);

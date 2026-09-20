@@ -60,6 +60,10 @@ def main():
             assert origin.read_text() == "original document\n"
             terminal.send(b"\x0f")
             terminal.expect_screen(b"original document")
+            terminal.send(b"\t")  # Legacy terminals encode Ctrl-i as Tab.
+            terminal.expect_screen(b"Xunique preview contents")
+            terminal.send(b"\x0f")
+            terminal.expect_screen(b"original document")
             terminal.send(b" '")
             terminal.expect_screen("Files ·".encode())
             terminal.expect_screen("界 target".encode())
@@ -93,7 +97,7 @@ def main():
             terminal.expect_screen(b"DIRTMOREYoriginal")
             terminal.send(b":q!\r")
             terminal.finish()
-        print("PASS: group hints, floating borders, syntax previews, Unicode fuzzy query, resize, cancellation, early acceptance/edit/save, hidden unsaved buffers, ga/gm, last file/buffer picker, terminal cleanup")
+        print("PASS: group hints, floating borders, syntax previews, Unicode fuzzy query, resize, cancellation, early acceptance/edit/save, backward/forward jumps, hidden unsaved buffers, ga/gm, last file/buffer picker, terminal cleanup")
 
 
 if __name__ == "__main__":

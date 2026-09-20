@@ -730,10 +730,24 @@ commands! {
         Ok(())
     }
 
-    /// Return to the location before the last successful file, definition, or symbol jump.
+    /// Move backward through this pane's jump history, preserving a forward return path. Accepts a count.
+    fn jump_backward(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_application_action(crate::ApplicationAction::Jump { forward: false, count: ctx.count.get() });
+        Ok(())
+    }
+
+    /// Move forward through this pane's jump history. Accepts a count.
+    fn jump_forward(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_application_action(crate::ApplicationAction::Jump { forward: true, count: ctx.count.get() });
+        Ok(())
+    }
+
+    /// Alias for jump_backward; the default Ctrl-o binding uses the Helix command name.
     fn jump_back(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.request_language_action(crate::LanguageAction::JumpBack);
+        ctx.editor.request_application_action(crate::ApplicationAction::Jump { forward: false, count: ctx.count.get() });
         Ok(())
     }
 

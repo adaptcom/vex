@@ -47,6 +47,30 @@ when space returns. There are at most 16 windows, each at least 12 columns by
 Split branches divide their available space equally. Adjustable split ratios,
 mouse focus, and mouse resizing are not implemented.
 
+## Jump history
+
+Ctrl-s in normal/select mode records the full current selection set. Ctrl-o
+(`jump_backward`) moves backward and Ctrl-i (`jump_forward`) moves forward;
+both accept counts, following the [Helix keymap](https://docs.helix-editor.com/keymap.html#movement).
+Tab also moves forward in normal/select mode because legacy terminals send the
+same byte for Tab and Ctrl-i. Insert-mode Tab still inserts a tab, and picker
+Tab still navigates results. `jump_back` remains an unbound command alias.
+
+Each pane has its own history, capped at 32 entries. A backward jump saves the
+live return location before leaving the newest entry, so Ctrl-i can return to
+it. Saving a new checkpoint after going backward discards the old forward
+branch. Consecutive identical checkpoints are deduplicated, and a backward
+jump skips a checkpoint equal to the current selection. Out-of-range counts
+leave the location unchanged.
+
+History retains document identities and shared immutable selection sets;
+it neither copies text nor retains undo snapshots. Hidden buffers and scratch
+buffers are valid destinations. Closing a buffer removes its checkpoints from
+every pane and adjusts the history position. Navigation retains normal/select
+mode, selection direction, and the primary selection. Language services are
+not needed. Saved scalar positions currently normalize to valid grapheme/text
+bounds when revisited; remapping them through intervening edits remains on TODO.md.
+
 ## Different files
 
 `:vsplit [PATH]` and `:hsplit [PATH]` open a file in a new pane, or duplicate the

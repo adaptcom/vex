@@ -38,6 +38,7 @@ struct Pane {
     saved: HashMap<DocumentId, SavedView>,
     last_accessed: Option<DocumentId>,
     last_modified: [Option<DocumentId>; 2],
+    jumps: super::jumps::History,
 }
 
 struct Buffer {
@@ -78,6 +79,10 @@ impl State {
                     saved: HashMap::new(),
                     last_accessed: None,
                     last_modified: [None; 2],
+                    jumps: super::jumps::History::new(super::jumps::Jump::new(
+                        editor.document().id(),
+                        editor.selections(),
+                    )),
                 },
             )]),
             buffers: BTreeMap::new(),
@@ -91,6 +96,19 @@ impl State {
 }
 
 impl App {
+    pub(super) fn jump_history(&self) -> &super::jumps::History {
+        &self.windows.panes[&self.windows.layout.active].jumps
+    }
+
+    pub(super) fn jump_history_mut(&mut self) -> &mut super::jumps::History {
+        &mut self
+            .windows
+            .panes
+            .get_mut(&self.windows.layout.active)
+            .unwrap()
+            .jumps
+    }
+
     pub(super) fn open_commit_draft(
         &mut self,
         root: PathBuf,
@@ -543,6 +561,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn open_window_file(&mut self, path: &Path) -> io::Result<()> {
         let prepared = self.prepare_file(path)?;
         self.replace_window_buffer(prepared)
@@ -670,6 +689,7 @@ impl App {
         }
         self.focus_window(active);
         for pane in self.windows.panes.values_mut() {
+            pane.jumps.remove(closing);
             pane.saved.remove(&closing);
             if pane.last_accessed == Some(closing) {
                 pane.last_accessed = None;
@@ -865,6 +885,7 @@ impl App {
                 saved: HashMap::new(),
                 last_accessed: None,
                 last_modified,
+                jumps: super::jumps::History::new(self.current_jump()),
             },
         );
         self.focus_window(id);

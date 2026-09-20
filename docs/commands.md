@@ -52,7 +52,9 @@ Generated from command Rustdoc and the default keymap.
 | `git_status` | Normal: `<Space>g`, Select: `<Space>g` | Open the repository status view with expandable staged and unstaged diffs. |
 | `symbol_picker` | Normal: `<Space>s`, Select: `<Space>s` | Open a searchable picker of symbols in the current document using its language server. |
 | `workspace_symbol_picker` | Normal: `<Space>S`, Select: `<Space>S` | Search workspace symbols using the current document's language server. |
-| `jump_back` | Normal: `<C-o>`, Select: `<C-o>` | Return to the location before the last successful file, definition, or symbol jump. |
+| `jump_backward` | Normal: `<C-o>`, Select: `<C-o>` | Move backward through this pane's jump history, preserving a forward return path. Accepts a count. |
+| `jump_forward` | Normal: `<C-i>`, Normal: `<Tab>`, Select: `<C-i>`, Select: `<Tab>` | Move forward through this pane's jump history. Accepts a count. |
+| `jump_back` |  | Alias for jump_backward; the default Ctrl-o binding uses the Helix command name. |
 | `hover` | Normal: `<Space>k`, Select: `<Space>k` | Show language-server documentation for the symbol at the primary cursor. |
 | `goto_definition` | Normal: `gd`, Select: `gd` | Jump to the definition of the symbol at the primary cursor. |
 | `goto_next_diagnostic` | Normal: `]d`, Select: `]d` | Move to the next diagnostic, wrapping and honoring the repeat count. |

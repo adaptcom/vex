@@ -37,7 +37,8 @@ protocol failures, and request errors leave editing and saving available.
 | `gd` / `:goto_definition` | Jump to the first definition returned by the server |
 | `Space-s` / `:symbol_picker` | Pick a symbol from the current document |
 | `Space-S` / `:workspace_symbol_picker` | Search symbols across the active server's workspace |
-| `Ctrl-o` / `:jump_back` | Return to the previous file, definition, or symbol jump location |
+| `Ctrl-o` / `:jump_backward` | Move backward through the current pane's jump history |
+| `Ctrl-i` / `:jump_forward` | Move forward through the current pane's jump history |
 | `]d` / `:goto_next_diagnostic` | Next diagnostic, wrapping and accepting a count |
 | `[d` / `:goto_previous_diagnostic` | Previous diagnostic, wrapping and accepting a count |
 | `:lsp-restart` | Restart the server for the current file |
@@ -53,8 +54,8 @@ on the same line. Editing clears diagnostics immediately until a current result
 arrives.
 
 Definition and symbol jumps open another local file in the focused pane, retaining
-the old buffer and any unsaved edits. The jump list retains up to 32 selection
-checkpoints. Returning to a loaded file reuses its buffer and history, including
+the old buffer and any unsaved edits. Each pane's [jump list](windows.md#jump-history)
+retains up to 32 selection checkpoints. Returning to a loaded file reuses its buffer and history, including
 when no pane displays it. Multiple definition results currently choose the first
 result.
 

@@ -19,6 +19,7 @@ mod clipboard;
 mod completion;
 mod git;
 mod git_write;
+mod jumps;
 mod language;
 mod picker;
 mod prompt;
@@ -529,6 +530,7 @@ impl App {
                 self.message = "jump checkpoint saved".into();
                 Ok(())
             }
+            Some(ApplicationAction::Jump { forward, count }) => self.navigate_jump(forward, count),
             Some(ApplicationAction::GitStatus) => self.open_git_status(),
             Some(ApplicationAction::FilePicker) => {
                 self.open_file_picker();

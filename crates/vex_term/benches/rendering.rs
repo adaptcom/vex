@@ -331,6 +331,51 @@ fn clipboard(c: &mut Criterion) {
     group.finish();
 }
 
+fn jump_history(c: &mut Criterion) {
+    let mut group = c.benchmark_group("jump_history");
+    for mib in [1usize, 100] {
+        for carets in [1usize, 1000] {
+            let mut app = App::from_document(
+                Document::from("abcdefghijk\n".repeat((mib << 20).div_ceil(12)).as_str()),
+                (120, 40),
+            );
+            let step = app.editor.document().text().len_chars() / (carets + 1);
+            for offset in 0..32 {
+                app.editor
+                    .set_selections(
+                        SelectionSet::new(
+                            (1..=carets)
+                                .map(|n| {
+                                    Selection::new(
+                                        CharOffset(n * step + offset),
+                                        CharOffset(n * step + offset + 1),
+                                    )
+                                })
+                                .collect(),
+                            0,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                app.execute("save_selection").unwrap();
+            }
+            let key = |ch| Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL));
+            app.handle(key('o')); // Record the live return location before timing.
+            group.bench_function(
+                BenchmarkId::new("back_forward", format!("{mib}MiB_{carets}_carets")),
+                |b| {
+                    b.iter(|| {
+                        app.handle(key('o'));
+                        app.handle(key('i'));
+                        black_box(app.editor.selections());
+                    });
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
 fn workspace_search(c: &mut Criterion) {
     let mut group = c.benchmark_group("workspace_search_input");
     for mib in [1usize, 100] {
@@ -427,6 +472,6 @@ criterion_group! {
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = rendering, long_lines, rust_syntax, background_syntax, buffers, clipboard, prompt_input, workspace_search
+    targets = rendering, long_lines, rust_syntax, background_syntax, buffers, clipboard, prompt_input, workspace_search, jump_history
 }
 criterion_main!(benches);

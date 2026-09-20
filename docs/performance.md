@@ -1,5 +1,24 @@
 # Performance baselines
 
+## Jump history
+
+On 2026-09-20, `cargo bench -p vex_term --bench rendering --locked -- jump_history --noplot`
+measured a Ctrl-o/Ctrl-i round trip through a full 32-entry history:
+
+| Document | One selection | 1,000 selections |
+| --- | ---: | ---: |
+| 1 MiB | 1.02 µs | 0.501 ms |
+| 100 MiB | 0.959 µs | 0.644 ms |
+
+These are Criterion central estimates with 30 samples, 500 ms warmup, and one
+second measurement, over repeated ASCII lines. The benchmark includes command
+dispatch, history traversal, and selection restoration/normalization. Initial
+checkpoints, document construction, drawing, physical terminal output, and
+switching buffers are excluded. Stored selections share immutable allocations;
+traversal copies at most 32 handles, then restores the selected entry. Costs
+scale with restored selections and grapheme lookups, without scanning document
+text or adding checkpoint work to ordinary typing.
+
 ## Workspace search input
 
 `cargo bench -p vex_term --bench rendering --locked -- workspace_search_input --noplot`

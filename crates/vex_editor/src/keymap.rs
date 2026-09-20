@@ -270,7 +270,9 @@ impl Default for Keymap {
                 (vec![Char(' '), Char('c')], "toggle_comments"),
                 (vec![Char(' '), Char('C')], "toggle_block_comments"),
                 (vec![Ctrl('c')], "toggle_comments"),
-                (vec![Ctrl('o')], "jump_back"),
+                (vec![Ctrl('o')], "jump_backward"),
+                (vec![Ctrl('i')], "jump_forward"),
+                (vec![Tab], "jump_forward"),
                 (vec![Ctrl('s')], "save_selection"),
                 (vec![Char('g'), Char('d')], "goto_definition"),
                 (vec![Char(']'), Char('d')], "goto_next_diagnostic"),
@@ -720,6 +722,34 @@ mod tests {
     fn press(handler: &mut KeyHandler, editor: &mut Editor, keys: &str) {
         for key in keys.chars() {
             handler.handle(editor, Key::Char(key)).unwrap();
+        }
+    }
+
+    #[test]
+    fn jump_bindings_forward_counts_to_the_application_in_both_modes() {
+        for mode in [Mode::Normal, Mode::Select] {
+            for (key, forward, name) in [
+                (Key::Ctrl('o'), false, "jump_backward"),
+                (Key::Ctrl('i'), true, "jump_forward"),
+                (Key::Tab, true, "jump_forward"),
+            ] {
+                let mut editor = Editor::new(Document::from("text"));
+                if mode == Mode::Select {
+                    editor.execute("select_mode", 1).unwrap();
+                }
+                let mut keys = KeyHandler::default();
+                press(&mut keys, &mut editor, "12");
+                assert_eq!(
+                    keys.handle(&mut editor, key).unwrap(),
+                    Dispatch::Executed(name)
+                );
+                assert_eq!(
+                    editor.take_application_action(),
+                    Some(crate::ApplicationAction::Jump { forward, count: 12 })
+                );
+                assert!(editor.take_language_action().is_none());
+                assert_eq!(editor.mode(), mode);
+            }
         }
     }
 

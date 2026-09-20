@@ -61,7 +61,6 @@ pub enum LanguageAction {
     Hover,
     Definition,
     Completion,
-    JumpBack,
     NextDiagnostic(usize),
     PreviousDiagnostic(usize),
 }
@@ -72,6 +71,7 @@ pub enum ApplicationAction {
     Clipboard(ClipboardKind, ClipboardAction, usize),
     ClipboardWrite(ClipboardKind, std::sync::Arc<str>, bool),
     SaveSelection,
+    Jump { forward: bool, count: usize },
     GitStatus,
     FilePicker,
     BufferPicker,
