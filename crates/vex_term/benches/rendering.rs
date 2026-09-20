@@ -2,7 +2,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::{hint::black_box, io, time::Duration};
 use vex_core::{CharOffset, Document, Selection, SelectionSet};
-use vex_editor::Language;
+use vex_editor::{Language, SyntaxWorker};
 use vex_term::{
     app::App,
     screen::{Renderer, Style},
@@ -230,6 +230,32 @@ fn background_syntax(c: &mut Criterion) {
                 black_box(app.editor.take_syntax_job().unwrap());
             });
         });
+        let mut app = App::from_document(Document::from(document.text().clone()), size);
+        app.editor.set_language(Some(Language::Rust));
+        app.editor.set_background_syntax(true);
+        let mut renderer = Renderer::default();
+        paint(&mut app, &mut renderer, size);
+        let mut worker = SyntaxWorker::default();
+        let job = app.editor.take_syntax_job().unwrap();
+        assert!(app.editor.apply_syntax_result(worker.run(job).unwrap()));
+        paint(&mut app, &mut renderer, size);
+        assert!(app.editor.take_syntax_job().is_none());
+        app.editor.execute("insert_mode", 1).unwrap();
+        group.bench_function(
+            BenchmarkId::new("type_8_retained_colors_undo", &label),
+            |b| {
+                b.iter(|| {
+                    for _ in 0..8 {
+                        app.editor.insert_text("z").unwrap();
+                    }
+                    black_box(paint(&mut app, &mut renderer, size));
+                    black_box(app.editor.take_syntax_job().unwrap());
+                    app.editor.execute("undo", 1).unwrap();
+                    black_box(paint(&mut app, &mut renderer, size));
+                    black_box(app.editor.take_syntax_job().unwrap());
+                });
+            },
+        );
     }
     group.finish();
 }

@@ -915,6 +915,24 @@ first-draw numbers include completed colors; these first frames display plain
 text while highlighting is pending. This is not a reduction in parser CPU cost
 or a measurement of time until colors arrive.
 
+Recorded on 2026-09-20, the `type_8_retained_colors_undo` case first fills the
+viewport cache on a syntax worker, then measures the same eight edits, two
+draws/requests, and grouped undo while withholding further worker results:
+
+| Rust source | No cached colors (`type_8_schedule_undo`) | Retained colors (`type_8_retained_colors_undo`) |
+|---|---:|---:|
+| 64 KiB | 0.557 ms | 0.645 ms |
+| 256 KiB | 0.645 ms | 0.727 ms |
+
+These are whole-operation Criterion central estimates at 120 × 40, using the
+same sample/warmup/measurement settings above. The initial worker parse is outside
+the timed region. Retaining colors adds viewport span remapping and colored ANSI
+output; the difference is about 0.08–0.09 ms across eight edits and two draws.
+It does not copy or rescan the document on the UI thread. Exact edits map offsets
+inside the changed extent; unchanged prefixes/suffixes use byte shifts. Cached
+ranges and query capture counts retain their existing bounds. Renderer tests
+deliberately withhold results during typing to check that existing colors survive.
+
 Source tests check independent worker progress, completion wakeups, cancellation,
 stale-result rejection, incremental reuse across coalesced edits, and bounded
 caches. The PTY smoke test waits for initial, edited, and undo-restored colors

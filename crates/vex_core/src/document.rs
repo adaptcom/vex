@@ -272,6 +272,33 @@ impl Document {
             .then_some(self.change)
     }
 
+    /// Map a position from the immediately preceding snapshot through the exact
+    /// edits, including disjoint edits and grouped undo/redo. Positions inside
+    /// replaced text follow the same affinity rules as `Transaction::map_position`.
+    /// Returns None for skipped revisions, another document, or an invalid offset.
+    pub fn map_position_since(
+        &self,
+        snapshot: &Snapshot,
+        mut position: CharOffset,
+        affinity: Affinity,
+    ) -> Option<CharOffset> {
+        self.change_since(snapshot)?;
+        if position.0 > snapshot.text.len_chars() {
+            return None;
+        }
+        let maps = self.maps.as_ref()?.as_slice();
+        if self.reverse_maps {
+            for map in maps.iter().rev() {
+                position = map.map_position(position, affinity, true);
+            }
+        } else {
+            for map in maps {
+                position = map.map_position(position, affinity, false);
+            }
+        }
+        Some(position)
+    }
+
     /// Map another view's selections through the most recent edit/undo/redo.
     /// Call exactly once per revision, before another change is applied.
     pub fn map_other_selections(&self, selections: &SelectionSet) -> Result<SelectionSet, Error> {
@@ -613,6 +640,90 @@ mod tests {
     fn type_text(document: &mut Document, selections: &mut SelectionSet, text: &str) {
         let transaction = document.replace_selections(selections, text).unwrap();
         document.apply_grouped(transaction, selections).unwrap();
+    }
+
+    #[test]
+    fn exact_positions_follow_affinities_through_disjoint_edits_and_grouped_history() {
+        use crate::Affinity;
+        let mut document = Document::from("abcdefghij");
+        let mut selections = SelectionSet::single(Selection::cursor(CharOffset(0)));
+        let original = document.snapshot();
+        let transaction = document
+            .transaction([
+                Edit::insert(CharOffset(1), "界"),
+                Edit::delete(CharOffset(7)..CharOffset(8)),
+                Edit::delete(CharOffset(8)..CharOffset(9)),
+            ])
+            .unwrap();
+        let expected: Vec<_> = (0..=10)
+            .map(|position| {
+                [Affinity::Before, Affinity::After].map(|affinity| {
+                    transaction
+                        .map_position(CharOffset(position), affinity)
+                        .unwrap()
+                })
+            })
+            .collect();
+        document
+            .apply_grouped(transaction, &mut selections)
+            .unwrap();
+        for (position, expected) in expected.iter().enumerate() {
+            for (index, affinity) in [Affinity::Before, Affinity::After].into_iter().enumerate() {
+                assert_eq!(
+                    document.map_position_since(&original, CharOffset(position), affinity),
+                    Some(expected[index])
+                );
+            }
+        }
+        let transaction = document
+            .transaction([Edit::insert(CharOffset(3), "XY")])
+            .unwrap();
+        document
+            .apply_grouped(transaction, &mut selections)
+            .unwrap();
+        let changed = document.snapshot();
+        assert!(
+            document
+                .map_position_since(&original, CharOffset(0), Affinity::After)
+                .is_none()
+        );
+        document.undo(&mut selections).unwrap();
+        assert_eq!(document.text(), original.text());
+        for (position, before, after) in [(0, 0, 0), (8, 5, 5), (10, 7, 9), (11, 10, 10)] {
+            assert_eq!(
+                document.map_position_since(&changed, CharOffset(position), Affinity::Before),
+                Some(CharOffset(before))
+            );
+            assert_eq!(
+                document.map_position_since(&changed, CharOffset(position), Affinity::After),
+                Some(CharOffset(after))
+            );
+        }
+        let undone = document.snapshot();
+        document.redo(&mut selections).unwrap();
+        assert_eq!(
+            document.map_position_since(&undone, CharOffset(5), Affinity::After),
+            Some(CharOffset(8))
+        );
+        assert!(
+            document
+                .map_position_since(&undone, CharOffset(11), Affinity::Before)
+                .is_none()
+        );
+        assert!(
+            document
+                .map_position_since(
+                    &Document::from("abcdefghij").snapshot(),
+                    CharOffset(0),
+                    Affinity::After
+                )
+                .is_none()
+        );
+        assert!(
+            document
+                .map_position_since(&document.snapshot(), CharOffset(0), Affinity::After)
+                .is_none()
+        );
     }
 
     #[test]

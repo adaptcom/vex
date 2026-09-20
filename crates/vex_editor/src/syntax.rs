@@ -4,7 +4,7 @@
 
 use crate::{Editor, HighlightSpan, Language, background::Cancellation};
 use std::{collections::VecDeque, ops::Range, sync::Arc};
-use vex_core::{ByteOffset, ChangeExtent, CharOffset, Document, Revision, Snapshot};
+use vex_core::{Affinity, ByteOffset, ChangeExtent, CharOffset, Document, Revision, Snapshot};
 use vex_syntax::{MAX_HIGHLIGHT_BYTES, ParsedSyntax, Syntax};
 
 const MAX_RANGES: usize = 128;
@@ -22,6 +22,57 @@ struct Change {
 struct CachedRange {
     range: Range<ByteOffset>,
     spans: Arc<[HighlightSpan]>,
+    fresh: bool,
+}
+
+impl CachedRange {
+    /// Keep display colors aligned with surviving text while parsing catches up.
+    /// Only positions inside the conservative extent need the exact edit maps;
+    /// the unchanged prefix/suffix use byte offsets without scanning the buffer.
+    fn remap(&mut self, previous: &Snapshot, document: &Document, extent: ChangeExtent) {
+        let start = previous.text().char_to_byte(extent.start.0);
+        let old_end = previous.text().char_to_byte(extent.old_end.0);
+        let new_end = document.text().char_to_byte(extent.new_end.0);
+        let map = |byte: ByteOffset, affinity| {
+            if byte.0 < start {
+                byte
+            } else if byte.0 > old_end {
+                ByteOffset(new_end + (byte.0 - old_end))
+            } else {
+                let position = document
+                    .map_position_since(
+                        previous,
+                        CharOffset(previous.text().byte_to_char(byte.0)),
+                        affinity,
+                    )
+                    .expect("consecutive syntax snapshots and valid cached offsets");
+                ByteOffset(document.text().char_to_byte(position.0))
+            }
+        };
+        // Coverage includes boundary insertions so a growing line still hits its
+        // cached range. Tokens exclude them; only typing inside a token inherits
+        // its color. Fully replaced tokens disappear until the worker recolors.
+        self.range = map(self.range.start, Affinity::Before)..map(self.range.end, Affinity::After);
+        if self
+            .spans
+            .last()
+            .is_some_and(|span| span.range.end.0 > start)
+        {
+            self.spans = self
+                .spans
+                .iter()
+                .filter_map(|span| {
+                    let range = map(span.range.start, Affinity::After)
+                        ..map(span.range.end, Affinity::Before);
+                    (range.start < range.end).then_some(HighlightSpan {
+                        range,
+                        highlight: span.highlight,
+                    })
+                })
+                .collect();
+        }
+        self.fresh = false;
+    }
 }
 
 #[derive(Debug)]
@@ -84,12 +135,20 @@ impl Highlighting {
                 old_len: previous.text().len_chars(),
                 extent,
             });
+            if document.text().len_bytes() <= MAX_HIGHLIGHT_BYTES {
+                for entry in &mut self.cache {
+                    entry.remap(previous, document, extent);
+                }
+                self.cache.retain(|entry| !entry.range.is_empty());
+            } else {
+                self.cache.clear();
+            }
         } else {
             self.changes.clear();
+            self.cache.clear();
         }
         self.cancel();
         self.requested.clear();
-        self.cache.clear();
         self.parsed = None;
         self.snapshot = Some(document.snapshot());
         if let Some(syntax) = &mut self.synchronous {
@@ -173,7 +232,9 @@ impl Editor {
         state.synchronous = None;
     }
 
-    /// Return cached colors or plain text while requesting background work.
+    /// Return cached colors while requesting background work. After an edit,
+    /// previous colors follow surviving text until a current result replaces them.
+    /// Text without cached colors stays plain until its first result arrives.
     /// At most 128 distinct ranges per frame are highlighted in background mode.
     pub fn syntax_highlights(&self, range: Range<ByteOffset>) -> Arc<[HighlightSpan]> {
         let mut state = self.syntax.borrow_mut();
@@ -204,7 +265,44 @@ impl Editor {
             state.cache.push_back(entry);
             spans
         } else {
-            Arc::from([])
+            // Newlines, joined lines, horizontal clipping, and split views can
+            // change query boundaries before parsing finishes. Reuse overlapping
+            // colors too, clipped and merged into sorted, disjoint spans.
+            let mut spans: Vec<HighlightSpan> = Vec::new();
+            for entry in &state.cache {
+                if entry.range.end <= range.start || entry.range.start >= range.end {
+                    continue;
+                }
+                let start = entry
+                    .spans
+                    .partition_point(|span| span.range.end <= range.start);
+                for span in entry.spans[start..]
+                    .iter()
+                    .take_while(|span| span.range.start < range.end)
+                {
+                    spans.push(HighlightSpan {
+                        range: span.range.start.max(range.start)..span.range.end.min(range.end),
+                        highlight: span.highlight,
+                    });
+                }
+            }
+            spans.sort_unstable_by_key(|span| (span.range.start, span.range.end));
+            let mut merged: Vec<HighlightSpan> = Vec::with_capacity(spans.len());
+            for mut span in spans {
+                if let Some(previous) = merged.last_mut() {
+                    if previous.highlight == span.highlight
+                        && previous.range.end >= span.range.start
+                    {
+                        previous.range.end = previous.range.end.max(span.range.end);
+                        continue;
+                    }
+                    span.range.start = span.range.start.max(previous.range.end);
+                }
+                if !span.range.is_empty() {
+                    merged.push(span);
+                }
+            }
+            merged.into()
         }
     }
 
@@ -219,7 +317,12 @@ impl Editor {
         let ranges: Vec<_> = state
             .requested
             .iter()
-            .filter(|range| !state.cache.iter().any(|entry| entry.range == **range))
+            .filter(|range| {
+                !state
+                    .cache
+                    .iter()
+                    .any(|entry| entry.fresh && entry.range == **range)
+            })
             .cloned()
             .collect();
         if ranges.is_empty() {
@@ -267,6 +370,9 @@ impl Editor {
         }
         state.pending = None;
         state.parsed = Some(result.parsed);
+        // The batch covers the current viewport. Discard provisional colors,
+        // including when the worker reports plain text after a budget limit.
+        state.cache.retain(|entry| entry.fresh);
         for entry in result.ranges {
             if state.cache.len() == MAX_RANGES {
                 state.cache.pop_front();
@@ -386,7 +492,11 @@ impl SyntaxWorker {
                 return None;
             }
             let spans = syntax.highlights_current(range.clone(), cancelled);
-            ranges.push(CachedRange { range, spans });
+            ranges.push(CachedRange {
+                range,
+                spans,
+                fresh: true,
+            });
         }
         if cancelled() {
             return None;
@@ -457,6 +567,212 @@ mod tests {
         ));
         assert!(editor.take_syntax_job().is_none());
         assert!(editor.syntax.borrow().synchronous.is_none());
+    }
+
+    #[test]
+    fn edits_retain_colors_but_still_request_and_apply_current_syntax() {
+        let mut editor = editor("fn main() {}\nfn other() {}\n");
+        let mut worker = SyntaxWorker::default();
+        let before = finish(&mut editor, &mut worker);
+        editor.execute("insert_mode", 1).unwrap();
+        editor.insert_text("//界 ").unwrap();
+        assert!(editor.parsed_syntax().is_none());
+        let range = ByteOffset(0)..ByteOffset(editor.document.text().len_bytes());
+        let retained = editor.syntax_highlights(range.clone());
+        let shifted: Vec<_> = before
+            .iter()
+            .map(|span| HighlightSpan {
+                range: ByteOffset(span.range.start.0 + 6)..ByteOffset(span.range.end.0 + 6),
+                highlight: span.highlight,
+            })
+            .collect();
+        assert_eq!(&*retained, shifted);
+        let job = editor
+            .take_syntax_job()
+            .expect("retained colors are provisional");
+        editor.begin_syntax_frame();
+        assert!(Arc::ptr_eq(
+            &retained,
+            &editor.syntax_highlights(range.clone())
+        ));
+        assert!(editor.take_syntax_job().is_none());
+        assert!(!job.cancellation().is_cancelled());
+        assert!(editor.apply_syntax_result(worker.run(job).unwrap()));
+        let current = editor.syntax_highlights(range.clone());
+        assert_ne!(retained, current);
+        assert!(
+            current.iter().any(|span| span.range.start == ByteOffset(0)
+                && span.highlight == crate::Highlight::Comment)
+        );
+        assert_eq!(
+            current,
+            Syntax::new(Language::Rust, &editor.document).highlights(&editor.document, range)
+        );
+        assert!(editor.take_syntax_job().is_none());
+    }
+
+    #[test]
+    fn disjoint_edits_and_grouped_undo_keep_colors_between_carets() {
+        let mut editor = editor("fn one() {}\nfn two() {}\nfn three() {}\n");
+        let mut worker = SyntaxWorker::default();
+        let before = finish(&mut editor, &mut worker);
+        let transaction = editor
+            .document
+            .transaction([
+                Edit::insert(CharOffset(0), "// "),
+                Edit::insert(CharOffset(24), "界"),
+            ])
+            .unwrap();
+        editor.apply(transaction, true).unwrap();
+        let transaction = editor
+            .document
+            .transaction([Edit::insert(
+                CharOffset(editor.document.text().len_chars()),
+                "\n",
+            )])
+            .unwrap();
+        editor.apply(transaction, true).unwrap();
+        let range = ByteOffset(0)..ByteOffset(editor.document.text().len_bytes());
+        let retained = editor.syntax_highlights(range.clone());
+        assert!(
+            retained
+                .iter()
+                .any(|span| span.range == (ByteOffset(15)..ByteOffset(17))
+                    && span.highlight == crate::Highlight::Keyword)
+        );
+        assert!(editor.take_syntax_job().is_some());
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(
+            editor.syntax_highlights(ByteOffset(0)..ByteOffset(editor.document.text().len_bytes())),
+            before
+        );
+        editor.execute("redo", 1).unwrap();
+        assert_eq!(editor.syntax_highlights(range), retained);
+    }
+
+    #[test]
+    fn changed_viewport_boundaries_reuse_clipped_disjoint_colors_until_completion() {
+        let mut editor = editor("fn main() {}\n");
+        let mut worker = SyntaxWorker::default();
+        // Overlapping views must not duplicate spans in the fallback.
+        editor.syntax_highlights(ByteOffset(0)..ByteOffset(13));
+        editor.syntax_highlights(ByteOffset(1)..ByteOffset(10));
+        let job = editor.take_syntax_job().unwrap();
+        assert!(editor.apply_syntax_result(worker.run(job).unwrap()));
+        let transaction = editor
+            .document
+            .transaction([Edit::insert(CharOffset(3), "\n")])
+            .unwrap();
+        editor.apply(transaction, true).unwrap();
+        editor.begin_syntax_frame();
+        let first = editor.syntax_highlights(ByteOffset(0)..ByteOffset(3));
+        assert_eq!(
+            &*first,
+            &[HighlightSpan {
+                range: ByteOffset(0)..ByteOffset(2),
+                highlight: crate::Highlight::Keyword
+            }]
+        );
+        let clipped = editor.syntax_highlights(ByteOffset(5)..ByteOffset(7));
+        assert_eq!(
+            &*clipped,
+            &[HighlightSpan {
+                range: ByteOffset(5)..ByteOffset(7),
+                highlight: crate::Highlight::Function
+            }]
+        );
+        assert!(editor.take_syntax_job().is_some());
+        // Joining lines also reuses both source ranges before another parse.
+        let transaction = editor
+            .document
+            .transaction([Edit::delete(CharOffset(3)..CharOffset(4))])
+            .unwrap();
+        editor.apply(transaction, true).unwrap();
+        let joined = editor.syntax_highlights(ByteOffset(0)..ByteOffset(12));
+        assert!(
+            joined
+                .iter()
+                .any(|span| span.highlight == crate::Highlight::Keyword)
+        );
+        assert!(
+            joined
+                .iter()
+                .any(|span| span.highlight == crate::Highlight::Function)
+        );
+        assert!(
+            joined
+                .windows(2)
+                .all(|pair| pair[0].range.end <= pair[1].range.start)
+        );
+    }
+
+    #[test]
+    fn replaced_tokens_and_empty_results_do_not_leave_old_colors_behind() {
+        let mut editor = editor("fn main() {}\n");
+        let mut worker = SyntaxWorker::default();
+        finish(&mut editor, &mut worker);
+        let transaction = editor
+            .document
+            .transaction([Edit::new(CharOffset(0)..CharOffset(2), "  ")])
+            .unwrap();
+        editor.apply(transaction, false).unwrap();
+        let range = ByteOffset(0)..ByteOffset(editor.document.text().len_bytes());
+        let retained = editor.syntax_highlights(range.clone());
+        assert!(!retained.is_empty());
+        assert!(
+            retained
+                .iter()
+                .all(|span| span.range.start >= ByteOffset(2))
+        );
+        let mut result = worker.run(editor.take_syntax_job().unwrap()).unwrap();
+        // Simulate a query budget fallback, even though colors existed before.
+        for entry in &mut result.ranges {
+            entry.spans = Arc::from([]);
+        }
+        assert!(editor.apply_syntax_result(result));
+        assert!(editor.syntax_highlights(range).is_empty());
+        assert!(editor.take_syntax_job().is_none());
+    }
+
+    #[test]
+    fn provisional_colors_are_cleared_on_language_reset_size_limit_or_revision_gap() {
+        let mut editor = editor("fn main() {}\n");
+        let mut worker = SyntaxWorker::default();
+        finish(&mut editor, &mut worker);
+        editor.execute("insert_mode", 1).unwrap();
+        editor.insert_text(" ").unwrap();
+        editor.set_language(Some(Language::Bash));
+        assert!(
+            editor
+                .syntax_highlights(ByteOffset(0)..ByteOffset(13))
+                .is_empty()
+        );
+        editor.set_language(Some(Language::Rust));
+        finish(&mut editor, &mut worker);
+        editor
+            .insert_text(&" ".repeat(MAX_HIGHLIGHT_BYTES))
+            .unwrap();
+        assert!(editor.syntax.borrow().cache.is_empty());
+        assert!(
+            editor
+                .syntax_highlights(ByteOffset(0)..ByteOffset(13))
+                .is_empty()
+        );
+        assert!(editor.take_syntax_job().is_none());
+        editor.execute("undo", 1).unwrap();
+        finish(&mut editor, &mut worker);
+        for _ in 0..2 {
+            let transaction = editor
+                .document
+                .transaction([Edit::insert(CharOffset(0), " ")])
+                .unwrap();
+            editor
+                .document
+                .apply(transaction, &mut editor.selections)
+                .unwrap();
+        }
+        editor.synchronize_caches();
+        assert!(editor.syntax.borrow().cache.is_empty());
     }
 
     #[test]

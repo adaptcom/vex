@@ -129,14 +129,25 @@ clipped to it. Smaller nested captures override enclosing ones, so escapes retai
 their own style inside strings; later query patterns break equal-size ties.
 Returned spans are sorted and disjoint. Up to 128 distinct ranges per buffer per frame are
 requested and cached, with at most 4,096 captures per query. Extra ranges in very
-tall viewports stay plain text. Edits invalidate highlight spans. Cursor
-movement over cached ranges does not reparse or rerun queries.
+tall viewports stay plain text. Cursor movement over cached ranges does not
+reparse or rerun queries.
+
+After an edit, cached colors follow surviving text until fresh highlights arrive,
+so typing does not flash the viewport back to plain text. Only cached viewport
+spans are remapped, using byte shifts outside the changed extent and exact
+position maps inside it, including disjoint edits and grouped undo/redo. Typing
+inside a colored token temporarily inherits its color; completely replaced
+tokens lose their old color. Newline edits and horizontal clipping reuse
+overlapping cached spans. These provisional colors never count as a completed
+request and never make an old syntax tree eligible for structural commands.
 
 New requests replace queued work and cooperatively cancel obsolete work. Results
 must match the active request, document revision, and language session before
-being applied. Resetting the same language also starts a new session. Old colors
-are cleared immediately after edits, so pending work cannot display stale spans.
-Empty results are cached too, preventing a timeout from causing a redraw loop.
+being applied. Resetting the same language also starts a new session and clears
+cached colors. A current batch replaces provisional colors, including empty
+results after a budget limit. Empty results are cached too, preventing a timeout
+from causing a redraw loop. Missing edit history or exceeding the document size
+limit clears the cache immediately.
 
 Standalone `Editor` integrations remain synchronous by default. To use a worker,
 enable `set_background_syntax`, call `begin_syntax_frame` before collecting ranges
@@ -164,8 +175,9 @@ match/capture limit. These are work limits, not hard latency guarantees: callbac
 cannot interrupt every parser or predicate operation. Grammar initialization,
 changed-region LF counting, and bounded capture resolution are also indivisible.
 
-A size or budget limit produces plain text; partial or stale highlights are never
-shown. A timed-out parse retries after an edit or an explicit `:language NAME`
+A size or budget limit produces plain text; incomplete worker results are never
+published. Retained colors may briefly reflect the previous syntax while current
+work is pending. A timed-out parse retries after an edit or an explicit `:language NAME`
 reset. A timed-out query stays plain for that cached range until eviction, an edit,
 or a language reset. Superseded requests can retry the same revision; cancellation
 does not poison its cache. Editing, saving, and undo remain available.

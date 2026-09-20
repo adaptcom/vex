@@ -877,6 +877,55 @@ mod tests {
     }
 
     #[test]
+    fn typing_keeps_visible_syntax_colors_before_the_worker_finishes() {
+        use vex_editor::{Highlight, Language, SyntaxWorker};
+        let mut editor = Editor::new(Document::from("fn main() {}\n// 界abc\nfn other() {}\n"));
+        editor.set_language(Some(Language::Rust));
+        editor.set_background_syntax(true);
+        editor
+            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(18))))
+            .unwrap();
+        editor.execute("insert_mode", 1).unwrap();
+        let mut viewport = Viewport::default();
+        render(&editor, 40, 8, &mut viewport);
+        let mut worker = SyntaxWorker::default();
+        let job = editor.take_syntax_job().unwrap();
+        assert!(editor.apply_syntax_result(worker.run(job).unwrap()));
+        for text in ["x", "界", "\n", "y"] {
+            editor.insert_text(text).unwrap();
+            let frame = render(&editor, 40, 8, &mut viewport);
+            assert_eq!(
+                frame.style_at(5, 0),
+                Some(Style::Syntax(Highlight::Keyword))
+            );
+            assert_eq!(
+                frame.style_at(8, 0),
+                Some(Style::Syntax(Highlight::Function))
+            );
+            assert_eq!(
+                frame.style_at(5, 1),
+                Some(Style::Syntax(Highlight::Comment))
+            );
+            assert!(editor.take_syntax_job().is_some());
+            // Deliberately withhold all worker results while typing.
+        }
+        editor.execute("undo", 1).unwrap();
+        let frame = render(&editor, 40, 8, &mut viewport);
+        assert_eq!(
+            frame.style_at(5, 0),
+            Some(Style::Syntax(Highlight::Keyword))
+        );
+        assert_eq!(
+            frame.style_at(5, 2),
+            Some(Style::Syntax(Highlight::Keyword))
+        );
+        let job = editor.take_syntax_job().unwrap();
+        assert!(editor.apply_syntax_result(worker.run(job).unwrap()));
+        render(&editor, 40, 8, &mut viewport);
+        assert!(editor.take_syntax_job().is_none());
+    }
+
+    #[test]
     fn horizontally_clipped_multiline_comments_keep_their_syntax_style() {
         use vex_editor::{Highlight, Language};
         let source = format!(

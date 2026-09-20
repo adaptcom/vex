@@ -126,6 +126,15 @@ impl PositionMap {
     }
 
     fn position(&self, position: CharOffset, reverse: bool) -> CharOffset {
+        self.map_position(position, Affinity::After, reverse)
+    }
+
+    pub fn map_position(
+        &self,
+        position: CharOffset,
+        affinity: Affinity,
+        reverse: bool,
+    ) -> CharOffset {
         let ranges = |change: &(Range<CharOffset>, Range<CharOffset>)| {
             if reverse {
                 (change.1.clone(), change.0.clone())
@@ -133,15 +142,29 @@ impl PositionMap {
                 change.clone()
             }
         };
-        let index = self
-            .changes
-            .partition_point(|change| ranges(change).0.start <= position);
+        let index = self.changes.partition_point(|change| match affinity {
+            Affinity::Before => ranges(change).0.start < position,
+            Affinity::After => ranges(change).0.start <= position,
+        });
+        if affinity == Affinity::Before
+            && let Some(change) = self.changes.get(index)
+        {
+            let (old, new) = ranges(change);
+            if old.start == position {
+                // Undo can turn adjacent deletions into several insertions
+                // at one position. Before stays ahead of all of them.
+                return new.start;
+            }
+        }
         let Some(change) = index.checked_sub(1).map(|index| &self.changes[index]) else {
             return position;
         };
         let (old, new) = ranges(change);
         if position < old.end || position == old.start {
-            new.end
+            match affinity {
+                Affinity::Before => new.start,
+                Affinity::After => new.end,
+            }
         } else {
             CharOffset(new.end.0 + (position.0 - old.end.0))
         }
