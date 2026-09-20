@@ -27,8 +27,9 @@ pub(crate) enum AppEvent {
     Failed(io::Error),
 }
 
-/// These snapshot services keep only their latest completion. Future services
-/// with ordered protocol messages must get a FIFO policy, not share these slots.
+/// Snapshot services keep only their latest completion. Clipboard requests admit
+/// one operation at a time; replacement requires explicit cancellation. Services
+/// with ordered protocol messages must use a FIFO rather than these slots.
 pub(crate) enum BackgroundEvent {
     Search(SearchResult),
     Syntax(Vec<SyntaxResult>),
@@ -39,6 +40,7 @@ pub(crate) enum BackgroundEvent {
     Git(vex_git::Result),
     GitStatus(vex_git::status::Result),
     FilePoll(crate::files::watch::Result),
+    Clipboard(crate::clipboard::Result),
 }
 
 #[derive(Default)]
@@ -46,7 +48,7 @@ struct Inbox {
     input: VecDeque<Event>,
     lsp: VecDeque<vex_lsp::Event>,
     git_writes: VecDeque<vex_git::write::Result>,
-    background: [Option<BackgroundEvent>; 7],
+    background: [Option<BackgroundEvent>; 8],
     next_background: usize,
     prefer_input: bool,
     failure: Option<io::Error>,
@@ -112,6 +114,7 @@ impl EventQueue {
                 BackgroundEvent::Git(_) => 4,
                 BackgroundEvent::GitStatus(_) => 5,
                 BackgroundEvent::FilePoll(_) => 6,
+                BackgroundEvent::Clipboard(_) => 7,
             };
             state.background[slot] = Some(result);
             self.0.ready.notify_one();
@@ -130,7 +133,7 @@ impl EventQueue {
         state.input.clear();
         state.lsp.clear();
         state.git_writes.clear();
-        state.background = [None, None, None, None, None, None, None];
+        state.background = [None, None, None, None, None, None, None, None];
         self.0.ready.notify_all();
         self.0.space.notify_all();
     }
@@ -296,6 +299,12 @@ impl Job for PickerJob {
     }
 }
 impl Job for PreviewJob {
+    fn cancellation(&self) -> Cancellation {
+        self.cancellation.clone()
+    }
+}
+
+impl Job for crate::clipboard::Job {
     fn cancellation(&self) -> Cancellation {
         self.cancellation.clone()
     }
@@ -487,12 +496,17 @@ pub(crate) struct Runtime {
     git_status: Option<LatestWorker<vex_git::status::Batch>>,
     git_write: Option<WriteWorker>,
     file_poll: Option<LatestWorker<crate::files::watch::Batch>>,
+    clipboard: Option<LatestWorker<crate::clipboard::Job>>,
     input: Option<JoinHandle<()>>,
 }
 
 impl Runtime {
     pub(crate) fn start() -> io::Result<Self> {
         let events = EventQueue::default();
+        let mut clipboard_state = crate::clipboard::Worker::default();
+        let clipboard = LatestWorker::spawn("vex-clipboard", events.clone(), move |job| {
+            clipboard_state.run(job).map(BackgroundEvent::Clipboard)
+        })?;
         let git_write = WriteWorker::start(events.clone())?;
         let mut poll_state = crate::files::watch::Worker::default();
         let file_poll = LatestWorker::spawn("vex-file-poll", events.clone(), move |batch| {
@@ -572,6 +586,7 @@ impl Runtime {
             git_status: Some(git_status),
             git_write: Some(git_write),
             file_poll: Some(file_poll),
+            clipboard: Some(clipboard),
             input: Some(input),
         })
     }
@@ -612,6 +627,10 @@ impl Runtime {
     pub(crate) fn submit_file_poll(&self, batch: crate::files::watch::Batch) {
         self.file_poll.as_ref().unwrap().submit(batch);
     }
+
+    pub(crate) fn submit_clipboard(&self, job: crate::clipboard::Job) {
+        self.clipboard.as_ref().unwrap().submit(job);
+    }
 }
 
 impl Drop for Runtime {
@@ -625,6 +644,7 @@ impl Drop for Runtime {
         self.git.as_ref().unwrap().stop();
         self.git_status.as_ref().unwrap().stop();
         self.file_poll.as_ref().unwrap().stop();
+        self.clipboard.as_ref().unwrap().stop();
         self.search.take();
         self.syntax.take();
         self.lsp.take();
@@ -634,6 +654,7 @@ impl Drop for Runtime {
         self.git_status.take();
         self.git_write.take();
         self.file_poll.take();
+        self.clipboard.take();
         if let Some(thread) = self.input.take() {
             let _ = thread.join();
         }
@@ -766,6 +787,9 @@ mod tests {
             }
             AppEvent::Background(BackgroundEvent::FilePoll(result)) => {
                 app.handle_file_poll(result, Instant::now());
+            }
+            AppEvent::Background(BackgroundEvent::Clipboard(result)) => {
+                app.handle_clipboard_result(result);
             }
             AppEvent::Failed(error) => panic!("{error}"),
         }

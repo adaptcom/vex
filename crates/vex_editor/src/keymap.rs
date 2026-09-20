@@ -176,6 +176,17 @@ impl Default for Keymap {
                 (vec![Char('v')], "select_mode"),
                 (vec![Char('i')], "insert_mode"),
                 (vec![Char('a')], "append_mode"),
+                (vec![Char(' '), Char('y')], "yank_to_clipboard"),
+                (
+                    vec![Char(' '), Char('Y')],
+                    "yank_main_selection_to_clipboard",
+                ),
+                (vec![Char(' '), Char('p')], "paste_clipboard_after"),
+                (vec![Char(' '), Char('P')], "paste_clipboard_before"),
+                (
+                    vec![Char(' '), Char('R')],
+                    "replace_selections_with_clipboard",
+                ),
                 (vec![Char('.')], "repeat_insert"),
                 (vec![Char('I')], "insert_at_line_start"),
                 (vec![Char('A')], "insert_at_line_end"),

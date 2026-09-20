@@ -38,8 +38,9 @@ selections, and measure operations that could affect input latency.
 
 ## Registers and input follow-ups
 
-- [ ] System clipboard commands: `<space>y`/`Y`, `<space>p`/`P`, and `<space>R`.
-  Keep platform/terminal clipboard I/O outside editor commands.
+- [x] System clipboard commands: `<space>y`/`Y`, `<space>p`/`P`, and `<space>R`.
+  Platform helpers, copy capture, and paste preparation run on the background
+  worker, preserving fragment boundaries, input order, cancellation, and undo.
 - [ ] Named registers with `"<register>` and insert/prompt Ctrl-r. Preserve
   fragment boundaries when copying between editor selections.
 - [x] Insert-mode word deletion and line kills: Ctrl-w, Ctrl-u, Ctrl-k, plus

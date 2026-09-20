@@ -4,6 +4,11 @@ Generated from command Rustdoc and the default keymap.
 
 | Command | Bindings by mode | Description |
 |---|---|---|
+| `yank_to_clipboard` | Normal: `<Space>y`, Select: `<Space>y` | Copy all selections to the system clipboard, retaining fragment boundaries for later pastes while the clipboard is unchanged. Leaves select mode; counts are ignored. The frontend performs clipboard I/O in the background. |
+| `yank_main_selection_to_clipboard` | Normal: `<Space>Y`, Select: `<Space>Y` | Copy only the primary selection to the system clipboard and leave select mode. Does not change the internal yank register; ignores counts. |
+| `paste_clipboard_after` | Normal: `<Space>p`, Select: `<Space>p` | Paste system clipboard fragments after selections in normal mode, honoring counts and the destination's line endings. Newline-terminated text pastes below selected lines. Clipboard reads and edit preparation run in the background. |
+| `paste_clipboard_before` | Normal: `<Space>P`, Select: `<Space>P` | Paste system clipboard fragments before selections in normal mode, honoring counts and the destination's line endings. Newline-terminated text pastes above selected lines. |
+| `replace_selections_with_clipboard` | Normal: `<Space>R`, Select: `<Space>R` | Replace selections with system clipboard fragments in one undo step, honoring counts and leaving the internal yank register unchanged. |
 | `repeat_insert` | Normal: `.`, Select: `.` | Repeat the last completed insert session at the current selections. Replays its entry command, counts, text, motions, and accepted completion locally. A count repeats the whole session; ordinary normal-mode edits do not replace it. |
 | `surround_add` | Normal: `ms`, Select: `ms` | Surround each selection with a character or bracket pair, selecting the result and returning to normal mode. Either bracket chooses its matching pair; other characters repeat on both sides. Enter uses the buffer's line ending. Ignores counts, leaves registers unchanged, and records one undo step. |
 | `surround_delete` | Normal: `md`, Select: `md` | Delete a surrounding pair at every cursor. Either bracket chooses its pair; m chooses the nearest pair. Counts seek outer pairs. Missing or overlapping pairs cancel all edits. Returns to normal mode with one undo step and leaves registers unchanged. |

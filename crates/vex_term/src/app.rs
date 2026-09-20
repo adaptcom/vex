@@ -15,6 +15,7 @@ use vex_editor::{
     SearchResult, SearchStatus,
 };
 
+mod clipboard;
 mod completion;
 mod git;
 mod git_write;
@@ -60,6 +61,7 @@ pub struct App {
     language: language::State,
     picker: picker::State,
     completion: completion::State,
+    clipboard: clipboard::State,
     windows: windows::State,
     git: git::State,
     status: status::State,
@@ -96,6 +98,7 @@ impl App {
             language: language::State::default(),
             picker: picker::State::default(),
             completion: completion::State::default(),
+            clipboard: clipboard::State::default(),
             windows,
             git: git::State::default(),
             status: status::State::default(),
@@ -186,6 +189,7 @@ impl App {
     }
 
     fn handle_at(&mut self, event: Event, now: std::time::Instant) -> bool {
+        self.invalidate_clipboard();
         self.observe_buffer_revision();
         let changed = self.handle_event_at(event, now);
         self.observe_buffer_revision();
@@ -275,6 +279,10 @@ impl App {
                     self.handle_prompt_key(key);
                 } else {
                     match key {
+                        Key::Escape | Key::Ctrl('c') if self.clipboard_waiting() => {
+                            self.cancel_clipboard();
+                            self.keys.cancel(&mut self.editor);
+                        }
                         Key::Escape | Key::Ctrl('c') if self.editor.repeat_pending() => {
                             self.editor.cancel_repeat();
                             self.keys.cancel(&mut self.editor);
@@ -375,6 +383,7 @@ impl App {
     }
 
     pub fn paint(&mut self, frame: &mut Frame) -> io::Result<()> {
+        self.invalidate_clipboard();
         self.observe_buffer_revision();
         self.apply_application_action();
         self.refresh_diagnostics();
@@ -478,6 +487,10 @@ impl App {
 
     fn apply_application_action(&mut self) {
         let result = match self.editor.take_application_action() {
+            Some(ApplicationAction::Clipboard(action, count)) => {
+                self.begin_clipboard(action, count);
+                Ok(())
+            }
             Some(ApplicationAction::SaveSelection) => {
                 self.record_jump();
                 self.message = "jump checkpoint saved".into();

@@ -5,7 +5,9 @@ use std::{
     ops::Range,
     sync::{Arc, Mutex},
 };
-use vex_core::{Affinity, CharOffset, Edit, Selection, SelectionSet, grapheme, motion};
+use vex_core::{
+    Affinity, CharOffset, Edit, Selection, SelectionSet, Snapshot, Transaction, grapheme, motion,
+};
 
 use crate::{CommandContext, Editor, Error, Mode};
 
@@ -46,11 +48,49 @@ pub(crate) fn capture(editor: &Editor) -> Fragments {
         .collect()
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Paste {
+/// Where supplied register fragments are inserted relative to selections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Paste {
     Before,
     After,
     Replace,
+}
+
+/// Immutable preparation inputs for clipboard/register edits on a worker.
+/// Cloning the snapshot shares rope storage rather than copying document text.
+pub struct PastePlan {
+    snapshot: Snapshot,
+    selections: SelectionSet,
+    newline: &'static str,
+}
+
+impl Editor {
+    pub fn paste_plan(&self) -> PastePlan {
+        PastePlan {
+            snapshot: self.document.snapshot(),
+            selections: self.selections.clone(),
+            newline: self.newline(),
+        }
+    }
+
+    /// Apply a prepared paste as one undo step without changing any register.
+    /// The frontend must check view and selection identity before delivery;
+    /// transaction validation rejects changed documents and revisions.
+    pub fn apply_paste(&mut self, transaction: Transaction) -> Result<(), Error> {
+        self.apply(transaction, false)?;
+        self.mode = Mode::Normal;
+        self.selections = self.normalized(self.selections.clone(), self.mode)?;
+        self.preferred_columns = None;
+        Ok(())
+    }
+}
+
+fn check(cancelled: &impl Fn() -> bool) -> Result<(), Error> {
+    if cancelled() {
+        Err(Error::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 fn overflow() -> Error {
@@ -64,7 +104,12 @@ fn string_with_capacity(capacity: usize) -> Result<String, Error> {
 }
 
 /// Normalize only line endings; share an unchanged, uncounted fragment directly.
-fn prepare(value: &Arc<str>, newline: &str, count: usize) -> Result<Arc<str>, Error> {
+fn prepare(
+    value: &Arc<str>,
+    newline: &str,
+    count: usize,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Arc<str>, Error> {
     let bytes = value.as_bytes();
     let convert = match newline {
         "\n" => value.contains('\r'),
@@ -83,11 +128,14 @@ fn prepare(value: &Arc<str>, newline: &str, count: usize) -> Result<Arc<str>, Er
                 .checked_mul(newline.len())
                 .ok_or_else(overflow)?,
         )?;
-        let mut chars = value.chars().peekable();
-        while let Some(ch) = chars.next() {
+        let mut chars = value.chars().enumerate().peekable();
+        while let Some((index, ch)) = chars.next() {
+            if index % 1024 == 0 {
+                check(cancelled)?;
+            }
             match ch {
                 '\r' => {
-                    if chars.peek() == Some(&'\n') {
+                    if chars.peek().is_some_and(|(_, ch)| *ch == '\n') {
                         chars.next();
                     }
                     normalized.push_str(newline);
@@ -107,7 +155,10 @@ fn prepare(value: &Arc<str>, newline: &str, count: usize) -> Result<Arc<str>, Er
         });
     }
     let mut repeated = string_with_capacity(text.len().checked_mul(count).ok_or_else(overflow)?)?;
-    for _ in 0..count {
+    for index in 0..count {
+        if index % 1024 == 0 {
+            check(cancelled)?;
+        }
         repeated.push_str(&text);
     }
     Ok(repeated.into())
@@ -140,30 +191,48 @@ impl Group {
 pub(crate) fn paste(ctx: &mut CommandContext<'_>, action: Paste) -> Result<(), Error> {
     let editor = &mut *ctx.editor;
     let values = editor.yank_register.read();
-    if values.is_empty() {
-        return Err(Error::EmptyYankRegister);
-    }
-    let linewise =
-        action != Paste::Replace && values.iter().any(|value| value.ends_with(['\r', '\n']));
-    let values = values
-        .iter()
-        .take(editor.selections.ranges().len())
-        .map(|value| {
-            let text = prepare(value, editor.newline(), ctx.count.get())?;
-            let chars = text.chars().count();
-            Ok((text, chars))
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    let text = editor.document.text();
-    let mut groups: Vec<Group> = Vec::new();
-    let mut spans = Vec::with_capacity(editor.selections.ranges().len());
-    for (index, &selection) in editor.selections.ranges().iter().enumerate() {
-        let (value, chars) = &values[index.min(values.len() - 1)];
-        let range = match action {
-            Paste::Replace => selection.range(),
-            Paste::Before | Paste::After => {
-                let at =
-                    if linewise {
+    let transaction = editor
+        .paste_plan()
+        .prepare(&values, action, ctx.count, &|| false)?;
+    editor.apply_paste(transaction)
+}
+
+impl PastePlan {
+    /// Prepare edits without touching a live editor. Values pair with selections
+    /// in document order; extra destinations repeat the last value.
+    pub fn prepare(
+        &self,
+        values: &[Arc<str>],
+        action: Paste,
+        count: std::num::NonZeroUsize,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<Transaction, Error> {
+        check(cancelled)?;
+        if values.is_empty() {
+            return Err(Error::EmptyYankRegister);
+        }
+        let linewise =
+            action != Paste::Replace && values.iter().any(|value| value.ends_with(['\r', '\n']));
+        let values = values
+            .iter()
+            .take(self.selections.ranges().len())
+            .map(|value| {
+                check(cancelled)?;
+                let text = prepare(value, self.newline, count.get(), cancelled)?;
+                let chars = text.chars().count();
+                Ok((text, chars))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let text = self.snapshot.text();
+        let mut groups: Vec<Group> = Vec::new();
+        let mut spans = Vec::with_capacity(self.selections.ranges().len());
+        for (index, &selection) in self.selections.ranges().iter().enumerate() {
+            check(cancelled)?;
+            let (value, chars) = &values[index.min(values.len() - 1)];
+            let range = match action {
+                Paste::Replace => selection.range(),
+                Paste::Before | Paste::After => {
+                    let at = if linewise {
                         if action == Paste::Before {
                             motion::line_start(text, selection.start())?
                         } else {
@@ -181,63 +250,65 @@ pub(crate) fn paste(ctx: &mut CommandContext<'_>, action: Paste) -> Result<(), E
                     } else {
                         selection.end()
                     };
-                at..at
-            }
-        };
-        if !groups
-            .last()
-            .is_some_and(|group| range.is_empty() && group.range == range)
-        {
-            let mut group = Group {
-                range,
-                parts: Vec::new(),
-                chars: 0,
+                    at..at
+                }
             };
-            // A linewise append to an unterminated final line needs a separator.
-            if linewise
-                && action == Paste::After
-                && group.range.start.0 == text.len_chars()
-                && text.len_chars() > 0
-                && !matches!(text.char(text.len_chars() - 1), '\r' | '\n')
+            if !groups
+                .last()
+                .is_some_and(|group| range.is_empty() && group.range == range)
             {
-                group.parts.push(Arc::from(editor.newline()));
-                group.chars = editor.newline().len();
+                let mut group = Group {
+                    range,
+                    parts: Vec::new(),
+                    chars: 0,
+                };
+                // A linewise append to an unterminated final line needs a separator.
+                if linewise
+                    && action == Paste::After
+                    && group.range.start.0 == text.len_chars()
+                    && text.len_chars() > 0
+                    && !matches!(text.char(text.len_chars() - 1), '\r' | '\n')
+                {
+                    group.parts.push(Arc::from(self.newline));
+                    group.chars = self.newline.len();
+                }
+                groups.push(group);
             }
-            groups.push(group);
+            let group_index = groups.len() - 1;
+            let group = &mut groups[group_index];
+            spans.push((group_index, group.chars, *chars, selection.is_backward()));
+            group.chars = group.chars.checked_add(*chars).ok_or_else(overflow)?;
+            group.parts.push(value.clone());
         }
-        let group_index = groups.len() - 1;
-        let group = &mut groups[group_index];
-        spans.push((group_index, group.chars, *chars, selection.is_backward()));
-        group.chars = group.chars.checked_add(*chars).ok_or_else(overflow)?;
-        group.parts.push(value.clone());
-    }
-    let edits = groups
-        .iter()
-        .map(|group| Ok(Edit::new(group.range.clone(), group.text()?)))
-        .collect::<Result<Vec<_>, Error>>()?;
-    let transaction = editor.document.transaction(edits)?;
-    let selections = spans
-        .into_iter()
-        .map(|(group, offset, len, backward)| {
-            let at = transaction
-                .map_position(groups[group].range.start, Affinity::Before)?
-                .0;
-            let start = CharOffset(at.checked_add(offset).ok_or_else(overflow)?);
-            let end = CharOffset(start.0.checked_add(len).ok_or_else(overflow)?);
-            Ok(if backward {
-                Selection::new(end, start)
-            } else {
-                Selection::new(start, end)
+        let edits = groups
+            .iter()
+            .map(|group| {
+                check(cancelled)?;
+                Ok(Edit::new(group.range.clone(), group.text()?))
             })
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    let selections = SelectionSet::new(selections, editor.selections.primary_index())?;
-    let transaction = transaction.with_selections(selections)?;
-    editor.apply(transaction, false)?;
-    editor.mode = Mode::Normal;
-    editor.selections = editor.normalized(editor.selections.clone(), editor.mode)?;
-    editor.preferred_columns = None;
-    Ok(())
+            .collect::<Result<Vec<_>, Error>>()?;
+        let transaction = self.snapshot.transaction(edits)?;
+        let selections = spans
+            .into_iter()
+            .map(|(group, offset, len, backward)| {
+                check(cancelled)?;
+                let at = transaction
+                    .map_position(groups[group].range.start, Affinity::Before)?
+                    .0;
+                let start = CharOffset(at.checked_add(offset).ok_or_else(overflow)?);
+                let end = CharOffset(start.0.checked_add(len).ok_or_else(overflow)?);
+                Ok(if backward {
+                    Selection::new(end, start)
+                } else {
+                    Selection::new(start, end)
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let selections = SelectionSet::new(selections, self.selections.primary_index())?;
+        let transaction = transaction.with_selections(selections)?;
+        check(cancelled)?;
+        Ok(transaction)
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +316,45 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use vex_core::Document;
+
+    #[test]
+    fn prepared_pastes_reject_stale_revisions_and_other_documents() {
+        let mut source = Editor::new(Document::from("abc"));
+        let transaction = source
+            .paste_plan()
+            .prepare(
+                &[Arc::from("X")],
+                Paste::After,
+                std::num::NonZeroUsize::MIN,
+                &|| false,
+            )
+            .unwrap();
+        let mut other = Editor::new(Document::from("abc"));
+        assert!(other.apply_paste(transaction.clone()).is_err());
+        source.execute("insert_mode", 1).unwrap();
+        source.insert_text("z").unwrap();
+        source.execute("normal_mode", 1).unwrap();
+        assert!(source.apply_paste(transaction).is_err());
+        assert_eq!(source.document().text(), "zabc");
+        assert_eq!(other.document().text(), "abc");
+    }
+
+    #[test]
+    fn counted_paste_preparation_observes_cancellation_before_finishing() {
+        let source = Editor::new(Document::from("abc"));
+        let calls = std::cell::Cell::new(0);
+        let result = source.paste_plan().prepare(
+            &[Arc::from("x")],
+            Paste::After,
+            std::num::NonZeroUsize::new(1_000_000).unwrap(),
+            &|| {
+                calls.set(calls.get() + 1);
+                calls.get() > 6
+            },
+        );
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert_eq!(source.document().text(), "abc");
+    }
 
     fn range(anchor: usize, head: usize) -> Selection {
         Selection::new(CharOffset(anchor), CharOffset(head))

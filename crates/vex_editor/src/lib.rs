@@ -37,7 +37,7 @@ mod views;
 pub use commands::{Command, CommandContext, CommandInput};
 pub use error::Error;
 pub use keymap::{Binding, Dispatch, Key, KeyHandler, KeyHints, Keymap};
-pub use register::YankRegister;
+pub use register::{Paste, PastePlan, YankRegister};
 pub use repeat::Session;
 pub use search::{
     SearchCancellation, SearchCompletion, SearchJob, SearchPrompt, SearchResult, SearchStatus,
@@ -69,6 +69,7 @@ pub enum LanguageAction {
 /// Application UI requested by documented commands without performing file I/O.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApplicationAction {
+    Clipboard(ClipboardAction, usize),
     SaveSelection,
     GitStatus,
     FilePicker,
@@ -79,6 +80,14 @@ pub enum ApplicationAction {
     HalfPageUp(usize),
     HalfPageDown(usize),
     Window(WindowAction, usize),
+}
+
+/// System clipboard operations interpreted by a frontend's background service.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardAction {
+    Yank,
+    YankMain,
+    Paste(Paste),
 }
 
 /// Buffer navigation interpreted by the frontend, without reading files here.

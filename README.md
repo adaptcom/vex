@@ -213,6 +213,11 @@ including its entry command, editing actions, and accepted completion text.
 The recording is shared across buffers and uses command functions rather than
 terminal keys. Counted playback yields between batches in the event loop.
 
+`Space-y`/`Y` copy all selections / the primary selection to the system clipboard;
+`Space-p`/`P`/`R` paste after / before / replacing selections. The
+[clipboard service](docs/clipboard.md) preserves fragment boundaries and performs
+clipboard I/O and paste preparation on a background worker.
+
 The implemented commands cover `hjkl`, arrows, `w`/`b`/`e`, `W`/`B`/`E`,
 cross-line `f`/`F`/`t`/`T`, `gs`, counted `gg`/`G` and `g|`, line/document bounds,
 `Ctrl-u`/`Ctrl-d` for half-page movement and scrolling in normal/select mode,

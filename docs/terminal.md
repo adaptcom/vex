@@ -54,6 +54,8 @@ and calls that existing dispatcher.
 | `y` | Yank selections to the internal register shared across files and panes |
 | `p`, `P` | Paste after/before selections; newline-terminated yanks paste below/above selected lines |
 | `R` | Replace selections with yanked text without overwriting the register |
+| Space-y, Space-Y | [Copy to the system clipboard](clipboard.md): all selections / primary selection |
+| Space-p, Space-P, Space-R | Paste clipboard after / before / replacing selections |
 | `d`, `c` | Cut selections to the internal register, then delete/change them |
 | `%` | Select the entire document |
 | `;` | Collapse each selection to its displayed cursor |

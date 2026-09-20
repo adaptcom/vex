@@ -459,7 +459,36 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
     normalize(editor)
 }
 
+fn clipboard(ctx: &mut CommandContext<'_>, action: crate::ClipboardAction) -> Result<(), Error> {
+    if ctx.editor.mode == Mode::Insert {
+        return Err(Error::WrongMode {
+            expected: Mode::Normal,
+            actual: Mode::Insert,
+        });
+    }
+    ctx.editor.finish_undo_group();
+    ctx.editor.mode = Mode::Normal;
+    ctx.editor
+        .request_application_action(crate::ApplicationAction::Clipboard(action, ctx.count.get()));
+    Ok(())
+}
+
 commands! {
+    /// Copy all selections to the system clipboard, retaining fragment boundaries for later pastes while the clipboard is unchanged. Leaves select mode; counts are ignored. The frontend performs clipboard I/O in the background.
+    fn yank_to_clipboard(ctx) { clipboard(ctx, crate::ClipboardAction::Yank) }
+
+    /// Copy only the primary selection to the system clipboard and leave select mode. Does not change the internal yank register; ignores counts.
+    fn yank_main_selection_to_clipboard(ctx) { clipboard(ctx, crate::ClipboardAction::YankMain) }
+
+    /// Paste system clipboard fragments after selections in normal mode, honoring counts and the destination's line endings. Newline-terminated text pastes below selected lines. Clipboard reads and edit preparation run in the background.
+    fn paste_clipboard_after(ctx) { clipboard(ctx, crate::ClipboardAction::Paste(crate::Paste::After)) }
+
+    /// Paste system clipboard fragments before selections in normal mode, honoring counts and the destination's line endings. Newline-terminated text pastes above selected lines.
+    fn paste_clipboard_before(ctx) { clipboard(ctx, crate::ClipboardAction::Paste(crate::Paste::Before)) }
+
+    /// Replace selections with system clipboard fragments in one undo step, honoring counts and leaving the internal yank register unchanged.
+    fn replace_selections_with_clipboard(ctx) { clipboard(ctx, crate::ClipboardAction::Paste(crate::Paste::Replace)) }
+
     /// Repeat the last completed insert session at the current selections. Replays its entry command, counts, text, motions, and accepted completion locally. A count repeats the whole session; ordinary normal-mode edits do not replace it.
     fn repeat_insert(ctx) { crate::repeat::start(ctx) }
 

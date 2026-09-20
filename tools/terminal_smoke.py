@@ -23,7 +23,7 @@ import time
 
 
 class Terminal:
-    def __init__(self, arguments):
+    def __init__(self, arguments, env=None):
         self.master, self.slave = os.openpty()
         self.original = termios.tcgetattr(self.slave)
         self.output = bytearray()
@@ -42,6 +42,8 @@ class Terminal:
                 if self.slave > 2:
                     os.close(self.slave)
                 os.environ["TERM"] = "xterm-256color"
+                if env:
+                    os.environ.update(env)
                 # Exercise colors even when the surrounding test runner disables
                 # them. This only changes the controlled PTY child's environment.
                 os.environ.pop("NO_COLOR", None)
@@ -486,6 +488,43 @@ def main():
             terminal.finish()
             assert repeat_path.read_text() == "a" + "X" * 101 + "\n"
         print("PASS: counted insert replay and queued save preserve input order")
+
+        # Isolate clipboard helpers from the desktop clipboard. A slow helper
+        # makes copy/paste overlap queued edits and save commands in the PTY.
+        helper_dir = Path(directory) / "clipboard-bin"
+        helper_dir.mkdir()
+        clipboard_file = Path(directory) / "private-clipboard"
+        clipboard_file.write_text("")
+        for name, body in [
+            ("pbcopy", 'cat > "$VEX_SMOKE_CLIPBOARD"'),
+            ("pbpaste", 'cat "$VEX_SMOKE_CLIPBOARD"'),
+            ("termux-clipboard-set", 'cat > "$VEX_SMOKE_CLIPBOARD"'),
+            ("termux-clipboard-get", 'cat "$VEX_SMOKE_CLIPBOARD"'),
+        ]:
+            helper = helper_dir / name
+            helper.write_text(f"#!/bin/sh\nsleep 0.05\n{body}\n")
+            helper.chmod(0o700)
+        clipboard_env = {
+            "PATH": str(helper_dir) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+            "TMUX": "", "VEX_SMOKE_CLIPBOARD": str(clipboard_file),
+        }
+        clipboard_path = Path(directory) / "clipboard.txt"
+        original = "e\u0301界\r\n".encode()
+        clipboard_path.write_bytes(original)
+        with Terminal([binary, str(clipboard_path)], env=clipboard_env) as terminal:
+            terminal.start()
+            terminal.send(b"% yd puU:wq\r")
+            terminal.finish()
+            assert clipboard_path.read_bytes() == original
+            assert clipboard_file.read_bytes() == original
+        clipboard_path.write_text("abc")
+        clipboard_file.write_text("X")
+        with Terminal([binary, str(clipboard_path)], env=clipboard_env) as terminal:
+            terminal.start()
+            terminal.send(b"2 P:wq\r")
+            terminal.finish()
+            assert clipboard_path.read_text() == "XXabc"
+        print("PASS: background clipboard copy/paste, CRLF, counts, undo, and queued save")
 
         with Terminal([binary]) as terminal:
             terminal.start()

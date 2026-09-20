@@ -279,11 +279,34 @@ fn buffers(c: &mut Criterion) {
     group.finish();
 }
 
+fn clipboard(c: &mut Criterion) {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut group = c.benchmark_group("clipboard_schedule_cancel");
+    for mib in [1usize, 100] {
+        let mut app = App::from_document(
+            Document::from("line\n".repeat((mib << 20).div_ceil(5)).as_str()),
+            (120, 40),
+        );
+        // Select the entire document before measuring. No clipboard provider is
+        // invoked: this isolates UI dispatch, snapshot scheduling, and cancel.
+        app.editor.execute("select_all", 1).unwrap();
+        group.bench_function(BenchmarkId::from_parameter(mib), |b| {
+            b.iter(|| {
+                for key in [KeyCode::Char(' '), KeyCode::Char('y'), KeyCode::Esc] {
+                    app.handle(Event::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+                }
+                black_box(app.editor.selections());
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = rendering, long_lines, rust_syntax, background_syntax, buffers
+    targets = rendering, long_lines, rust_syntax, background_syntax, buffers, clipboard
 }
 criterion_main!(benches);

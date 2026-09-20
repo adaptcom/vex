@@ -162,6 +162,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
         if let Some(batch) = app.take_file_poll(Instant::now()) {
             runtime.submit_file_poll(batch);
         }
+        if let Some(job) = app.take_clipboard_job() {
+            runtime.submit_clipboard(job);
+        }
         while let Some(job) = app.take_git_write() {
             runtime.submit_git_write(job);
         }
@@ -242,12 +245,18 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::FilePoll(result)) => {
                     redraw |= app.handle_file_poll(result, Instant::now());
                 }
+                AppEvent::Background(BackgroundEvent::Clipboard(result)) => {
+                    redraw |= app.handle_clipboard_result(result);
+                }
                 AppEvent::Lsp(event) => redraw |= app.handle_lsp_event(event),
                 AppEvent::GitWrite(result) => redraw |= app.handle_git_write(result),
                 AppEvent::Failed(error) => return Err(error),
             }
             if let Some(job) = app.editor.take_search_job() {
                 runtime.submit(job);
+            }
+            if let Some(job) = app.take_clipboard_job() {
+                runtime.submit_clipboard(job);
             }
             if let Some(update) = app.take_lsp_update() {
                 runtime.update_lsp(update);

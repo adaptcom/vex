@@ -80,6 +80,23 @@ per batch, checking a four-millisecond deadline between actions, then services
 input/background results and draws. An individual existing command or large
 paste remains nonpreemptible, so the deadline is a cooperative scheduling bound.
 
+## Clipboard scheduling
+
+Recorded on 2026-09-20 with the same optimized profile:
+
+```sh
+cargo bench -p vex_term --bench rendering --locked -- clipboard_schedule_cancel --noplot
+```
+
+Scheduling `Space-y` for an entire selected buffer, then cancelling with Escape,
+took 0.165 µs for both 1 MiB and 100 MiB source fixtures. The timed path includes
+three input events, command dispatch, shared snapshot/selection capture, and
+cancellation. Document construction and select-all happen before measurement.
+No provider is started and no selected text is flattened: this measures the UI
+handoff cost, excluding worker wakeup, text capture, clipboard processes, paste
+preparation/application, drawing, and terminal latency. Actual copying remains
+proportional to selected text on the worker.
+
 ## Retained buffers
 
 Recorded on 2026-09-20 on the same development machine and optimized profile:
