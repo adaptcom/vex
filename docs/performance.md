@@ -1147,3 +1147,33 @@ open picker. Real rust-analyzer PTY checks exercise both diagnostic pickers.
 ```sh
 cargo test -p vex_term --release --locked benchmark_diagnostic_picker_submission_and_filtering -- --ignored --nocapture
 ```
+
+## Signature help and completion kinds
+
+Signature help observes a small document/revision/primary-selection/window stamp.
+It does not clone document text or all selections while polling. The existing
+terminal deadline wakes after 120 ms; a signature waits behind completion or
+resolve requests without spinning the event loop. The language worker decodes
+up to 32 signatures, with 4 KiB labels, 64 KiB of total source, 4096 output lines,
+and a shared 25 ms Markdown parse budget. UTF-16 active-parameter conversion is
+bounded by the label size. Popup wrapping is cached by width for each overload.
+
+A release run on a 1 MB document, with 1000 samples after the first popup paint:
+
+| Operation | Median | p95 |
+|---|---:|---:|
+| Unchanged signature context observation | 41 ns | 42 ns |
+| Cached one-line signature popup painting | 3.33 µs | 4.17 µs |
+
+These measurements exclude startup, file I/O, protocol/Markdown preparation,
+first wrapping, completion panels, and terminal output. They measure the idle
+check and cached UI work, not end-to-end language-server latency. Reproduce with:
+
+```sh
+cargo test -p vex_term --release --lib benchmark_signature_idle_and_cached_paint --locked -- --ignored --nocapture
+```
+
+Completion kind decoding and label/kind column sizing happen when a bounded list
+arrives. Repaints visit only the visible completion rows and use static kind
+names; there is no per-frame scan of the full candidate list or padded-string
+allocation. Missing or unknown kinds are blank, and tiny menus omit the column.

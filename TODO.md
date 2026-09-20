@@ -106,9 +106,12 @@ selections, and measure operations that could affect input latency.
   and accepts unopened-file publications. Both pickers filter and prepare labels
   on the worker, preview unsaved buffers with syntax, preserve last-picker state,
   and reject stale revisions; empty publications remove old entries.
-- [ ] Scrollable hover documentation and signature help.
+- [x] Scrollable hover documentation and signature help.
   Hover now has a bordered Markdown popup, cached wrapping, and Helix-style
-  Ctrl-u/Ctrl-d and PageUp/PageDown scrolling. Signature help remains.
+  Ctrl-u/Ctrl-d and PageUp/PageDown scrolling. Signature help uses a 120 ms
+  debounce, server triggers, grey active-parameter highlighting, Markdown docs,
+  and Alt-p/Alt-n overload navigation. It follows Helix popup scrolling, waits
+  behind completion requests, avoids overlapping menus, and rejects stale replies.
 - [ ] Git change navigation: `[g`/`]g`, `[G`/`]G`, and change textobjects.
 - [ ] Remap cached Git gutter markers across line insertions/deletions while
   a background diff is pending.

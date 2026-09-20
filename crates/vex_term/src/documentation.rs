@@ -9,6 +9,32 @@ use unicode_width::UnicodeWidthStr;
 use vex_core::display;
 use vex_syntax::markup::{Attributes, Document, Line, Span};
 
+#[derive(Clone, Copy)]
+pub(crate) struct Area {
+    pub left: u16,
+    pub top: u16,
+    pub right: u16,
+    pub bottom: u16,
+}
+
+impl Area {
+    fn intersects(self, other: Self) -> bool {
+        self.left < other.right
+            && other.left < self.right
+            && self.top < other.bottom
+            && other.top < self.bottom
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            left: self.left.min(other.left),
+            top: self.top.min(other.top),
+            right: self.right.max(other.right),
+            bottom: self.bottom.max(other.bottom),
+        }
+    }
+}
+
 pub(crate) struct Popup {
     document: Document,
     preferred: u16,
@@ -121,19 +147,49 @@ impl Popup {
     }
 
     pub fn paint(&mut self, frame: &mut Frame, body: u16) {
-        let Some(cursor) = frame.cursor else { return };
+        self.paint_at(frame, body, " Documentation ", false, None);
+    }
+
+    /// Signature help prefers space above the caret and leaves it visible.
+    pub fn paint_signature(
+        &mut self,
+        frame: &mut Frame,
+        body: u16,
+        title: &str,
+        avoid: Option<Area>,
+    ) -> bool {
+        self.paint_at(frame, body, title, true, avoid)
+    }
+
+    fn paint_at(
+        &mut self,
+        frame: &mut Frame,
+        body: u16,
+        title: &str,
+        signature: bool,
+        avoid: Option<Area>,
+    ) -> bool {
+        let Some(cursor) = frame.cursor else {
+            return false;
+        };
         let width = self.preferred.min(frame.width());
         if width < 8 {
-            return;
+            return false;
         }
         self.layout(width - 4);
         let below = body.saturating_sub(cursor.y.saturating_add(1));
         let above = cursor.y;
         let desired = self.rows.len().clamp(1, 22) as u16 + 2;
-        let under = below >= desired || below >= above;
+        let under = if signature {
+            // Keep long documentation above a completion menu when at least
+            // a few rows fit there; scrolling handles the remaining content.
+            above < desired && above < 6 && below >= above
+        } else {
+            below >= desired || below >= above
+        };
         let height = desired.min(if under { below } else { above });
         if height < 3 {
-            return;
+            return false;
         }
         let x = cursor.x.saturating_sub(1).min(frame.width() - width);
         let y = if under {
@@ -141,6 +197,15 @@ impl Popup {
         } else {
             cursor.y - height
         };
+        let area = Area {
+            left: x,
+            top: y,
+            right: x + width,
+            bottom: y + height,
+        };
+        if avoid.is_some_and(|other| area.intersects(other)) {
+            return false;
+        }
         self.visible = usize::from(height - 2);
         self.top = self.top.min(self.rows.len().saturating_sub(self.visible));
         paint_box(
@@ -149,10 +214,10 @@ impl Popup {
             y,
             x + width,
             y + height,
-            if self.document.truncated {
+            if self.document.truncated && !signature {
                 " Documentation · limited "
             } else {
-                " Documentation "
+                title
             },
         );
         for (index, line) in self
@@ -190,7 +255,10 @@ impl Popup {
                 Style::Gutter,
             );
         }
-        frame.cursor = None;
+        if !signature {
+            frame.cursor = None;
+        }
+        true
     }
 }
 

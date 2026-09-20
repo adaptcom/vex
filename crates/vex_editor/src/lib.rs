@@ -61,6 +61,7 @@ pub enum Mode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LanguageAction {
     Hover,
+    SignatureHelp,
     Definition,
     TypeDefinition,
     Implementation,

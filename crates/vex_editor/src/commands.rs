@@ -782,6 +782,12 @@ commands! {
         Ok(())
     }
 
+    /// Show function signatures and the active parameter at the primary cursor. Normally opens automatically in insert mode; Alt-p/Alt-n cycle overloads. No default binding, matching Helix.
+    fn signature_help(ctx) {
+        ctx.editor.request_language_action(crate::LanguageAction::SignatureHelp);
+        Ok(())
+    }
+
     /// Jump to the definition of the symbol at the primary cursor.
     fn goto_definition(ctx) {
         ctx.editor.finish_undo_group();

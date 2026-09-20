@@ -60,6 +60,7 @@ Generated from command Rustdoc and the default keymap.
 | `jump_forward` | Normal: `<C-i>`, Normal: `<Tab>`, Select: `<C-i>`, Select: `<Tab>` | Move forward through this pane's jump history. Accepts a count. |
 | `jump_back` |  | Alias for jump_backward; the default Ctrl-o binding uses the Helix command name. |
 | `hover` | Normal: `<Space>k`, Select: `<Space>k` | Show language-server documentation for the symbol at the primary cursor. |
+| `signature_help` |  | Show function signatures and the active parameter at the primary cursor. Normally opens automatically in insert mode; Alt-p/Alt-n cycle overloads. No default binding, matching Helix. |
 | `goto_definition` | Normal: `gd`, Select: `gd` | Jump to the definition of the symbol at the primary cursor. |
 | `goto_type_definition` | Normal: `gy`, Select: `gy` | Jump to the type definition of the symbol at the primary cursor, or pick among destinations. |
 | `goto_implementation` | Normal: `gi`, Select: `gi` | Jump to an implementation of the symbol at the primary cursor, or pick among destinations. |

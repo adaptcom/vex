@@ -14,6 +14,8 @@ const MAX_PREFIX_CHARS: usize = 256;
 #[derive(Clone, Debug)]
 pub struct CompletionItem {
     pub label: String,
+    /// LSP CompletionItemKind; zero means the server did not provide a kind.
+    pub kind: u32,
     pub detail: String,
     pub documentation: String,
     pub edit: Edit,
@@ -27,12 +29,44 @@ impl CompletionItem {
     pub fn plain(label: impl Into<String>, edit: Edit) -> Self {
         Self {
             label: label.into(),
+            kind: 0,
             detail: String::new(),
             documentation: String::new(),
             edit,
             additional_edits: Vec::new(),
             resolved: true,
             raw: Value::Null,
+        }
+    }
+
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            1 => "text",
+            2 => "method",
+            3 => "function",
+            4 => "constructor",
+            5 => "field",
+            6 => "variable",
+            7 => "class",
+            8 => "interface",
+            9 => "module",
+            10 => "property",
+            11 => "unit",
+            12 => "value",
+            13 => "enum",
+            14 => "keyword",
+            15 => "snippet",
+            16 => "color",
+            17 => "file",
+            18 => "reference",
+            19 => "folder",
+            20 => "enum member",
+            21 => "constant",
+            22 => "struct",
+            23 => "event",
+            24 => "operator",
+            25 => "type parameter",
+            _ => "",
         }
     }
 }
@@ -156,6 +190,10 @@ fn item(
         .unwrap_or_default();
     Some(CompletionItem {
         label: bounded(label, 256),
+        kind: raw["kind"]
+            .as_u64()
+            .and_then(|kind| u32::try_from(kind).ok())
+            .unwrap_or(0),
         detail: bounded(raw["detail"].as_str().unwrap_or_default(), 1024),
         documentation: bounded(documentation, 4096),
         edit: Edit::new(replacement, inserted),
@@ -275,7 +313,7 @@ mod tests {
         let values = json!({"isIncomplete":true,"items":[
             {"label":"answer_two", "sortText":"2"},
             {"label":"unrelated"},
-            {"label":"answer", "sortText":"1", "textEdit":{"range":{"start":{"line":1,"character":12},"end":{"line":1,"character":15}},"newText":"answer()"},"data":{"key":5}},
+            {"label":"answer", "kind":3, "sortText":"1", "textEdit":{"range":{"start":{"line":1,"character":12},"end":{"line":1,"character":15}},"newText":"answer()"},"data":{"key":5}},
             {"label":"ans_snippet", "insertTextFormat":2, "insertText":"ans($1)"}
         ]});
         let list = parse(values, &text, cursor, true).unwrap();
@@ -288,16 +326,43 @@ mod tests {
             ["answer", "answer_two"]
         );
         let first = &list.items[0];
+        assert_eq!(first.kind_name(), "function");
+        assert_eq!(list.items[1].kind_name(), "");
         assert_eq!(
             text.slice(first.edit.range().start.0..first.edit.range().end.0),
             "ans"
         );
         assert!(!first.resolved);
-        let resolved = resolve(first, json!({"label":"answer", "documentation":{"kind":"plaintext","value":"Docs"},"additionalTextEdits":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":"use demo::answer;\n"}]}), &text, cursor).unwrap();
+        let resolved = resolve(first, json!({"label":"answer", "kind":5, "documentation":{"kind":"plaintext","value":"Docs"},"additionalTextEdits":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"newText":"use demo::answer;\n"}]}), &text, cursor).unwrap();
+        assert_eq!(resolved.kind_name(), "function");
         assert_eq!(resolved.edit.text(), "answer()");
         assert_eq!(resolved.additional_edits.len(), 1);
         assert_eq!(resolved.documentation, "Docs");
         assert_eq!(resolved.raw["data"]["key"], 5);
+    }
+
+    #[test]
+    fn completion_kinds_accept_the_full_protocol_set_and_ignore_unknown_values() {
+        let text = Rope::from_str("");
+        for (value, name) in [
+            (json!(2), "method"),
+            (json!(5), "field"),
+            (json!(25), "type parameter"),
+            (json!(26), ""),
+            (json!(-1), ""),
+            (json!(u64::MAX), ""),
+            (json!("5"), ""),
+            (Value::Null, ""),
+        ] {
+            let items = parse(
+                json!([{"label":"name","kind":value}]),
+                &text,
+                CharOffset(0),
+                false,
+            )
+            .unwrap();
+            assert_eq!(items.items[0].kind_name(), name);
+        }
     }
 
     #[test]

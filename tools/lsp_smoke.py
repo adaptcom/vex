@@ -8,9 +8,10 @@ toolchain must be installed. Protocol and editor unit tests live in Rust sources
 import argparse
 import os
 from pathlib import Path
+import re
 import tempfile
 
-from terminal_smoke import Terminal
+from terminal_smoke import Terminal, displayed_text
 
 
 def empty_diagnostic_pickers(binary, directory):
@@ -47,6 +48,64 @@ def main():
         )
         (project / "src").mkdir()
         main_file = project / "src/main.rs"
+        main_file.write_text(
+            "/// Add **two** values.\n"
+            "fn add(left: u32, right: u32) -> u32 { left + right }\n"
+            "fn main() { let _ = add(1, 2); }\n"
+        )
+        with Terminal([binary, str(main_file)]) as terminal:
+            terminal.start()
+            terminal.resize(140, 24)
+            terminal.expect_screen(b"RA:ready")
+            terminal.send(b"/add\\(1\r")
+            # Search includes the first argument; inserting before it puts the
+            # caret inside the call. Retry insert entry if indexing is still busy.
+            terminal.send(b";")
+            for attempt in range(3):
+                terminal.send(b"i")
+                try:
+                    terminal.expect_screen_idle("Signature")
+                    terminal.expect_screen_idle("left: u32")
+                    break
+                except AssertionError:
+                    if attempt == 2:
+                        raise
+                    terminal.leave_insert()
+            assert b"\x1b[48;5;7mleft: u32" in terminal.output
+            mark = terminal.send(b"1,")
+            terminal.expect(b"\x1b[48;5;7mright: u32", mark)
+            terminal.leave_insert()
+            terminal.send(b":q!\r")
+            terminal.finish()
+        print("PASS: automatic rust-analyzer signature help and active parameter updates")
+
+        main_file.write_text(
+            "struct Demo { member: u32 }\n"
+            "impl Demo { fn method(&self) -> u32 { self.member } }\n"
+            "fn main() { let demo = Demo { member: 1 }; demo. }\n"
+        )
+        with Terminal([binary, str(main_file)]) as terminal:
+            terminal.start()
+            terminal.resize(140, 24)
+            terminal.expect_screen(b"RA:ready")
+            terminal.send(b"/demo\\.\ra")
+            for attempt in range(3):
+                terminal.send(b"\x18")
+                try:
+                    terminal.expect_screen_idle("field")
+                    visible = displayed_text(terminal.output)
+                    assert re.search(r"member[^\n]*\bfield\b", visible), visible
+                    assert re.search(r"method[^\n]*\bmethod\b", visible), visible
+                    break
+                except AssertionError:
+                    if attempt == 2:
+                        raise
+            terminal.send(b"\x03")
+            terminal.leave_insert()
+            terminal.send(b":q!\r")
+            terminal.finish()
+        print("PASS: completion menu displays rust-analyzer field and method kinds")
+
         main_file.write_text("mod other;\nfn main() { let _: bool = other::answer(); }\n")
         (project / "src/other.rs").write_text("pub fn answer() -> u32 { 42 }\n")
         with Terminal([binary, str(main_file)]) as terminal:

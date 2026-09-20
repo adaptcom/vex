@@ -227,6 +227,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
         } else {
             app.completion_deadline()
                 .into_iter()
+                .chain(app.signature_deadline())
                 .chain(app.symbol_deadline())
                 .chain(app.workspace_search_deadline())
                 .chain(app.git_deadline())

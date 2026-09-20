@@ -30,6 +30,7 @@ mod picker;
 mod prompt;
 mod reload;
 mod rename;
+mod signature;
 mod status;
 mod windows;
 pub mod workspace;
@@ -88,6 +89,7 @@ pub struct App {
     language: language::State,
     picker: picker::State,
     completion: completion::State,
+    signature: signature::State,
     clipboard: clipboard::State,
     windows: windows::State,
     git: git::State,
@@ -133,6 +135,7 @@ impl App {
             language: language::State::default(),
             picker: picker::State::default(),
             completion: completion::State::default(),
+            signature: signature::State::default(),
             clipboard: clipboard::State::default(),
             windows,
             git: git::State::default(),
@@ -234,8 +237,13 @@ impl App {
     fn handle_at(&mut self, event: Event, now: std::time::Instant) -> bool {
         self.invalidate_clipboard();
         self.observe_buffer_revision();
+        self.observe_signature(now, false);
+        let inserted = self.editor.mode() == Mode::Insert
+            && self.prompt.is_none()
+            && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release && matches!(input::key(*key), Some(Key::Char(_))));
         let changed = self.handle_event_at(event, now);
         self.observe_buffer_revision();
+        self.observe_signature(now, inserted);
         changed
     }
 
@@ -290,6 +298,9 @@ impl App {
             return redraw;
         }
         if let Some(redraw) = self.handle_code_action_input(&event) {
+            return redraw;
+        }
+        if let Some(redraw) = self.handle_signature_input(&event) {
             return redraw;
         }
         if let Some(redraw) = self.handle_completion_input(&event) {
@@ -568,7 +579,8 @@ impl App {
         .map_err(io::Error::other)?;
         let body_height = frame.height().saturating_sub(1 + reserved_bottom);
         self.paint_language(frame, body_height);
-        self.paint_completion(frame, body_height);
+        let completion_area = self.paint_completion(frame, body_height);
+        self.paint_signature(frame, body_height, completion_area);
         self.paint_code_actions(frame, body_height);
         Ok(())
     }

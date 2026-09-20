@@ -60,7 +60,9 @@ impl Style {
         match self {
             Self::Text => (Reset, Reset),
             Self::Markup(attributes) => {
-                if attributes.contains(Attributes::CODE) {
+                if attributes.contains(Attributes::SELECTED) {
+                    (Black, Grey)
+                } else if attributes.contains(Attributes::CODE) {
                     // ANSI grey pairs depend on the terminal palette and can
                     // have almost no contrast. Code needs the same readable
                     // foreground/background as ordinary document text.

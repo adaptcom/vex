@@ -276,7 +276,9 @@ The interactive loop can open, search, select, edit, undo groups, and save.
 Search, syntax, file picking, and language services run through a shared event
 queue. Completion opens automatically after two identifier characters and
 a 100 ms pause, or immediately on server trigger characters and `Ctrl-x`.
-The menu and documentation panel sit next to the cursor; see
+The menu shows completion kinds alongside names. Automatic signature help marks
+the active parameter, with Alt-p/Alt-n to cycle overloads. The menu and
+documentation panels sit next to the cursor; see
 [language services](docs/lsp.md#completion) for controls and session settings.
 Special-register integration, more picker providers, and language
 configuration files remain upcoming milestones. Further layout

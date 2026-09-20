@@ -16,6 +16,8 @@ mod executor;
 mod navigation;
 mod protocol;
 mod rename;
+mod signature;
+pub use signature::{SignatureHelp, SignatureOptions};
 mod symbols;
 mod transport;
 mod workspace;
@@ -98,6 +100,7 @@ pub struct Document {
 #[derive(Clone, Debug)]
 pub enum RequestKind {
     Hover,
+    SignatureHelp,
     Navigation(Navigation),
     DocumentHighlights,
     DocumentSymbols,
@@ -156,6 +159,7 @@ pub struct Diagnostic {
 #[derive(Debug)]
 pub enum Answer {
     Hover(Documentation),
+    SignatureHelp(SignatureHelp),
     Locations(Navigation, Locations),
     DocumentHighlights(Option<vex_editor::PreparedSelections>),
     Symbols(Symbols),
@@ -193,6 +197,7 @@ pub enum Event {
     Capabilities {
         epoch: u64,
         completion: Option<CompletionOptions>,
+        signature: Option<SignatureOptions>,
     },
     Status {
         epoch: u64,
@@ -578,7 +583,8 @@ async fn session(
                 "rangeFormatting":{},
                 "codeAction":{"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["","quickfix","refactor","refactor.extract","refactor.inline","refactor.rewrite","source","source.organizeImports","source.fixAll"]}},"isPreferredSupport":true,"disabledSupport":true,"dataSupport":true,"resolveSupport":{"properties":["edit","command"]}},
                 "documentSymbol":{"hierarchicalDocumentSymbolSupport":true,"symbolKind":{"valueSet":(1..=26).collect::<Vec<_>>()}},
-                "completion":{"contextSupport":true,"completionItem":{
+                "signatureHelp":{"signatureInformation":{"documentationFormat":["markdown","plaintext"],"parameterInformation":{"labelOffsetSupport":true},"activeParameterSupport":true}},
+                "completion":{"contextSupport":true,"completionItemKind":{"valueSet":(1..=25).collect::<Vec<_>>()},"completionItem":{
                     "snippetSupport":false,"insertReplaceSupport":true,
                     "documentationFormat":["plaintext"],
                     "resolveSupport":{"properties":["documentation","detail","additionalTextEdits"]}
@@ -650,7 +656,7 @@ async fn session(
         let mut positions = protocol::Positions::new(document.snapshot.text());
         let mut action_diagnostics = actions::Diagnostics::default();
         let mut code_actions = actions::Catalog::default();
-        emit(Event::Capabilities { epoch, completion: CompletionOptions::from_capabilities(&capabilities) });
+        emit(Event::Capabilities { epoch, completion: CompletionOptions::from_capabilities(&capabilities), signature: SignatureOptions::from_capabilities(&capabilities) });
         emit(Event::Status { epoch, message: format!("{} ready", server.command), failed: false });
         if let Some(update) = inbox.take_workspace(epoch) {
             workspace_generation = update.generation;
@@ -771,6 +777,7 @@ async fn session(
                     if !request.cancellation.is_cancelled() {
                         let result = result.and_then(|value| match request.kind {
                             RequestKind::Hover => documentation::hover(&value, &request.cancellation).map(Answer::Hover),
+                            RequestKind::SignatureHelp => signature::parse(&value, &request.cancellation).map(Answer::SignatureHelp),
                             RequestKind::Navigation(kind) => navigation::locations(&value, &request.cancellation).map(|locations| Answer::Locations(kind, locations)),
                             RequestKind::DocumentHighlights => navigation::highlights(&value, &document.snapshot, &positions, request.position, &request.cancellation).map(Answer::DocumentHighlights),
                             RequestKind::DocumentSymbols => symbols::parse(&value, Some(&document.path)).map(Answer::Symbols),
@@ -963,6 +970,7 @@ async fn start_request(
     }
     let (method, capability) = match &request.kind {
         RequestKind::Hover => ("textDocument/hover", "hoverProvider"),
+        RequestKind::SignatureHelp => ("textDocument/signatureHelp", "signatureHelpProvider"),
         RequestKind::Navigation(kind) => kind.request(),
         RequestKind::DocumentHighlights => (
             "textDocument/documentHighlight",
@@ -1220,7 +1228,7 @@ while True:
     params = value.get('params')
     if method == 'initialize':
         if HANG_INITIALIZE: continue
-        send({'id':value['id'],'result':{'capabilities':{'positionEncoding':'utf-16','textDocumentSync':{'openClose':True,'change':2,'save':True},'hoverProvider':True,'definitionProvider':True,'typeDefinitionProvider':{},'implementationProvider':True,'referencesProvider':True,'documentHighlightProvider':True,'documentSymbolProvider':True,'workspaceSymbolProvider':{},'completionProvider':{'resolveProvider':True,'triggerCharacters':['.',':','.',None,'..','\n']}}}})
+        send({'id':value['id'],'result':{'capabilities':{'positionEncoding':'utf-16','textDocumentSync':{'openClose':True,'change':2,'save':True},'hoverProvider':True,'signatureHelpProvider':{'triggerCharacters':['(',',','::','',None,'\n']},'definitionProvider':True,'typeDefinitionProvider':{},'implementationProvider':True,'referencesProvider':True,'documentHighlightProvider':True,'documentSymbolProvider':True,'workspaceSymbolProvider':{},'completionProvider':{'resolveProvider':True,'triggerCharacters':['.',':','.',None,'..','\n']}}}})
         send({'id':'configuration','method':'workspace/configuration','params':{'items':[{'section':'rust-analyzer'}]}})
     elif method == 'textDocument/didOpen':
         uri = params['textDocument']['uri']; version = params['textDocument']['version']
@@ -1232,6 +1240,9 @@ while True:
     elif method == 'textDocument/hover':
         if params['position']['character'] == 0: continue
         send({'id':value['id'],'result':{'contents':{'kind':'plaintext','value':'fn example() -> u32'}}})
+    elif method == 'textDocument/signatureHelp':
+        assert set(params) == {'textDocument','position'}
+        send({'id':value['id'],'result':{'activeSignature':0,'activeParameter':1,'signatures':[{'label':'call(first: T, second: U)','parameters':[{'label':'first: T'},{'label':'second: U'}]}]}})
     elif method == 'textDocument/definition':
         send({'id':value['id'],'result':[{'targetUri':uri,'targetRange':{'start':{'line':0,'character':0},'end':{'line':0,'character':4}},'targetSelectionRange':{'start':{'line':0,'character':3},'end':{'line':0,'character':4}}}]})
     elif method in ('textDocument/typeDefinition', 'textDocument/implementation', 'textDocument/references'):
@@ -1541,6 +1552,7 @@ while True:
         });
         let Event::Capabilities {
             completion: Some(options),
+            signature: Some(signatures),
             ..
         } = until(&receiver, |event| {
             matches!(event, Event::Capabilities { .. })
@@ -1549,6 +1561,7 @@ while True:
             panic!("missing completion capabilities")
         };
         assert_eq!(options.trigger_characters, ['.', ':']);
+        assert_eq!(signatures.trigger_characters, ["(", ",", "::"]);
         let initial = until(&receiver, |event| {
             matches!(event, Event::Diagnostics { .. })
         });
@@ -1556,6 +1569,16 @@ while True:
             unreachable!()
         };
         assert_eq!(diagnostics[0].start, CharOffset(2));
+        service.update(Update {
+            document: Some(doc.clone()),
+            request: Some(request(24, RequestKind::SignatureHelp, 2)),
+        });
+        assert!(
+            matches!(until(&receiver, |event| matches!(event, Event::Answer { id: 24, .. })),
+            Event::Answer { result: Ok(Answer::SignatureHelp(help)), .. }
+                if help.signatures[0].contains("call(first: T, second: U)"))
+        );
+
         service.update(Update {
             document: Some(doc.clone()),
             request: Some(request(1, RequestKind::Hover, 2)),

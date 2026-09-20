@@ -19,6 +19,8 @@ struct Pending {
     waiting: bool,
     executing: bool,
     window: u64,
+    signature: bool,
+    automatic: bool,
 }
 
 #[derive(Default)]
@@ -37,6 +39,7 @@ pub(super) struct State {
     popup: Option<crate::documentation::Popup>,
     status: &'static str,
     completion: Option<CompletionOptions>,
+    signature: Option<vex_lsp::SignatureOptions>,
     pub(super) saved: u64,
     pub(super) saved_snapshot: Option<vex_core::Snapshot>,
 }
@@ -201,6 +204,9 @@ impl App {
     }
 
     pub(super) fn cancel_language_request(&mut self) {
+        if self.signature_request_pending() {
+            self.signature.interrupted();
+        }
         self.language.cancel();
         self.rename.clear();
         self.actions.clear();
@@ -210,6 +216,8 @@ impl App {
 
     pub(super) fn restart_language_server(&mut self) {
         self.dismiss_language_help();
+        self.signature.reset();
+        self.language.signature = None;
         self.language.epoch += 1;
         self.language.document = None;
         self.language.completion = None;
@@ -225,6 +233,7 @@ impl App {
         self.invalidate_symbol_picker();
         self.invalidate_location_picker();
         self.poll_completion(Instant::now());
+        self.observe_signature(Instant::now(), false);
         let action = self.editor.take_language_action();
         if !self.language.enabled {
             self.fail_symbol_picker("language services are not enabled in this frontend");
@@ -257,6 +266,8 @@ impl App {
         };
         if identity_changed {
             self.language.cancel();
+            self.signature.reset();
+            self.language.signature = None;
             self.rename.clear();
             self.actions.clear();
             self.formatting.clear();
@@ -290,6 +301,10 @@ impl App {
         let requested = match action {
             Some(LanguageAction::Hover) => Some(super::completion::Request {
                 kind: RequestKind::Hover,
+                automatic: false,
+            }),
+            Some(LanguageAction::SignatureHelp) => Some(super::completion::Request {
+                kind: RequestKind::SignatureHelp,
                 automatic: false,
             }),
             Some(LanguageAction::Definition) => Some(super::completion::Request {
@@ -341,10 +356,19 @@ impl App {
                     kind,
                     automatic: false,
                 })
-                .or_else(|| self.take_completion_request()),
+                .or_else(|| self.take_completion_request())
+                .or_else(|| self.take_signature_request(Instant::now())),
         };
         if let Some(super::completion::Request { kind, automatic }) = requested {
-            if automatic && self.completion_options().is_none() {
+            if automatic
+                && matches!(kind, RequestKind::SignatureHelp)
+                && self.signature_options().is_none()
+            {
+                self.signature.dismiss();
+            } else if automatic
+                && !matches!(kind, RequestKind::SignatureHelp)
+                && self.completion_options().is_none()
+            {
                 self.dismiss_language_help();
             } else if document.is_none() {
                 self.fail_language_request(
@@ -358,9 +382,15 @@ impl App {
             } else if self.editor.document().text().len_bytes() > vex_lsp::MAX_DOCUMENT_BYTES {
                 self.fail_language_request("document exceeds the initial 8 MiB LSP limit".into());
             } else {
+                if self.signature_request_pending() {
+                    self.signature.interrupted();
+                }
                 self.language.cancel();
                 if matches!(kind, RequestKind::Completion(_)) {
                     self.begin_completion(automatic);
+                }
+                if matches!(kind, RequestKind::SignatureHelp) {
+                    self.begin_signature();
                 }
                 self.language.next_request += 1;
                 let cancellation = Cancellation::default();
@@ -373,6 +403,8 @@ impl App {
                     cancellation: cancellation.clone(),
                     executing: matches!(kind, RequestKind::ExecuteCommand { .. }),
                     window: self.focused_window_id(),
+                    signature: matches!(kind, RequestKind::SignatureHelp),
+                    automatic,
                     waiting: matches!(
                         kind,
                         RequestKind::Navigation(_)
@@ -433,11 +465,16 @@ impl App {
             } => {
                 return self.finish_server_edit(epoch, cancellation, result);
             }
-            Event::Capabilities { epoch, completion } => {
+            Event::Capabilities {
+                epoch,
+                completion,
+                signature,
+            } => {
                 if epoch != self.language.epoch || self.language.document.is_none() {
                     return false;
                 }
                 self.language.completion = completion;
+                self.language.signature = signature;
             }
             Event::Status {
                 epoch,
@@ -456,6 +493,8 @@ impl App {
                 };
                 if failed {
                     self.cancel_server_edit();
+                    self.signature.reset();
+                    self.language.signature = None;
                     self.language.completion = None;
                     self.language.cancel();
                     self.fail_language_request(message);
@@ -491,8 +530,11 @@ impl App {
                 {
                     return false;
                 }
-                self.language.pending = None;
+                let pending = self.language.pending.take().unwrap();
                 match result {
+                    Ok(Answer::SignatureHelp(response)) => {
+                        self.receive_signature(response, pending.automatic)
+                    }
                     Ok(Answer::Hover(text)) if text.is_empty() => {
                         self.message = "no hover information".into()
                     }
@@ -526,6 +568,12 @@ impl App {
                     Ok(Answer::WorkspaceEdit { edit, versions }) => {
                         self.receive_rename_edit(edit, versions)
                     }
+                    Err(error) if pending.signature => {
+                        self.signature.dismiss();
+                        if !pending.automatic {
+                            self.fail(error);
+                        }
+                    }
                     Err(error) => self.fail_language_request(error),
                 }
             }
@@ -546,6 +594,29 @@ impl App {
     }
 
     pub(super) fn completion_options(&self) -> Option<&CompletionOptions> {
+        self.language_ready()
+            .then_some(self.language.completion.as_ref())
+            .flatten()
+    }
+
+    pub(super) fn signature_options(&self) -> Option<&vex_lsp::SignatureOptions> {
+        self.language_ready()
+            .then_some(self.language.signature.as_ref())
+            .flatten()
+    }
+
+    pub(super) fn language_request_pending(&self) -> bool {
+        self.language.pending.is_some()
+    }
+
+    pub(super) fn signature_request_pending(&self) -> bool {
+        self.language
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.signature)
+    }
+
+    fn language_ready(&self) -> bool {
         if !self.language.enabled
             || self.language.status != "ready"
             || self.editor.language().and_then(Language::server).is_none()
@@ -556,9 +627,9 @@ impl App {
                     && self.files.target() == Some(document.path.as_path())
             })
         {
-            return None;
+            return false;
         }
-        self.language.completion.as_ref()
+        true
     }
 
     fn current_language_revision(&self, epoch: u64, revision: Revision) -> bool {
@@ -780,10 +851,12 @@ mod tests {
             assert_eq!(document.language, Language::from_name(language).unwrap());
             assert!(app.completion_options().is_none());
             assert!(!app.handle_lsp_event(Event::Capabilities {
+                signature: None,
                 epoch: previous_epoch,
                 completion: Some(CompletionOptions::default())
             }));
             app.handle_lsp_event(Event::Capabilities {
+                signature: None,
                 epoch: document.epoch,
                 completion: Some(CompletionOptions {
                     trigger_characters: vec!['.'],

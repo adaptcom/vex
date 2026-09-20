@@ -34,6 +34,7 @@ protocol failures, and request errors leave editing and saving available.
 | Key / command | Behavior |
 |---|---|
 | Space-k / `:hover` | Show documentation at the primary cursor |
+| `:signature_help` | Request function signatures at the primary cursor; normally automatic in insert mode |
 | `gd` / `:goto_definition` | Jump to a definition, or pick among several |
 | `gy` / `:goto_type_definition` | Jump to a type definition, or pick among several |
 | `gi` / `:goto_implementation` | Jump to an implementation, or pick among several |
@@ -237,6 +238,34 @@ With the default server settings, use `:format` for Rust. Servers that advertise
 range formatting can use `=` immediately; server-specific settings are a future
 configuration task.
 
+## Signature help
+
+Entering insert mode or typing a server-advertised trigger (usually `(` or `,`)
+requests signature help after a 120 ms pause. Further edits and cursor movement
+refresh open or pending help. Empty replies close it; automatic failures and
+unsupported servers stay quiet. `:signature_help` invokes the documented command
+manually, including in normal mode. It has no default binding, matching Helix.
+
+The bordered popup shows the signature, a grey active-parameter highlight, and
+Markdown documentation. It prefers space above the caret and keeps the insertion
+bar visible. Alt-p / Alt-n cycle overloads using
+[Helix's signature popup keys](https://docs.helix-editor.com/keymap.html#signature-help-popup).
+Ctrl-u/Ctrl-d and PageUp/PageDown scroll visible signature documentation, as in
+[Helix's popup handler](https://github.com/helix-editor/helix/blob/master/helix-term/src/ui/popup.rs).
+Escape still leaves insert mode; Ctrl-c dismisses help. Ctrl-k retains its line
+kill, and Ctrl-u/Ctrl-d resume their insert editing behavior after help closes.
+
+Signature requests wait behind completion and documentation resolution, and the
+popup is hidden when it would overlap the completion panels. Leaving insert mode,
+changing files, or restarting the server cancels obsolete work. Replies are checked
+against the originating document, revision, selections, mode, and window.
+
+The service prepares at most 32 signatures with 4 KiB labels and a shared 64 KiB /
+4096-line budget. Active-parameter offsets use UTF-16, including surrogate pairs;
+signature-level parameter indices override response-level indices. Documentation
+parsing shares a 25 ms budget, with plaintext fallback. Unknown or malformed
+parameter ranges leave a readable label without an invalid highlight.
+
 ## Completion
 
 In insert mode, completion opens automatically after typing at least two
@@ -248,6 +277,9 @@ Suggestions appear in a
 bordered menu next to the cursor, above it when there is more room there. A
 separate documentation box appears beside the menu when space permits. Selected
 rows use the shared grey palette; drawing keeps the insertion cursor visible.
+Each row includes a right-aligned kind such as `field`, `method`, `function`, or
+`struct` when the server supplies one. Unknown kinds remain blank. The kind column
+is omitted in very narrow menus to preserve room for the candidate name.
 
 | Key while the menu is open | Behavior |
 |---|---|

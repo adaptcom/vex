@@ -25,6 +25,7 @@ struct Session {
     selections: SelectionSet,
     items: Vec<CompletionItem>,
     label_width: usize,
+    kind_width: usize,
     loaded: bool,
     selected: Option<usize>,
     top: usize,
@@ -94,6 +95,13 @@ impl State {
 }
 
 impl App {
+    pub(super) fn completion_visible(&self) -> bool {
+        self.completion
+            .active
+            .as_ref()
+            .is_some_and(|session| !session.automatic || session.loaded)
+    }
+
     pub(super) fn begin_completion(&mut self, automatic: bool) {
         self.completion.clear();
         self.completion.active = Some(Session {
@@ -104,6 +112,7 @@ impl App {
             selections: self.editor.selections().clone(),
             items: Vec::new(),
             label_width: 20,
+            kind_width: 0,
             loaded: false,
             selected: None,
             top: 0,
@@ -436,6 +445,12 @@ impl App {
             .max()
             .unwrap_or(20);
         session.loaded = true;
+        session.kind_width = session
+            .items
+            .iter()
+            .map(|item| item.kind_name().len())
+            .max()
+            .unwrap_or(0);
         session.incomplete = result.incomplete;
         session.limited = result.limited;
         if session.items.is_empty() {
@@ -520,15 +535,19 @@ impl App {
         }
     }
 
-    pub(super) fn paint_completion(&mut self, frame: &mut Frame, body: u16) {
+    pub(super) fn paint_completion(
+        &mut self,
+        frame: &mut Frame,
+        body: u16,
+    ) -> Option<crate::documentation::Area> {
         self.invalidate_completion();
         let Some(session) = &mut self.completion.active else {
-            return;
+            return None;
         };
         if session.automatic && !session.loaded {
-            return;
+            return None;
         }
-        let Some(cursor) = frame.cursor else { return };
+        let cursor = frame.cursor?;
         let below = body.saturating_sub(cursor.y + 1);
         let above = cursor.y;
         let desired = (session.items.len().clamp(1, 10) + 2) as u16;
@@ -536,17 +555,28 @@ impl App {
         let height = desired.min(if under { below } else { above });
         let width = session
             .label_width
+            .saturating_add(if session.kind_width == 0 {
+                0
+            } else {
+                session.kind_width + 2
+            })
             .saturating_add(4)
-            .clamp(24, 48)
+            .clamp(24, 64)
             .min(usize::from(frame.width())) as u16;
         if height < 3 || width < 8 {
-            return;
+            return None;
         }
         let x = cursor.x.saturating_sub(1).min(frame.width() - width);
         let y = if under {
             cursor.y + 1
         } else {
             cursor.y - height
+        };
+        let area = crate::documentation::Area {
+            left: x,
+            top: y,
+            right: x + width,
+            bottom: y + height,
         };
         paint_box(
             frame,
@@ -589,10 +619,34 @@ impl App {
             for col in x + 1..x + width - 1 {
                 frame.put(col, row, " ", style);
             }
-            label(frame, x + 2, row, width - 3, &item.label, style);
+            let content = width - 4;
+            // Keep at least four columns for the name. Very narrow terminals
+            // omit the kind column rather than painting over the label/border.
+            let kind_width = if usize::from(content) >= session.kind_width + 6 {
+                session.kind_width as u16
+            } else {
+                0
+            };
+            let name_width = content - if kind_width == 0 { 0 } else { kind_width + 2 };
+            label(frame, x + 2, row, name_width, &item.label, style);
+            if kind_width != 0 {
+                let kind = item.kind_name();
+                label(
+                    frame,
+                    x + width - 2 - kind.len() as u16,
+                    row,
+                    kind_width,
+                    kind,
+                    if session.selected == Some(index) {
+                        style
+                    } else {
+                        Style::Gutter
+                    },
+                );
+            }
         }
         let Some(item) = session.selected.and_then(|index| session.items.get(index)) else {
-            return;
+            return Some(area);
         };
         let right = frame.width().saturating_sub(x + width + 1);
         let (docs_x, docs_width) = if right >= 24 {
@@ -601,7 +655,7 @@ impl App {
             let width = (x - 1).min(60);
             (x - width - 1, width)
         } else {
-            return;
+            return Some(area);
         };
         let text = format!(
             "{}{}{}",
@@ -614,7 +668,7 @@ impl App {
             }
         );
         if text.is_empty() {
-            return;
+            return Some(area);
         }
         let lines = wrap(
             &text,
@@ -641,6 +695,12 @@ impl App {
                 Style::Text,
             );
         }
+        Some(area.union(crate::documentation::Area {
+            left: docs_x,
+            top: docs_y,
+            right: docs_x + docs_width,
+            bottom: docs_y + docs_height,
+        }))
     }
 }
 
@@ -743,6 +803,7 @@ mod tests {
         app.enable_lsp();
         let epoch = app.take_lsp_update().unwrap().document.unwrap().epoch;
         app.handle_lsp_event(LspEvent::Capabilities {
+            signature: None,
             epoch,
             completion: Some(vex_lsp::CompletionOptions {
                 trigger_characters: vec!['.', ':'],
@@ -1025,6 +1086,7 @@ mod tests {
     fn automatic_menu_accepts_only_after_selection_and_old_capabilities_are_ignored() {
         let (_directory, mut app) = automatic_fixture("a");
         assert!(!app.handle_lsp_event(LspEvent::Capabilities {
+            signature: None,
             epoch: u64::MAX,
             completion: None
         }));
@@ -1188,6 +1250,48 @@ mod tests {
             resolve,
             Answer::CompletionResolved(candidate("answer", true))
         ));
+    }
+
+    #[test]
+    fn kinds_have_a_separate_column_and_keep_selection_colors_at_narrow_widths() {
+        let (_directory, mut app) = fixture();
+        let request = start(&mut app);
+        let mut function = candidate(&"界".repeat(40), true);
+        function.kind = 3;
+        let mut field = candidate("answer", true);
+        field.kind = 5;
+        let mut method = candidate("another", true);
+        method.kind = 2;
+        answer(
+            &mut app,
+            request,
+            Answer::Completion(Completions {
+                items: vec![function, field, method, candidate("unknown", true)],
+                incomplete: false,
+                limited: false,
+            }),
+        );
+        app.handle(key(KeyCode::Tab));
+        for width in [8, 16, 24, 48, 80] {
+            let mut frame = Frame::default();
+            frame.reset(width, 15).unwrap();
+            frame.cursor = Some(crate::screen::Cursor {
+                x: 0,
+                y: 0,
+                shape: crate::screen::CursorShape::Bar,
+            });
+            let area = app.paint_completion(&mut frame, 13).unwrap();
+            if width >= 24 {
+                let row = frame.row_text(2);
+                assert!(row.contains("  function "), "{row:?}");
+                assert!(frame.row_text(3).contains("field"));
+                assert!(frame.row_text(4).contains("method"));
+                let right = 64.min(width);
+                assert_eq!(frame.style_at(right - 3, 2), Some(Style::Selection));
+                assert_eq!(frame.style_at(right - 3, 3), Some(Style::Gutter));
+            }
+            assert!(area.right <= width && area.bottom <= 13);
+        }
     }
 
     #[test]

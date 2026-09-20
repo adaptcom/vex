@@ -23,6 +23,8 @@ impl Attributes {
     pub const CODE: Self = Self(8);
     pub const LINK: Self = Self(16);
     pub const MUTED: Self = Self(32);
+    /// Active parameter within a signature label.
+    pub const SELECTED: Self = Self(64);
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0

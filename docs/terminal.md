@@ -306,7 +306,10 @@ Named files start their configured server when it is installed on `PATH` (or
 selected by its executable override). Diagnostics appear in the gutter and status line; Space-k
 opens a bordered Markdown hover popup. Ctrl-u/Ctrl-d or PageUp/PageDown scroll
 its documentation; Escape/Ctrl-c dismiss it. Other editing keys close it and
-continue through normal dispatch. Definition jumps can open another file after saving pending
+continue through normal dispatch. Insert mode also opens signature help after a
+120 ms pause at server triggers; Alt-p/Alt-n cycle overloads and the active
+parameter uses a grey highlight. Completion rows show server-provided kinds such
+as `field` and `method`. Definition jumps can open another file after saving pending
 changes, and Ctrl-o returns to the origin. See [language services](lsp.md) for
 setup, active-document service limits, and failure handling.
 
