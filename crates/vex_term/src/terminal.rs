@@ -8,7 +8,8 @@ use crate::{
 use crossterm::{
     cursor::{Hide, SetCursorStyle, Show},
     event::{
-        DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, Event,
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, Event,
     },
     execute,
     style::ResetColor,
@@ -65,11 +66,25 @@ fn restore() {
         SetCursorStyle::DefaultUserShape,
         DisableBracketedPaste,
         DisableFocusChange,
+        DisableMouseCapture,
         EnableLineWrap,
         Show,
         LeaveAlternateScreen
     );
     let _ = terminal::disable_raw_mode();
+}
+
+fn set_mouse_capture(output: &mut impl Write, enabled: bool) -> io::Result<()> {
+    if enabled {
+        crossterm::queue!(output, EnableMouseCapture)?;
+        // Crossterm also requests every pointer movement. Button-event tracking
+        // is sufficient here: report dragging and wheels, without idle motion.
+        #[cfg(unix)]
+        output.write_all(b"\x1b[?1003l\x1b[?1002h")?;
+    } else {
+        crossterm::queue!(output, DisableMouseCapture)?;
+    }
+    output.flush()
 }
 
 /// Restore the user's terminal before Rust prints a panic diagnostic.
@@ -140,7 +155,12 @@ pub fn run(app: &mut App) -> io::Result<()> {
     let mut renderer = Renderer::default();
     let mut output = io::stdout();
     let mut redraw = true;
+    let mut mouse_enabled = false;
     while !app.should_quit() {
+        if app.mouse_enabled() != mouse_enabled {
+            set_mouse_capture(&mut output, app.mouse_enabled())?;
+            mouse_enabled = app.mouse_enabled();
+        }
         if signals.interrupted.load(Ordering::Relaxed) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -247,6 +267,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
         // Coalesce bursts, but put a time and count bound on work before drawing.
         for index in 0..128 {
             match event {
+                AppEvent::MouseScroll(event, count) => redraw |= app.handle_mouse(event, count),
                 AppEvent::Terminal(event) => {
                     if matches!(event, Event::FocusGained) {
                         renderer.invalidate();
@@ -394,6 +415,7 @@ mod tests {
         install_panic_cleanup();
         let result = std::panic::catch_unwind(|| {
             let _session = Session::enter().unwrap();
+            set_mouse_capture(&mut io::stdout(), true).unwrap();
             assert!(terminal::is_raw_mode_enabled().unwrap());
             panic!("intentional terminal-cleanup test");
         });

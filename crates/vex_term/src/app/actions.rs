@@ -27,6 +27,9 @@ struct Menu {
 }
 
 impl State {
+    pub(super) fn visible(&self) -> bool {
+        self.menu.is_some()
+    }
     pub fn clear(&mut self) {
         *self = Self::default();
     }

@@ -650,7 +650,8 @@ impl App {
         }
     }
 
-    pub(super) fn paint_key_hints(&self, frame: &mut Frame) {
+    pub(super) fn paint_key_hints(&mut self, frame: &mut Frame) {
+        self.mouse.hints = None;
         let inserting_register = self
             .prompt
             .as_ref()
@@ -688,6 +689,12 @@ impl App {
         }
         let x = frame.width() - width;
         let y = bottom - height;
+        self.mouse.hints = Some(crate::documentation::Area {
+            left: x,
+            top: y,
+            right: x + width,
+            bottom,
+        });
         picker::paint_box(
             frame,
             x,

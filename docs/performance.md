@@ -1201,3 +1201,29 @@ Completion kind decoding and label/kind column sizing happen when a bounded list
 arrives. Repaints visit only the visible completion rows and use static kind
 names; there is no per-frame scan of the full candidate list or padded-string
 allocation. Missing or unknown kinds are blank, and tiny menus omit the column.
+
+## Mouse scrolling and split resizing
+
+Wheel input updates a pane's viewport without moving selections or scanning its
+text. Hit testing uses the existing layout, bounded to 16 panes. Dragging captures
+the split path once, then changes its ratio without allocating per event. The
+input queue combines adjacent wheel events at identical coordinates and keeps
+only the latest adjacent drag position, preserving key and button ordering.
+
+A local release run on 2026-09-20 measured 1,000 samples with a 1 MB ASCII buffer
+(200,001 lines), two vertical panes, and a 101×40 frame:
+
+| Operation | Median | Sample p95 |
+|---|---:|---:|
+| Wheel routing and inactive-pane scroll | 0.291 µs | 0.625 µs |
+| Captured split drag | 0.042 µs | 0.084 µs |
+| Frame reset and repaint of both panes | 118.542 µs | 290.709 µs |
+
+The test verifies the resulting split widths and preserved focus and selections.
+These samples exclude queue delivery, initial drag capture, syntax highlighting,
+ANSI encoding, and terminal output; they measure UI work, not input-to-display
+latency. Reproduce with:
+
+```sh
+cargo test -p vex_term --release --lib benchmark_mouse_scroll_and_split_drag --locked -- --ignored --nocapture
+```

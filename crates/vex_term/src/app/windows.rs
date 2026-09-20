@@ -2,6 +2,8 @@
 //! document text or history; quitting protects every unsaved buffer.
 
 mod layout;
+mod mouse;
+pub(super) use mouse::State as MouseState;
 
 use super::App;
 use crate::{

@@ -205,7 +205,7 @@ class Terminal:
                 break
         raise AssertionError(f"missing screen {needle!r}; terminal tail: {bytes(self.output[-2000:])!r}")
 
-    def expect_screen_idle(self, needle, *, row=None):
+    def expect_screen_idle(self, needle, *, row=None, column=None):
         """Wait for actual displayed text without sending focus or input events."""
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -213,6 +213,8 @@ class Terminal:
             visible = displayed_text(self.output)
             rows = visible.splitlines()
             target = visible if row is None else (rows[row] if row < len(rows) else "")
+            if column is not None:
+                target = target[column:column + len(needle)]
             if needle in target:
                 return
             if self.poll() is not None:
@@ -242,7 +244,7 @@ class Terminal:
         restoration = os.read(self.restoration, 8192)
         assert restoration == b"1", f"termios was not restored: {restoration!r}"
         if entered:
-            for sequence in (b"\x1b[?1049l", b"\x1b[?2004l", b"\x1b[?25h", b"\x1b[?7h"):
+            for sequence in (b"\x1b[?1049l", b"\x1b[?2004l", b"\x1b[?25h", b"\x1b[?7h", b"\x1b[?1006l", b"\x1b[?1002l", b"\x1b[?1000l"):
                 assert sequence in self.output, f"missing cleanup {sequence!r}"
         else:
             assert b"\x1b[?1049h" not in self.output
@@ -383,6 +385,43 @@ def main():
             terminal.finish()
         assert pages.read_text() == page_source
         print("PASS: z/Z alignment, sticky hints, counted scrolling, Escape, and full-page alias")
+
+        with Terminal([binary, str(pages)]) as terminal:
+            terminal.start()
+            terminal.resize(81, 22)
+            assert b"\x1b[?1006h" in terminal.output
+            terminal.send(b"\x1b[<65;10;5M" * 20)
+            terminal.expect_screen_idle("row 060", row=0)
+            terminal.expect_screen_idle("1:1", row=20)
+            terminal.send(b"j")
+            terminal.expect_screen_idle("row 000", row=0)
+            terminal.expect_screen_idle("2:1", row=20)
+            terminal.send(b":vsplit\r")
+            terminal.expect_screen_idle("│", row=0, column=40)
+            terminal.send(b"\x1b[<65;10;5M")  # Scroll the inactive left pane.
+            terminal.expect_screen_idle("row 003", row=0)
+            terminal.send(b"j")
+            terminal.expect_screen_idle("3:1", row=20)
+            assert "row 003" in displayed_text(terminal.output).splitlines()[0][:40]
+            terminal.send(b"\x1b[<0;41;5M\x1b[<32;56;5M\x1b[<0;56;5m")
+            terminal.expect_screen_idle("│", row=0, column=55)
+            terminal.send(b":hsplit\r")
+            terminal.expect_screen_idle("─", row=9, column=56)
+            terminal.send(b"\x1b[<0;60;10M\x1b[<32;60;14M\x1b[<0;60;14m")
+            terminal.expect_screen_idle("─", row=13, column=56)
+            mark = terminal.send(b":mouse off\r")
+            terminal.expect(b"\x1b[?1006l", mark)
+            terminal.send(b"\x1b[<65;10;5M")  # App also ignores already queued reports.
+            terminal.expect_screen(b"mouse off")
+            assert "row 003" in displayed_text(terminal.output).splitlines()[0][:55]
+            mark = terminal.send(b":mouse on\r")
+            terminal.expect(b"\x1b[?1006h", mark)
+            terminal.send(b"\x1b[<64;10;5M")
+            terminal.expect_screen_idle("row 000", row=0)
+            terminal.send(b":qa\r")
+            terminal.finish()
+        assert pages.read_text() == page_source
+        print("PASS: SGR mouse scrolling, inactive panes, both split drags, runtime toggle, and cleanup")
 
         copied_path = Path(directory) / "copied selections.txt"
         copied_path.write_text("a1\nb2\nc3\n")

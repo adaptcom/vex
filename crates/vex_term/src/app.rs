@@ -93,6 +93,7 @@ pub struct App {
     signature: signature::State,
     clipboard: clipboard::State,
     windows: windows::State,
+    mouse: windows::MouseState,
     git: git::State,
     status: status::State,
     git_write: git_write::State,
@@ -139,6 +140,7 @@ impl App {
             signature: signature::State::default(),
             clipboard: clipboard::State::default(),
             windows,
+            mouse: windows::MouseState::default(),
             git: git::State::default(),
             status: status::State::default(),
             git_write: git_write::State::default(),
@@ -249,6 +251,26 @@ impl App {
     }
 
     fn handle_event_at(&mut self, event: Event, now: std::time::Instant) -> bool {
+        match event {
+            Event::FocusLost => self.mouse_focus(false),
+            Event::FocusGained => self.mouse_focus(true),
+            _ => {}
+        }
+        if matches!(
+            event,
+            Event::Resize(..) | Event::FocusLost | Event::Paste(_)
+        ) || matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
+        {
+            self.cancel_mouse_drag();
+        }
+        if let Event::Mouse(event) = event {
+            return self.handle_mouse(event, 1);
+        }
+        if self.prompt.is_none()
+            && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
+        {
+            self.resume_git_mouse_scroll();
+        }
         if self.workspace_edit_waiting()
             && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release
                 && matches!(input::key(*key), Some(Key::Escape | Key::Ctrl('c'))))
@@ -339,6 +361,7 @@ impl App {
                     self.preview_search(&prompt);
                     self.prompt = Some(prompt);
                 } else if self.editor.mode() == Mode::Insert {
+                    self.viewport.resume_following();
                     if let Err(error) = self.editor.insert_paste(&text) {
                         self.fail(error);
                     }
@@ -377,11 +400,13 @@ impl App {
                             self.keys.cancel(&mut self.editor);
                             self.prompt = Some(ActivePrompt::command());
                         }
-                        _ => {
-                            if let Err(error) = self.keys.handle(&mut self.editor, key) {
-                                self.fail(error);
+                        _ => match self.keys.handle(&mut self.editor, key) {
+                            Ok(vex_editor::Dispatch::Executed(_)) => {
+                                self.viewport.resume_following()
                             }
-                        }
+                            Err(error) => self.fail(error),
+                            _ => {}
+                        },
                     }
                 }
                 self.open_search_prompt();
@@ -439,6 +464,7 @@ impl App {
                     | "qall"
                     | "help"
                     | "h"
+                    | "mouse"
             )
         {
             return Err(io::Error::other(
@@ -455,6 +481,7 @@ impl App {
             return Err(io::Error::other("unknown command or unsupported arguments"));
         }
         self.editor.execute(name, 0).map_err(io::Error::other)?;
+        self.viewport.resume_following();
         self.open_search_prompt();
         self.apply_application_action();
         Ok(())
@@ -491,6 +518,7 @@ impl App {
     }
 
     fn paint_current_window(&mut self, frame: &mut Frame, reserved_bottom: u16) -> io::Result<()> {
+        self.mouse.completion = None;
         if let Some(key) = self.active_git_view().cloned() {
             self.status
                 .views
@@ -561,6 +589,7 @@ impl App {
         let body_height = frame.height().saturating_sub(1 + reserved_bottom);
         self.paint_language(frame, body_height);
         let completion_area = self.paint_completion(frame, body_height);
+        self.mouse.completion = completion_area;
         self.paint_signature(frame, body_height, completion_area);
         self.paint_code_actions(frame, body_height);
         Ok(())
@@ -844,6 +873,7 @@ pub enum ArgumentCompletion {
     Language,
     Command,
     AutoCompletion,
+    OnOff,
 }
 
 macro_rules! commands {
@@ -858,6 +888,12 @@ macro_rules! commands {
 }
 
 commands! {
+    /// Enable or disable mouse scrolling and split resizing. With no argument, show the current setting.
+    fn mouse_mode(app, argument, force) ["mouse"] complete OnOff {
+        if force || !matches!(argument, "" | "on" | "off") { return Err(io::Error::other("mouse expects on or off")); }
+        app.configure_mouse(argument);
+        Ok(())
+    }
     /// Open PATH in the current pane, retaining unsaved buffers and recording the previous location.
     fn open_file(app, argument, force) ["open", "o", "edit", "e"] complete Path {
         if force || argument.is_empty() { return Err(io::Error::other("open requires a path and does not accept !")); }

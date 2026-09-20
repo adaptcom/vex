@@ -107,6 +107,17 @@ impl Job {
                         })
                         .collect();
                 }
+                ArgumentCompletion::OnOff => {
+                    result.items = ["on", "off"]
+                        .into_iter()
+                        .filter(|name| name.starts_with(prefix))
+                        .map(|name| Item {
+                            text: name.into(),
+                            description: "mouse input",
+                            directory: false,
+                        })
+                        .collect();
+                }
                 ArgumentCompletion::Path => self.paths(argument, prefix, &mut result),
             }
         }

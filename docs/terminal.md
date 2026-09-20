@@ -253,6 +253,35 @@ Top/bottom respect the scroll margin; counts move further inward, clamped to
 that visible region. Select mode extends selections. All these movements use
 logical lines while soft wrapping is unavailable.
 
+## Mouse input
+
+Mouse support starts enabled and works in normal, insert, and select modes.
+`:mouse on` / `:mouse off` toggles it for this session; `:mouse` reports its state.
+Disabling capture lets the terminal handle mouse gestures normally.
+
+- Wheel/trackpad vertical scrolling moves the pane under the pointer by three
+  logical lines per reported step. Keyboard focus, selections, and insert undo
+  groups stay unchanged. Git status scrolls without moving its selected row.
+- The cursor may go offscreen while browsing. Background redraws retain that
+  position; keyboard navigation or editing resumes cursor following.
+- Drag a vertical divider to adjust widths. Drag the status line separating
+  horizontally stacked panes to adjust heights. Nested panes keep their minimum
+  sizes and proportions are retained across terminal resizing.
+- Release, keyboard input, focus loss, terminal resize, or disabling the mouse
+  ends a drag. A click on a divider without movement leaves its ratio unchanged.
+
+Hover and signature documentation scroll when the pointer is inside their boxes.
+Completion menus and shortcut helpers consume mouse input over their boxes;
+modal pickers, code actions, and prompts block input to the underlying panes.
+Clicking to focus/place a cursor, text selection, picker/completion navigation,
+and horizontal wheel scrolling are future additions.
+
+Mouse events use the existing bounded input queue. Adjacent wheel events combine
+only when direction, coordinates, and modifiers match. Adjacent drag reports keep
+the latest position, preserving key, button, and resize boundaries. Idle pointer
+motion does not cause repainting. Exit, errors, signals, and panic cleanup disable
+terminal mouse capture.
+
 ## Command prompt
 
 `/` searches forward and `?` backward in normal or select mode. Typing previews
@@ -263,6 +292,7 @@ on matches, `K` filters selections, and `*` remembers selected text for search. 
 
 | Command | Action |
 |---|---|
+| `:mouse [on\|off]` | Toggle mouse scrolling/resizing, or show the current setting |
 | `:write [PATH]`, `:w [PATH]` | Save to the current or supplied path |
 | `:write! [PATH]`, `:w! [PATH]` | Allow replacing an existing destination or external edits |
 | `:reload[!]` | Reload the current file as one undo step; `!` accepts disk contents over unsaved edits |
@@ -500,7 +530,8 @@ at the right edge. Cached display columns avoid repeatedly scanning hidden line
 prefixes; cold queries and reindexing after an early edit can still be expensive.
 Bundled syntax languages share size and work budgets on a background worker.
 Language services include diagnostics, hover, definition navigation, and completion.
-Clipboard integration, mouse input, and workspace edits are not implemented.
+Clipboard integration and supported workspace edits use background services;
+see [clipboard](clipboard.md) and [language services](lsp.md) for their scope.
 
 ## Layout cache
 

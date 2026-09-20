@@ -272,6 +272,20 @@ impl App {
                 active.popups[active.selected].paint_signature(frame, body, &active.title, avoid);
         }
     }
+
+    pub(super) fn signature_mouse(
+        &mut self,
+        x: u16,
+        y: u16,
+        scroll: Option<(bool, usize)>,
+    ) -> Option<bool> {
+        let active = self.signature.active.as_mut()?;
+        let popup = &mut active.popups[active.selected];
+        if !active.visible || !popup.area.is_some_and(|area| area.contains(x, y)) {
+            return None;
+        }
+        Some(scroll.is_some_and(|(down, count)| popup.scroll_lines(down, count)))
+    }
 }
 
 #[cfg(test)]

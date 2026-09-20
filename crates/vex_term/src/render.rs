@@ -13,6 +13,7 @@ pub struct Viewport {
     pub top_line: usize,
     pub left_column: usize,
     alignment: Option<Alignment>,
+    browsing: Option<Alignment>,
 }
 
 /// A small stamp lets explicit alignment survive background redraws. Ordinary
@@ -40,7 +41,37 @@ impl Alignment {
 
 impl Viewport {
     pub(crate) fn hold(&mut self, editor: &Editor, height: usize) {
+        self.browsing = None;
         self.alignment = Some(Alignment::new(editor, height));
+    }
+
+    /// Wheel browsing preserves the exact selections, including offscreen ones.
+    pub(crate) fn scroll(
+        &mut self,
+        editor: &Editor,
+        down: bool,
+        lines: usize,
+        size: (u16, u16),
+    ) -> Result<bool, vex_core::Error> {
+        let height = usize::from(size.1.saturating_sub(1));
+        if height == 0 {
+            return Ok(false);
+        }
+        self.ensure_visible(editor, usize::from(size.0), height)?;
+        let before = self.top_line;
+        let last = editor.document().text().len_lines().saturating_sub(height);
+        self.top_line = if down {
+            before.saturating_add(lines).min(last)
+        } else {
+            before.saturating_sub(lines).min(last)
+        };
+        self.browsing = Some(Alignment::new(editor, 0));
+        self.alignment = None;
+        Ok(before != self.top_line)
+    }
+
+    pub(crate) fn resume_following(&mut self) {
+        self.browsing = None;
     }
 
     /// Apply cursor following without painting, including between batched keys.
@@ -66,6 +97,13 @@ impl Viewport {
         if height == 0 || width == 0 {
             return Ok(());
         }
+        if self.browsing == Some(Alignment::new(editor, 0)) {
+            self.top_line = self
+                .top_line
+                .min(editor.document().text().len_lines().saturating_sub(height));
+            return Ok(());
+        }
+        self.browsing = None;
         let text = editor.document().text();
         let row = text.char_to_line(primary.0);
         let cursor_span = if editor.mode() != Mode::Insert && primary.0 < text.len_chars() {

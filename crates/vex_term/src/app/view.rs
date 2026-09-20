@@ -12,6 +12,7 @@ impl App {
         action: ViewAction,
         count: usize,
     ) -> Result<(), vex_editor::Error> {
+        self.viewport.resume_following();
         let (width, height) = self.active_size();
         let width = usize::from(width);
         let height = usize::from(height).saturating_sub(1); // Pane status line.

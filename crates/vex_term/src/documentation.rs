@@ -18,6 +18,9 @@ pub(crate) struct Area {
 }
 
 impl Area {
+    pub fn contains(self, x: u16, y: u16) -> bool {
+        x >= self.left && x < self.right && y >= self.top && y < self.bottom
+    }
     fn intersects(self, other: Self) -> bool {
         self.left < other.right
             && other.left < self.right
@@ -42,6 +45,7 @@ pub(crate) struct Popup {
     rows: Vec<Line>,
     top: usize,
     visible: usize,
+    pub(crate) area: Option<Area>,
 }
 
 impl Popup {
@@ -66,11 +70,17 @@ impl Popup {
             rows: Vec::new(),
             top: 0,
             visible: 1,
+            area: None,
         }
     }
 
     pub fn scroll(&mut self, down: bool) {
         let count = (self.visible / 2).max(1);
+        self.scroll_lines(down, count);
+    }
+
+    pub fn scroll_lines(&mut self, down: bool, count: usize) -> bool {
+        let before = self.top;
         self.top = if down {
             self.top
                 .saturating_add(count)
@@ -78,6 +88,7 @@ impl Popup {
         } else {
             self.top.saturating_sub(count)
         };
+        before != self.top
     }
 
     fn layout(&mut self, width: u16) {
@@ -169,6 +180,7 @@ impl Popup {
         signature: bool,
         avoid: Option<Area>,
     ) -> bool {
+        self.area = None;
         let Some(cursor) = frame.cursor else {
             return false;
         };
@@ -258,6 +270,7 @@ impl Popup {
         if !signature {
             frame.cursor = None;
         }
+        self.area = Some(area);
         true
     }
 }

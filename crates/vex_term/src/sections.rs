@@ -13,6 +13,7 @@ pub(crate) struct Sections<K> {
     pub rows: Vec<Row<K>>,
     pub selected: usize,
     pub top: usize,
+    browsing: bool,
 }
 
 impl<K> Default for Sections<K> {
@@ -21,6 +22,7 @@ impl<K> Default for Sections<K> {
             rows: Vec::new(),
             selected: 0,
             top: 0,
+            browsing: false,
         }
     }
 }
@@ -41,14 +43,16 @@ impl<K: Clone + PartialEq> Sections<K> {
             target = parent(&id);
         }
         self.selected = self.selected.min(rows.len().saturating_sub(1));
-        self.top = new_top
-            .unwrap_or_else(|| self.selected.saturating_sub(offset))
-            .min(self.selected);
+        self.top = new_top.unwrap_or_else(|| self.selected.saturating_sub(offset));
+        if !self.browsing {
+            self.top = self.top.min(self.selected);
+        }
         self.rows = rows;
     }
 
     /// Move by visible rows without touching the underlying document.
     pub fn move_by(&mut self, down: bool, count: usize) {
+        self.resume_following();
         self.selected = if down {
             self.selected
                 .saturating_add(count)
@@ -59,6 +63,10 @@ impl<K: Clone + PartialEq> Sections<K> {
     }
 
     pub fn ensure_visible(&mut self, height: usize) {
+        if self.browsing {
+            self.top = self.top.min(self.rows.len().saturating_sub(height));
+            return;
+        }
         if self.selected < self.top {
             self.top = self.selected;
         }
@@ -66,6 +74,22 @@ impl<K: Clone + PartialEq> Sections<K> {
             self.top = self.selected.saturating_sub(height.saturating_sub(1));
         }
         self.top = self.top.min(self.rows.len().saturating_sub(height));
+    }
+
+    pub fn resume_following(&mut self) {
+        self.browsing = false;
+    }
+
+    pub fn scroll(&mut self, down: bool, count: usize, height: usize) -> bool {
+        let before = self.top;
+        self.top = if down {
+            before.saturating_add(count)
+        } else {
+            before.saturating_sub(count)
+        }
+        .min(self.rows.len().saturating_sub(height));
+        self.browsing = true;
+        before != self.top
     }
 }
 
@@ -80,6 +104,20 @@ mod tests {
                 style: Style::Text,
             })
             .collect()
+    }
+    #[test]
+    fn wheel_browsing_survives_refresh_without_moving_the_selected_row() {
+        let mut list = Sections::default();
+        list.replace(rows(&[1, 2, 3, 4, 5]), |_| None);
+        assert!(list.scroll(true, 3, 2));
+        list.ensure_visible(2);
+        assert_eq!((list.selected, list.top), (0, 3));
+        list.replace(rows(&[0, 1, 2, 3, 4, 5]), |_| None);
+        list.ensure_visible(2);
+        assert_eq!((list.selected, list.top), (1, 4));
+        list.move_by(true, 1);
+        list.ensure_visible(2);
+        assert_eq!((list.selected, list.top), (2, 2));
     }
     #[test]
     fn refresh_preserves_selection_and_scroll_and_falls_back_to_parent() {

@@ -144,6 +144,12 @@ selections, and measure operations that could affect input latency.
   and Page Up/Down aliases, pane dimensions, and persistent shortcut hints.
 - [ ] Keep logical/visual line movement explicit if soft wrapping arrives;
   view commands currently operate on unwrapped logical lines.
+- [x] Mouse scrolling and split resizing, enabled by default with `:mouse on/off`.
+  Scroll the pane under the pointer without changing focus/selections; drag
+  vertical dividers or horizontal status boundaries with nested minimum sizes.
+  Coalesce mouse bursts and cancel stale drags after focus loss or resizing.
+- [ ] Extend mouse input with click-to-focus/cursor placement, text selection,
+  horizontal scrolling, and picker/completion/code-action navigation.
 - [ ] Picker split-open (Ctrl-s/Ctrl-v), preview toggle (Ctrl-t), first/last result
   navigation, and `<space>F` for the working-directory file picker.
 - [ ] Command palette (`<space>?`) backed by the existing documented registry.

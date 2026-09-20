@@ -4,7 +4,7 @@
 use crate::picker::buffers::{BufferJob, BufferResult};
 use crate::picker::files::{FileJob, FileResult, FileWorker, PreviewJob, PreviewResult};
 use crate::picker::symbols::{SymbolJob, SymbolResult};
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, MouseEvent, MouseEventKind};
 use std::{
     collections::{HashMap, VecDeque},
     io,
@@ -21,6 +21,7 @@ const INPUT_CAPACITY: usize = 256;
 
 pub(crate) enum AppEvent {
     Terminal(Event),
+    MouseScroll(MouseEvent, usize),
     Background(BackgroundEvent),
     Lsp(vex_lsp::Event),
     GitWrite(vex_git::write::Result),
@@ -63,6 +64,28 @@ struct Inbox {
     closed: bool,
 }
 
+impl Inbox {
+    fn pop_input(&mut self) -> Option<AppEvent> {
+        let event = self.input.pop_front()?;
+        if let Event::Mouse(mouse) = event
+            && matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            )
+        {
+            let mut count = 1;
+            // Never cross a key, release, resize, direction or pointer change.
+            // The queue is bounded, so one batch has at most INPUT_CAPACITY steps.
+            while self.input.front() == Some(&event) {
+                self.input.pop_front();
+                count += 1;
+            }
+            return Some(AppEvent::MouseScroll(mouse, count));
+        }
+        Some(AppEvent::Terminal(event))
+    }
+}
+
 #[derive(Default)]
 struct SharedInbox {
     state: Mutex<Inbox>,
@@ -103,6 +126,27 @@ impl EventQueue {
     }
     fn terminal(&self, event: Event) -> bool {
         let mut state = self.0.state.lock().unwrap();
+        if state.closed {
+            return false;
+        }
+        if matches!(
+            event,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                ..
+            })
+        ) {
+            return true;
+        }
+        if let Event::Mouse(mouse) = event
+            && matches!(mouse.kind, MouseEventKind::Drag(_))
+            && let Some(Event::Mouse(previous)) = state.input.back_mut()
+            && previous.kind == mouse.kind
+            && previous.modifiers == mouse.modifiers
+        {
+            *previous = mouse;
+            return true;
+        }
         while state.input.len() == INPUT_CAPACITY && !state.closed {
             state = self.0.space.wait(state).unwrap();
         }
@@ -185,11 +229,11 @@ impl EventQueue {
             }
             if !waiting
                 && state.prefer_input
-                && let Some(event) = state.input.pop_front()
+                && let Some(event) = state.pop_input()
             {
                 state.prefer_input = false;
                 self.0.space.notify_all();
-                return Some(AppEvent::Terminal(event));
+                return Some(event);
             }
             let services = state.background.len() + 2;
             for offset in 0..services {
@@ -227,12 +271,22 @@ impl EventQueue {
                 })
             {
                 let event = state.input.remove(index).unwrap();
+                if matches!(event, Event::Resize(..) | Event::FocusLost) {
+                    // These notifications can pass input held for a worker.
+                    // Stale pointer coordinates/presses must not restart a drag.
+                    let mut position = 0;
+                    state.input.retain(|queued| {
+                        let keep = position >= index || !matches!(queued, Event::Mouse(_));
+                        position += 1;
+                        keep
+                    });
+                }
                 self.0.space.notify_all();
                 return Some(AppEvent::Terminal(event));
             }
-            if !waiting && let Some(event) = state.input.pop_front() {
+            if !waiting && let Some(event) = state.pop_input() {
                 self.0.space.notify_all();
-                return Some(AppEvent::Terminal(event));
+                return Some(event);
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -812,6 +866,88 @@ mod tests {
     use vex_editor::{Editor, SearchCompletion, SearchStatus};
 
     #[test]
+    fn mouse_bursts_coalesce_without_crossing_input_or_position_boundaries() {
+        use crossterm::event::MouseButton;
+        let queue = EventQueue::default();
+        let mouse = |kind, column| MouseEvent {
+            kind,
+            column,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        let wheel = mouse(MouseEventKind::ScrollDown, 2);
+        for _ in 0..50 {
+            queue.terminal(Event::Mouse(wheel));
+        }
+        let other_pane = mouse(MouseEventKind::ScrollDown, 40);
+        queue.terminal(Event::Mouse(other_pane));
+        queue.terminal(key(KeyCode::Char('j')));
+        queue.terminal(Event::Mouse(wheel));
+        let up = mouse(MouseEventKind::ScrollUp, 2);
+        queue.terminal(Event::Mouse(up));
+        assert!(
+            matches!(queue.next(Duration::ZERO, false), Some(AppEvent::MouseScroll(event, 50)) if event == wheel)
+        );
+        assert!(
+            matches!(queue.next(Duration::ZERO, false), Some(AppEvent::MouseScroll(event, 1)) if event == other_pane)
+        );
+        assert!(matches!(
+            queue.next(Duration::ZERO, false),
+            Some(AppEvent::Terminal(Event::Key(_)))
+        ));
+        assert!(
+            matches!(queue.next(Duration::ZERO, false), Some(AppEvent::MouseScroll(event, 1)) if event == wheel)
+        );
+        assert!(
+            matches!(queue.next(Duration::ZERO, false), Some(AppEvent::MouseScroll(event, 1)) if event == up)
+        );
+        let down = Event::Mouse(mouse(MouseEventKind::Down(MouseButton::Left), 10));
+        queue.terminal(down.clone());
+        for column in 0..1000 {
+            queue.terminal(Event::Mouse(mouse(
+                MouseEventKind::Drag(MouseButton::Left),
+                column,
+            )));
+        }
+        let release = Event::Mouse(mouse(MouseEventKind::Up(MouseButton::Left), 999));
+        queue.terminal(release.clone());
+        queue.terminal(Event::Mouse(mouse(MouseEventKind::Moved, 3)));
+        assert!(
+            matches!(queue.next(Duration::ZERO, false), Some(AppEvent::Terminal(event)) if event == down)
+        );
+        assert!(
+            matches!(queue.next(Duration::ZERO, false), Some(AppEvent::Terminal(Event::Mouse(event))) if event.column == 999 && event.kind == MouseEventKind::Drag(MouseButton::Left))
+        );
+        assert!(
+            matches!(queue.next(Duration::ZERO, false), Some(AppEvent::Terminal(event)) if event == release)
+        );
+        assert!(queue.next(Duration::ZERO, false).is_none());
+    }
+
+    #[test]
+    fn focus_loss_and_resize_do_not_replay_stale_pointer_presses_after_a_worker() {
+        for notification in [Event::FocusLost, Event::Resize(80, 20)] {
+            let queue = EventQueue::default();
+            queue.terminal(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 40,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            }));
+            queue.terminal(key(KeyCode::Char('j')));
+            queue.terminal(notification.clone());
+            assert!(
+                matches!(queue.next(Duration::ZERO, true), Some(AppEvent::Terminal(event)) if event == notification)
+            );
+            assert!(matches!(
+                queue.next(Duration::ZERO, false),
+                Some(AppEvent::Terminal(Event::Key(_)))
+            ));
+            assert!(queue.next(Duration::ZERO, false).is_none());
+        }
+    }
+
+    #[test]
     fn git_writes_finish_in_order_and_every_result_survives_worker_shutdown() {
         let events = EventQueue::default();
         let ran = Arc::new(Mutex::new(Vec::new()));
@@ -890,6 +1026,9 @@ mod tests {
     }
     fn deliver(app: &mut App, event: AppEvent) {
         match event {
+            AppEvent::MouseScroll(event, count) => {
+                app.handle_mouse(event, count);
+            }
             AppEvent::Terminal(event) => {
                 app.handle(event);
             }

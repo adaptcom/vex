@@ -44,8 +44,19 @@ picker floats over the complete terminal. Resizing too small to
 fit the layout temporarily shows the focused pane alone and restores the splits
 when space returns. There are at most 16 windows, each at least 12 columns by
 3 rows; a split that would exceed these limits leaves the layout unchanged.
-Split branches divide their available space equally. Adjustable split ratios,
-mouse focus, and mouse resizing are not implemented.
+Split branches start with equal space. Drag a vertical divider to change widths,
+or drag the upper pane's status line between horizontal panes to change heights.
+Ratios survive terminal resizing; each branch accounts for the minimum sizes of
+all its nested panes. A temporarily constrained ratio returns when space allows.
+Dragging preserves keyboard focus and selections, and stops on release, focus
+loss, terminal resize, or keyboard input.
+
+Mouse support is enabled by default. `:mouse off` returns mouse handling to the
+terminal; `:mouse on` enables it again, and `:mouse` reports the session setting.
+Wheel scrolling targets the document or Git pane under the pointer without
+changing focus or its selected position. The cursor may leave the visible area;
+keyboard navigation or editing resumes cursor following. See
+[mouse input](terminal.md#mouse-input) for popup behavior and current scope.
 
 ## Jump history
 

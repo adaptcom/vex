@@ -76,6 +76,10 @@ view. Use `:bc` to close a buffer (`:bc!` discards unsaved edits).
 Use `Ctrl-w v` / `Ctrl-w s` for vertical/horizontal splits. Panes can share a
 buffer or display different files, with independent cursors and scrolling.
 `Space w` is an alias; see [window mode](docs/windows.md) for all bindings.
+Mouse support is enabled by default: scroll the pane under the pointer, drag
+vertical dividers or horizontal status lines to resize splits, and use
+`:mouse off` / `:mouse on` to toggle it. Scrolling preserves focus and selections;
+keyboard navigation or editing brings an offscreen cursor back into view.
 
 ## Development
 

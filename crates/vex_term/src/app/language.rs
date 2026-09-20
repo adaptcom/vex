@@ -203,6 +203,17 @@ impl App {
         }
     }
 
+    pub(super) fn hover_mouse(
+        &mut self,
+        x: u16,
+        y: u16,
+        scroll: Option<(bool, usize)>,
+    ) -> Option<bool> {
+        let popup = self.language.popup.as_mut()?;
+        popup.area.filter(|area| area.contains(x, y))?;
+        Some(scroll.is_some_and(|(down, count)| popup.scroll_lines(down, count)))
+    }
+
     pub(super) fn cancel_language_request(&mut self) {
         if self.signature_request_pending() {
             self.signature.interrupted();
@@ -916,6 +927,37 @@ mod tests {
         app.execute("lsp-restart").unwrap();
         app.take_lsp_update();
         assert!(!answer(&mut app, key, Answer::Hover("stale".into())));
+    }
+
+    #[test]
+    fn mouse_scrolls_hover_documentation_without_scrolling_the_underlying_file() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let mut app = App::from_document(
+            vex_core::Document::from("text\n".repeat(100).as_str()),
+            (80, 12),
+        );
+        let source = (0..30)
+            .map(|line| format!("hover line {line:02}\n"))
+            .collect::<String>();
+        app.language.popup = Some(crate::documentation::Popup::new(
+            vex_syntax::markup::Document::plain(&source),
+        ));
+        let frame = crate::app::tests::draw(&mut app);
+        assert!((0..12).any(|row| frame.row_text(row).contains("hover line 00")));
+        let area = app.language.popup.as_ref().unwrap().area.unwrap();
+        let before = app.viewport;
+        let selections = app.editor.selections().clone();
+        app.handle(TerminalEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: area.left + 1,
+            row: area.top + 1,
+            modifiers: KeyModifiers::NONE,
+        }));
+        let frame = crate::app::tests::draw(&mut app);
+        assert!(!(0..12).any(|row| frame.row_text(row).contains("hover line 00")));
+        assert!((0..12).any(|row| frame.row_text(row).contains("hover line 03")));
+        assert_eq!(app.viewport, before);
+        assert_eq!(app.editor.selections(), &selections);
     }
 
     #[test]
