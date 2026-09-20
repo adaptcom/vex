@@ -150,6 +150,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
         if let Some(batch) = app.take_git_batch(Instant::now()) {
             runtime.submit_git(batch);
         }
+        if let Some(batch) = app.take_status_batch(Instant::now()) {
+            runtime.submit_status(batch);
+        }
         if redraw {
             let (width, height) = app.size();
             app.paint(renderer.frame(width, height)?)?;
@@ -173,6 +176,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
             .into_iter()
             .chain(app.symbol_deadline())
             .chain(app.git_deadline())
+            .chain(app.status_deadline())
             .min()
             .map_or(Duration::from_millis(100), |deadline| {
                 deadline
@@ -210,6 +214,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Git(result)) => {
                     redraw |= app.handle_git_result(result);
                 }
+                AppEvent::Background(BackgroundEvent::GitStatus(result)) => {
+                    redraw |= app.handle_status_result(result);
+                }
                 AppEvent::Lsp(event) => redraw |= app.handle_lsp_event(event),
                 AppEvent::Failed(error) => return Err(error),
             }
@@ -221,6 +228,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(batch) = app.take_git_batch(Instant::now()) {
                 runtime.submit_git(batch);
+            }
+            if let Some(batch) = app.take_status_batch(Instant::now()) {
+                runtime.submit_status(batch);
             }
             if let Some(job) = app.take_picker_job() {
                 runtime.submit_picker(job);

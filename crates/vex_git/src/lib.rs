@@ -3,6 +3,7 @@
 
 mod diff;
 mod repository;
+pub mod status;
 
 use diff::BaseLines;
 pub use diff::{Diff, Hunk, Marker};

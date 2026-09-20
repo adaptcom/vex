@@ -37,6 +37,8 @@ hover, `gd` for definitions, `Ctrl-o` to jump back, and `]d` / `[d` to navigate
 diagnostics. See [language services and setup](docs/lsp.md).
 Tracked files show live Git gutter markers, including unsaved changes, with
 Helix-style bars and deletion overlines. See [Git gutter behavior](docs/git.md).
+Space-g opens a persistent repository status pane with expandable, syntax-highlighted
+diffs and file navigation. See [repository status](docs/git-status.md).
 See [terminal usage and architecture](docs/terminal.md).
 
 Press Space-f for the fuzzy project file picker. Named key groups (`g`, Space,
@@ -63,6 +65,7 @@ cargo build --release -p vex_term --locked
 python3 tools/terminal_smoke.py
 python3 tools/picker_smoke.py
 python3 tools/git_smoke.py # Requires Git.
+python3 tools/git_status_smoke.py # Requires Git.
 python3 tools/lsp_smoke.py # Requires rust-analyzer and a Rust toolchain.
 python3 tools/languages_smoke.py # Requires typescript-language-server and TypeScript.
 python3 tools/background_search_benchmark.py

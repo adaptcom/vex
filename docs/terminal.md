@@ -42,6 +42,7 @@ and calls that existing dispatcher.
 | `]d`, `[d` | Next/previous diagnostic, with counts and wrapping |
 | Space-f, Space-k | Open file picker / show hover |
 | Space-s, Space-S | Open document / workspace symbol picker |
+| Space-g | Open the [repository status view](git-status.md) |
 | Ctrl-w, Space-w | Enter [window mode](windows.md) to split, focus, swap, and close panes |
 | Escape | Cancel a prefix/picker/prompt; otherwise enter normal mode |
 | `:` in normal/select mode | Open the command prompt |
@@ -194,6 +195,8 @@ completion is a bounded snapshot rather than a batch of new paths.
 Git uses another latest-result slot and batches all open buffers together, with
 cached HEAD baselines and hunks shared across views. Edit debounce and periodic
 repository refresh use event-loop deadlines. See [Git architecture and limits](git.md).
+The repository status view has its own query worker and latest-result slot,
+including lazy diffs and background syntax colors. See [repository status](git-status.md).
 
 `BackgroundEvent` carries search, syntax, picker, preview, and Git results. LSP has a separate typed
 event variant and a FIFO of up to 128 events with producer backpressure, preserving

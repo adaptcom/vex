@@ -1,5 +1,7 @@
 # Git gutter
 
+For repository-wide review, Space-g opens the [Git status view](git-status.md).
+
 Named, tracked UTF-8 files show changes against their committed contents in
 `HEAD`. The comparison uses the current buffer, including unsaved edits, so both
 staged and unstaged changes appear. Saving or staging keeps the markers; committing

@@ -57,6 +57,7 @@ pub enum LanguageAction {
 /// Application UI requested by documented commands without performing file I/O.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApplicationAction {
+    GitStatus,
     FilePicker,
     DocumentSymbols,
     WorkspaceSymbols,

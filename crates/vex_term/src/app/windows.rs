@@ -18,7 +18,14 @@ use std::{
 use vex_core::DocumentId;
 use vex_editor::{Editor, Language, ViewId, WindowAction};
 
+enum Content {
+    Document,
+    Git(PathBuf),
+}
+
 struct Pane {
+    // The document stays owned by the pane while an auxiliary view is shown.
+    content: Content,
     document: DocumentId,
     view: ViewId,
     viewport: Viewport,
@@ -50,6 +57,7 @@ impl State {
             panes: BTreeMap::from([(
                 0,
                 Pane {
+                    content: Content::Document,
                     document: editor.document().id(),
                     view: editor.active_view(),
                     viewport: Viewport::default(),
@@ -63,6 +71,55 @@ impl State {
 }
 
 impl App {
+    pub(super) fn active_git_view(&self) -> Option<&PathBuf> {
+        match &self.windows.panes[&self.windows.layout.active].content {
+            Content::Git(key) => Some(key),
+            Content::Document => None,
+        }
+    }
+    pub(super) fn set_git_view(&mut self, key: Option<PathBuf>) {
+        self.windows
+            .panes
+            .get_mut(&self.windows.layout.active)
+            .unwrap()
+            .content = key.map_or(Content::Document, Content::Git);
+    }
+    pub(super) fn git_view_keys(&self) -> Vec<PathBuf> {
+        let mut keys: Vec<_> = self
+            .windows
+            .panes
+            .values()
+            .filter_map(|pane| match &pane.content {
+                Content::Git(key) => Some(key.clone()),
+                Content::Document => None,
+            })
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+    pub(super) fn remap_git_view(&mut self, from: &Path, to: &Path) {
+        for pane in self.windows.panes.values_mut() {
+            if matches!(&pane.content,Content::Git(key) if key==from) {
+                pane.content = Content::Git(to.into());
+            }
+        }
+    }
+    pub(super) fn unsaved_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<_> = std::iter::once((&self.editor, &self.files))
+            .chain(
+                self.windows
+                    .buffers
+                    .values()
+                    .map(|buffer| (&buffer.editor, &buffer.files)),
+            )
+            .filter(|(editor, files)| files.is_dirty(editor.document()))
+            .filter_map(|(_, files)| files.target().map(Path::to_path_buf))
+            .collect();
+        paths.sort();
+        paths
+    }
+
     pub(super) fn git_documents(&self) -> Vec<vex_git::Document> {
         std::iter::once((&self.editor, &self.files))
             .chain(
@@ -256,6 +313,7 @@ impl App {
         self.windows.panes.insert(
             self.windows.layout.active,
             Pane {
+                content: Content::Document,
                 document: self.editor.document().id(),
                 view: self.editor.active_view(),
                 viewport: self.viewport,
@@ -317,6 +375,7 @@ impl App {
         self.windows.panes.insert(
             id,
             Pane {
+                content: Content::Document,
                 document: self.editor.document().id(),
                 view,
                 viewport: self.viewport,
@@ -561,6 +620,13 @@ impl App {
             if id == self.windows.layout.active {
                 self.paint_current_window(&mut local, 0)?;
                 self.remember_viewport();
+            } else if let Content::Git(key) = &self.windows.panes[&id].content {
+                self.status
+                    .views
+                    .get_mut(key)
+                    .unwrap()
+                    .paint(&mut local, 0, false);
+                local.inactive();
             } else {
                 let pane = self.windows.panes.get_mut(&id).unwrap();
                 let (editor, files) = if pane.document == self.editor.document().id() {

@@ -435,6 +435,13 @@ commands! {
         Ok(())
     }
 
+    /// Open the repository status view with expandable staged and unstaged diffs.
+    fn git_status(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.application_action = Some(crate::ApplicationAction::GitStatus);
+        Ok(())
+    }
+
     /// Open a searchable picker of symbols in the current document using its language server.
     fn symbol_picker(ctx) {
         ctx.editor.finish_undo_group();

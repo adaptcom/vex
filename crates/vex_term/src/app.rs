@@ -19,6 +19,7 @@ mod completion;
 mod git;
 mod language;
 mod picker;
+mod status;
 mod windows;
 
 enum PromptKind {
@@ -66,6 +67,7 @@ pub struct App {
     completion: completion::State,
     windows: windows::State,
     git: git::State,
+    status: status::State,
 }
 
 impl App {
@@ -99,6 +101,7 @@ impl App {
             completion: completion::State::default(),
             windows,
             git: git::State::default(),
+            status: status::State::default(),
         }
     }
 
@@ -157,8 +160,12 @@ impl App {
     fn handle_at(&mut self, event: Event, now: std::time::Instant) -> bool {
         if matches!(event, Event::FocusGained) {
             self.refresh_git();
+            self.refresh_status();
         }
         if let Some(redraw) = self.handle_picker_input(&event) {
+            return redraw;
+        }
+        if let Some(redraw) = self.handle_status_input(&event) {
             return redraw;
         }
         if let Some(redraw) = self.handle_completion_input(&event) {
@@ -285,6 +292,34 @@ impl App {
         let force = name.ends_with('!');
         let name = name.strip_suffix('!').unwrap_or(name);
         let argument = argument.trim();
+        if self.active_git_view().is_some()
+            && !matches!(
+                name,
+                "git_status"
+                    | "git_toggle"
+                    | "git_visit"
+                    | "git_refresh"
+                    | "git_close"
+                    | "vsplit"
+                    | "vs"
+                    | "hsplit"
+                    | "hs"
+                    | "split"
+                    | "sp"
+                    | "only"
+                    | "quit"
+                    | "q"
+                    | "quit-all"
+                    | "qa"
+                    | "qall"
+                    | "help"
+                    | "h"
+            )
+        {
+            return Err(io::Error::other(
+                "Git status is read-only; q returns to the document",
+            ));
+        }
         if let Some(command) = COMMANDS
             .iter()
             .find(|c| c.name == name || c.aliases.contains(&name))
@@ -305,7 +340,11 @@ impl App {
         self.refresh_diagnostics();
         self.open_search_prompt();
         self.paint_windows(frame)?;
-        let diagnostic = self.diagnostic_message();
+        let diagnostic = if self.active_git_view().is_some() {
+            String::new()
+        } else {
+            self.diagnostic_message()
+        };
         render::paint_command_line(
             frame,
             if self.message.is_empty() {
@@ -324,6 +363,14 @@ impl App {
     }
 
     fn paint_current_window(&mut self, frame: &mut Frame, reserved_bottom: u16) -> io::Result<()> {
+        if let Some(key) = self.active_git_view().cloned() {
+            self.status
+                .views
+                .get_mut(&key)
+                .unwrap()
+                .paint(frame, reserved_bottom, true);
+            return Ok(());
+        }
         let filename = self
             .files
             .path()
@@ -378,6 +425,7 @@ impl App {
 
     fn apply_application_action(&mut self) {
         let result = match self.editor.take_application_action() {
+            Some(ApplicationAction::GitStatus) => self.open_git_status(),
             Some(ApplicationAction::FilePicker) => {
                 self.open_file_picker();
                 Ok(())
@@ -552,6 +600,31 @@ macro_rules! commands {
 }
 
 commands! {
+    /// Open the repository status view, preserving the document behind it.
+    fn git_status(app, argument, force) ["git_status"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("git_status takes no arguments")); }
+        app.open_git_status()
+    }
+    /// Expand or collapse the selected Git section, file, or hunk.
+    fn git_toggle(app, argument, force) ["git_toggle"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("git_toggle takes no arguments")); }
+        app.toggle_git_section()
+    }
+    /// Open the selected Git file at the reviewed change, protecting unsaved buffers.
+    fn git_visit(app, argument, force) ["git_visit"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("git_visit takes no arguments")); }
+        app.visit_git_change()
+    }
+    /// Refresh visible repository status views in the background, preserving navigation and folds.
+    fn git_refresh(app, argument, force) ["git_refresh"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("git_refresh takes no arguments")); }
+        app.refresh_status(); Ok(())
+    }
+    /// Return from Git status to the document retained in this pane.
+    fn git_close(app, argument, force) ["git_close"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("git_close takes no arguments")); }
+        app.close_git_status(); Ok(())
+    }
     /// Split vertically, optionally opening PATH in the new right-hand window.
     fn vertical_split(app, argument, force) ["vsplit", "vs"] {
         if force { return Err(io::Error::other("vsplit does not accept !")); }
@@ -602,6 +675,7 @@ commands! {
         app.language.saved += 1;
         app.language.saved_snapshot = Some(app.editor.document().snapshot());
         app.refresh_git();
+        app.refresh_status();
         Ok(())
     }
 

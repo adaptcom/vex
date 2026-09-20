@@ -176,6 +176,7 @@ impl Default for Keymap {
                 (vec![Char('N')], "search_previous"),
                 (vec![Char('K')], "hover"),
                 (vec![Char(' '), Char('f')], "file_picker"),
+                (vec![Char(' '), Char('g')], "git_status"),
                 (vec![Char(' '), Char('s')], "symbol_picker"),
                 (vec![Char(' '), Char('S')], "workspace_symbol_picker"),
                 (vec![Char(' '), Char('k')], "hover"),
@@ -524,7 +525,7 @@ mod tests {
         let mut editor = Editor::new(Document::from("abc"));
         editor.execute("select_mode", 1).unwrap();
         let mut keys = KeyHandler::default();
-        press(&mut keys, &mut editor, " g"); // Unknown Space-g leaves the group.
+        press(&mut keys, &mut editor, " z"); // Unknown Space-z leaves the group.
         assert!(keys.hints().is_none());
         press(&mut keys, &mut editor, "3g");
         let hints = keys.hints().unwrap();

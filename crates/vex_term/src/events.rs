@@ -34,13 +34,14 @@ pub(crate) enum BackgroundEvent {
     Symbols(SymbolResult),
     Preview(PreviewResult),
     Git(vex_git::Result),
+    GitStatus(vex_git::status::Result),
 }
 
 #[derive(Default)]
 struct Inbox {
     input: VecDeque<Event>,
     lsp: VecDeque<vex_lsp::Event>,
-    background: [Option<BackgroundEvent>; 5],
+    background: [Option<BackgroundEvent>; 6],
     next_background: usize,
     prefer_input: bool,
     failure: Option<io::Error>,
@@ -92,6 +93,7 @@ impl EventQueue {
                 BackgroundEvent::Files(_) | BackgroundEvent::Symbols(_) => 2,
                 BackgroundEvent::Preview(_) => 3,
                 BackgroundEvent::Git(_) => 4,
+                BackgroundEvent::GitStatus(_) => 5,
             };
             state.background[slot] = Some(result);
             self.0.ready.notify_one();
@@ -109,7 +111,7 @@ impl EventQueue {
         state.closed = true;
         state.input.clear();
         state.lsp.clear();
-        state.background = [None, None, None, None, None];
+        state.background = [None, None, None, None, None, None];
         self.0.ready.notify_all();
         self.0.space.notify_all();
     }
@@ -269,6 +271,12 @@ impl Job for vex_git::Batch {
     }
 }
 
+impl Job for vex_git::status::Batch {
+    fn cancellation(&self) -> Cancellation {
+        self.cancellation.clone()
+    }
+}
+
 struct Work<J> {
     pending: Option<J>,
     running: Option<Cancellation>,
@@ -390,6 +398,7 @@ pub(crate) struct Runtime {
     files: Option<LatestWorker<PickerJob>>,
     preview: Option<LatestWorker<PreviewJob>>,
     git: Option<LatestWorker<vex_git::Batch>>,
+    git_status: Option<LatestWorker<vex_git::status::Batch>>,
     input: Option<JoinHandle<()>>,
 }
 
@@ -424,6 +433,16 @@ impl Runtime {
         let git = LatestWorker::spawn("vex-git", events.clone(), move |job| {
             git_state.run(job).map(BackgroundEvent::Git)
         })?;
+        let git_status = LatestWorker::spawn(
+            "vex-git-status",
+            events.clone(),
+            |job: vex_git::status::Batch| {
+                let cancellation = job.cancellation.clone();
+                job.run()
+                    .and_then(|result| crate::git_status::highlight(result, &cancellation))
+                    .map(BackgroundEvent::GitStatus)
+            },
+        )?;
         let queue = events.clone();
         let input = thread::Builder::new()
             .name("vex-input".into())
@@ -453,6 +472,7 @@ impl Runtime {
             files: Some(files),
             preview: Some(preview),
             git: Some(git),
+            git_status: Some(git_status),
             input: Some(input),
         })
     }
@@ -481,6 +501,9 @@ impl Runtime {
     pub(crate) fn submit_git(&self, job: vex_git::Batch) {
         self.git.as_ref().unwrap().submit(job);
     }
+    pub(crate) fn submit_status(&self, job: vex_git::status::Batch) {
+        self.git_status.as_ref().unwrap().submit(job);
+    }
 }
 
 impl Drop for Runtime {
@@ -492,12 +515,14 @@ impl Drop for Runtime {
         self.files.as_ref().unwrap().stop();
         self.preview.as_ref().unwrap().stop();
         self.git.as_ref().unwrap().stop();
+        self.git_status.as_ref().unwrap().stop();
         self.search.take();
         self.syntax.take();
         self.lsp.take();
         self.files.take();
         self.preview.take();
         self.git.take();
+        self.git_status.take();
         if let Some(thread) = self.input.take() {
             let _ = thread.join();
         }
@@ -546,6 +571,9 @@ mod tests {
             }
             AppEvent::Background(BackgroundEvent::Git(result)) => {
                 app.handle_git_result(result);
+            }
+            AppEvent::Background(BackgroundEvent::GitStatus(result)) => {
+                app.handle_status_result(result);
             }
             AppEvent::Lsp(event) => {
                 app.handle_lsp_event(event);
