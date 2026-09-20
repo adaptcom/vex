@@ -292,6 +292,29 @@ def main():
             terminal.finish()
         print("PASS: Unicode paste, CRLF, undo/redo, dirty quit, resize, save, clean quit")
 
+        paired = Path(directory) / "paired.txt"
+        paired.write_text("")
+        with Terminal([binary, str(paired)]) as terminal:
+            terminal.start()
+            terminal.send(b"i(")
+            terminal.expect_screen(b"()")
+            terminal.send(b"\x7f")
+            terminal.send(b"foo([{}]);")
+            terminal.expect_screen(b"foo([{}]);")
+            terminal.leave_insert()
+            mark = terminal.send(b"u:w\r")
+            terminal.expect(b"wrote", mark)
+            assert paired.read_text() == ""
+            terminal.send(b"U:w\r")
+            terminal.expect_screen_idle("wrote 10 bytes")
+            assert paired.read_text() == "foo([{}]);"
+            terminal.send(b"A\x1b[200~([{}\x1b[201~")
+            terminal.leave_insert()
+            terminal.send(b":wq\r")
+            terminal.finish()
+            assert paired.read_text() == "foo([{}]);([{}"
+        print("PASS: typed auto-pairs, closer skipping, paired Backspace, grouped undo/redo, literal paste")
+
         opened_lines = Path(directory) / "opened lines.txt"
         opened_lines.write_bytes(b"\tfirst\r\nlast")
         with Terminal([binary, str(opened_lines)]) as terminal:

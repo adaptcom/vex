@@ -38,6 +38,11 @@ selections, and measure operations that could affect input latency.
 
 ## Registers and input follow-ups
 
+- [ ] Extend automatic pairs to quotes/backticks with language-aware rules for
+  apostrophes, escaping, and Rust lifetimes. Add per-language pair configuration
+  and an option to disable pairing. Initial `()`, `[]`, `{}` insertion, closer
+  skipping, paired Backspace, and bounded matching highlights are implemented.
+
 - [x] System clipboard commands: `<space>y`/`Y`, `<space>p`/`P`, and `<space>R`.
   Platform helpers, copy capture, and paste preparation run on the background
   worker, preserving fragment boundaries, input order, cancellation, and undo.

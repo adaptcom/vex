@@ -242,6 +242,7 @@ pub(crate) fn paint_view(
     let gutter = columns.width;
     let body_width = width - gutter;
     viewport.follow(editor, primary, column, (body_width, body_height))?;
+    let matching_bracket = editor.matching_bracket(primary);
     let cursors = editor
         .selections()
         .ranges()
@@ -260,6 +261,13 @@ pub(crate) fn paint_view(
                 Style::Syntax(highlight) => Some(highlight),
                 _ => None,
             };
+            if matching_bracket.is_some() {
+                return if editor.mode() == Mode::Insert {
+                    Style::MatchingInsertCursor
+                } else {
+                    Style::MatchingCursor(highlight)
+                };
+            }
             return if editor.mode() == Mode::Insert {
                 Style::InsertCursor(highlight)
             } else {
@@ -267,12 +275,25 @@ pub(crate) fn paint_view(
             };
         }
         if cursors.binary_search(&position).is_ok() {
-            return Style::SecondaryCursor;
+            return if matching_bracket == Some(position) {
+                Style::MatchingSecondaryCursor
+            } else {
+                Style::SecondaryCursor
+            };
         }
         let ranges = editor.selections().ranges();
         let index = ranges.partition_point(|s| s.start() <= position);
         if index > 0 && position < ranges[index - 1].end() {
-            Style::Selection
+            if matching_bracket == Some(position) {
+                Style::MatchingSelection
+            } else {
+                Style::Selection
+            }
+        } else if matching_bracket == Some(position) {
+            Style::MatchingBracket(match syntax {
+                Style::Syntax(highlight) => Some(highlight),
+                _ => None,
+            })
         } else {
             syntax
         }
@@ -645,6 +666,97 @@ mod tests {
         )
         .unwrap();
         frame
+    }
+
+    #[test]
+    fn matching_pairs_follow_the_cursor_and_clear_in_inactive_views() {
+        let mut editor = Editor::new(Document::from("(字) x"));
+        for mode in ["normal_mode", "select_mode", "insert_mode"] {
+            editor.execute(mode, 1).unwrap();
+            editor
+                .set_selections(SelectionSet::single(Selection::cursor(CharOffset(0))))
+                .unwrap();
+            let mut frame = render(&editor, 30, 5, &mut Viewport::default());
+            assert_eq!(
+                frame.style_at(5, 0),
+                Some(if mode == "insert_mode" {
+                    Style::MatchingInsertCursor
+                } else {
+                    Style::MatchingCursor(None)
+                })
+            );
+            assert_eq!(frame.style_at(8, 0), Some(Style::MatchingBracket(None)));
+            assert_eq!(
+                frame.cursor.unwrap().shape,
+                if mode == "insert_mode" {
+                    CursorShape::Bar
+                } else {
+                    CursorShape::Block
+                }
+            );
+            frame.inactive();
+            assert_eq!(frame.style_at(5, 0), Some(Style::InactiveCursor));
+            assert_eq!(frame.style_at(8, 0), Some(Style::Text));
+            assert!(frame.cursor.is_none());
+        }
+        editor.execute("normal_mode", 1).unwrap();
+        editor
+            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(2))))
+            .unwrap();
+        let frame = render(&editor, 30, 5, &mut Viewport::default());
+        assert_eq!(frame.style_at(5, 0), Some(Style::MatchingBracket(None)));
+        assert_eq!(frame.style_at(8, 0), Some(Style::MatchingCursor(None)));
+        editor
+            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(4))))
+            .unwrap();
+        let frame = render(&editor, 30, 5, &mut Viewport::default());
+        assert_eq!(frame.style_at(5, 0), Some(Style::Text));
+        assert_eq!(frame.style_at(8, 0), Some(Style::Text));
+    }
+
+    #[test]
+    fn matching_partners_preserve_selection_and_cursor_backgrounds_and_inactive_syntax() {
+        let mut editor = Editor::new(Document::from("(x)"));
+        editor
+            .set_selections(SelectionSet::single(Selection::new(
+                CharOffset(0),
+                CharOffset(3),
+            )))
+            .unwrap();
+        let frame = render(&editor, 20, 4, &mut Viewport::default());
+        assert_eq!(frame.style_at(5, 0), Some(Style::MatchingSelection));
+        assert_eq!(frame.style_at(7, 0), Some(Style::MatchingCursor(None)));
+        editor
+            .set_selections(
+                SelectionSet::new(
+                    vec![
+                        Selection::cursor(CharOffset(0)),
+                        Selection::cursor(CharOffset(2)),
+                    ],
+                    1,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut frame = render(&editor, 20, 4, &mut Viewport::default());
+        assert_eq!(frame.style_at(5, 0), Some(Style::MatchingSecondaryCursor));
+        frame.inactive();
+        assert_eq!(frame.style_at(5, 0), Some(Style::InactiveCursor));
+        let mut editor = Editor::new(Document::from("// (x)"));
+        editor.set_language(Some(vex_editor::Language::Rust));
+        editor
+            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(3))))
+            .unwrap();
+        let mut frame = render(&editor, 20, 4, &mut Viewport::default());
+        assert_eq!(
+            frame.style_at(10, 0),
+            Some(Style::MatchingBracket(Some(vex_editor::Highlight::Comment)))
+        );
+        frame.inactive();
+        assert_eq!(
+            frame.style_at(10, 0),
+            Some(Style::Syntax(vex_editor::Highlight::Comment))
+        );
     }
 
     #[test]

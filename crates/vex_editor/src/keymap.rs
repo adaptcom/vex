@@ -774,13 +774,12 @@ impl KeyHandler {
         let single = self.pending.len() == 1;
         self.cancel(editor);
         if editor.mode() == Mode::Insert && single {
-            let mut buffer = [0; 4];
-            let text = match key {
-                Key::Char(ch) if !ch.is_control() => ch.encode_utf8(&mut buffer),
+            let character = match key {
+                Key::Char(ch) if !ch.is_control() => ch,
                 _ => return Ok(Dispatch::Ignored),
             };
-            editor.insert_text(text)?;
-            return Ok(Dispatch::Executed("insert_text"));
+            editor.insert_character(character)?;
+            return Ok(Dispatch::Executed("insert_character"));
         }
         Ok(Dispatch::Ignored)
     }

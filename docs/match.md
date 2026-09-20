@@ -47,6 +47,36 @@ are remembered for that revision; unavailable syntax falls back to plain text.
 Counts traverse nested syntax ancestors once. Plain-text scans visit each
 direction at most once per bracket kind, using fixed-size nesting counters.
 
+## Automatic pairs and highlighting
+
+Insert-mode printable keys call the documented `insert_character` command.
+Typing `(`, `[`, or `{` before whitespace, a closing bracket, `,;:`, or EOF
+inserts both halves and leaves the caret between them. Before other text, only
+the typed character is inserted. Typing `)`, `]`, or `}` when that same closer
+is already under the caret steps over it, including closers loaded from disk.
+Backslash-escaped brackets remain literal. Escape detection examines at most
+64 preceding backslashes, treating runs reaching that limit as escaped.
+
+Backspace with count one inside an adjacent empty pair deletes both halves.
+Counts greater than one retain ordinary grapheme deletion. Pair insertion,
+closer skipping, and paired deletion work at multiple carets and remain part of
+the typing undo group. Dot-repeat replays the pair decisions at each destination.
+Direct `insert_text`, paste, registers, and completion preserve literal text.
+Quotes, backticks, and angle brackets do not auto-close yet.
+
+When the primary cursor is on a matched bracket, both brackets are yellow and bold.
+Only the partner is underlined, with no background fill. The cursor retains its
+ordinary background in normal/select mode and its bar in insert mode. Existing
+selection and secondary-cursor backgrounds are preserved. Unfocused panes restore
+the partner's syntax colors and dim their cursor.
+
+Decoration reuses the current Tree-sitter tree without parsing during drawing.
+Without a tree it balances the bracket kind in plain text, checking at most
+4,096 characters; distant partners have no highlight until syntax is available.
+Plain text does not distinguish strings/comments. Matches and misses are cached
+per view, revision, position, language, and tree availability, with at most 16
+entries per buffer. Background syntax results invalidate fallback decisions.
+
 ## Adding surrounds
 
 `ms<char>` wraps every selection in a delimiter pair, selects the complete

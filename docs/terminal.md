@@ -152,6 +152,12 @@ buffer's detected or configured spaces/tabs at every caret. Empty and ambiguous
 files use language defaults. Existing and pasted tab characters retain their
 original bytes and use the editor's configured tab stops for display.
 
+Typing `(`, `[`, or `{` adds its closing bracket before whitespace, an existing
+closer, `,;:`, or EOF. Typing a closer already under the caret steps over it.
+Backspace inside an empty pair removes both brackets. These operations support
+multiple carets and share the typing undo group. Paste and completion stay literal;
+quotes and angle brackets do not auto-close yet.
+
 `I` and `A` enter insert mode on each selection's cursor line; duplicate carets
 on a line merge. `I` uses the first non-whitespace grapheme, or the line start
 when blank. `A` stops before the line ending. They do not infer indentation on
@@ -409,7 +415,12 @@ encoding. It has no UI framework or Ratatui dependency:
   Focus gain invalidates the grid; resizing rebuilds it.
 
 The primary cursor is a reversed block in normal/select mode and a terminal bar
-in insert mode. The bar preserves the underlying text's syntax colors. Other
+in insert mode. When on a matched `()`, `[]`, or `{}` bracket, both brackets are
+yellow and bold. Only the partner is underlined and uses the default background;
+the cursor keeps its ordinary background, and insert mode retains its terminal
+bar. Selection and secondary-cursor backgrounds are preserved, and unfocused panes
+remove matching decoration. Elsewhere, the bar preserves the underlying text's
+syntax colors. Other
 cursors and selected ranges use cell styles. The status line shows mode, unsaved
 changes (`[+]`), pending keys/count, path, primary position, and a count for multiple
 selections. Labels sit within a thin grey border on the normal terminal

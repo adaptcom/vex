@@ -218,7 +218,11 @@ when no input is pending.
 Digits build a repeat count outside insert mode; overflow
 returns an error and clears the count. An unbound sequence also clears pending
 input; sticky groups keep their prefix active. Insert mode treats unbound printable
-characters as text; Enter is bound to
+characters through `insert_character`, which auto-closes `()`, `[]`, and `{}`.
+An existing closer is stepped over; Backspace between an empty pair removes both.
+Paste, completion, and `insert_text` preserve their literal text. Matching brackets
+use bold yellow text, underlining the partner and retaining the cursor background;
+see [bracket behavior](docs/match.md#automatic-pairs-and-highlighting). Enter is bound to
 `insert_newline`, which uses the loaded line ending (LF by default) and copies
 the current line's indentation before the caret. Tab calls `insert_tab` to insert
 one unit of the buffer's detected spaces/tabs at each caret. Indentation is sampled

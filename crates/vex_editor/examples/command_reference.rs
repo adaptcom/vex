@@ -26,8 +26,10 @@ fn main() {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let bindings = if command.name == "insert_text" {
-            "Insert: unbound printable characters; direct text events".to_owned()
+        let bindings = if command.name == "insert_character" {
+            "Insert: unbound printable characters".to_owned()
+        } else if command.name == "insert_text" {
+            "Insert: direct literal text events".to_owned()
         } else if command.name == "insert_paste" {
             "Insert: bracketed paste; direct paste events".to_owned()
         } else {

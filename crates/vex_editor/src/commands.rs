@@ -418,6 +418,12 @@ fn erase(ctx: &mut CommandContext<'_>, backward: bool) -> Result<(), Error> {
             } else {
                 grapheme::next(editor.document.text(), head, ctx.count.get())?
             };
+            if backward
+                && ctx.count.get() == 1
+                && let Some(end) = crate::brackets::empty_pair_end(editor.document.text(), head)?
+            {
+                return Ok(Selection::new(end, edge));
+            }
             Ok(Selection::new(head, edge))
         })
         .collect::<Result<Vec<_>, vex_core::Error>>()?;
@@ -1239,6 +1245,12 @@ commands! {
     /// Insert the context's text at all carets, continuing the typing undo group; requires insert mode.
     fn insert_text(ctx) { insert(ctx, true) }
 
+    /// Type a character at every insert caret. Automatically close (), [], and {} before whitespace, closing brackets, comma/semicolon/colon, or EOF; step over an existing closer. Escaped brackets remain literal. Continues the typing undo group; requires insert mode.
+    fn insert_character(ctx) [Character] {
+        require_insert(ctx.editor)?;
+        crate::brackets::insert(ctx.editor, ctx.character.ok_or(Error::MissingCharacter)?)
+    }
+
     /// Insert one indentation unit at every caret using the buffer's detected or configured spaces/tabs. Continues the typing undo group; requires insert mode.
     fn insert_tab(ctx) {
         require_insert(ctx.editor)?;
@@ -1364,7 +1376,7 @@ commands! {
         normalize(editor)
     }
 
-    /// Delete preceding graphemes at all insert carets, continuing the typing undo group; accepts a count.
+    /// Delete preceding graphemes at all insert carets, continuing the typing undo group; accepts a count. With count one, remove both sides of an adjacent empty (), [], or {} pair.
     fn delete_backward(ctx) { erase(ctx, true) }
 
     /// Delete following graphemes at all insert carets, continuing the typing undo group; accepts a count.

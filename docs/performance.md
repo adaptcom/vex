@@ -1,5 +1,27 @@
 # Performance baselines
 
+## Automatic bracket pairs
+
+The release-mode `benchmark_bracket_typing_and_matching` source test measured
+1,000 samples with a 1 MiB ASCII buffer and one caret:
+
+| Operation | Median | p95 |
+| --- | ---: | ---: |
+| Cached matching lookup | 42 ns | 83 ns |
+| Cold plaintext miss, capped at 4,096 characters | 27.542 µs | 44.291 µs |
+| Type an automatic pair, then Backspace both halves | 3.250 µs | 4.167 µs |
+
+Construction, parsing, layout, and terminal output are excluded. The typing case
+inserts before a newline and includes both commands, transactions, selection
+mapping, and grouped history. The cold miss has a partner beyond the scan budget;
+later redraws reuse the cached miss. Ready syntax uses the existing structural
+matcher, without parsing during matching decoration. These local measurements
+describe this workload rather than a general latency bound.
+
+```sh
+cargo test -p vex_editor --release --lib benchmark_bracket_typing_and_matching --locked -- --ignored --nocapture
+```
+
 ## View mode
 
 The release-mode `benchmark_sticky_view_dispatch_and_paint` source test measured

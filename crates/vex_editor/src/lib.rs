@@ -20,6 +20,7 @@ use vex_core::layout::LayoutCache;
 use vex_core::{CharOffset, Document, Selection, SelectionSet, motion};
 
 pub mod background;
+mod brackets;
 pub mod commands;
 mod comments;
 mod editing;
@@ -205,6 +206,7 @@ pub struct Editor {
     newline: &'static str,
     layout: RefCell<LayoutCache>,
     syntax: RefCell<syntax::Highlighting>,
+    bracket_matches: RefCell<brackets::Cache>,
     search: search::Search,
     replacement: Option<surround::Replacement>,
     language_action: Option<LanguageAction>,
@@ -247,6 +249,7 @@ impl Editor {
             newline,
             layout: RefCell::default(),
             syntax: RefCell::default(),
+            bracket_matches: RefCell::default(),
             search: search::Search::default(),
             replacement: None,
             language_action: None,
@@ -584,7 +587,14 @@ impl Editor {
         self.replacement.is_some() || self.search.preparing_surround()
     }
 
-    /// Insert a text event at every insert caret, continuing the current typing
+    /// Type one character at every insert caret, including automatic bracket pairs.
+    pub fn insert_character(&mut self, character: char) -> Result<(), Error> {
+        let mut context = CommandContext::new(self);
+        context.character = Some(character);
+        commands::insert_character(&mut context)
+    }
+
+    /// Insert a literal text event at every insert caret, continuing the current typing
     /// group. Use [`Self::insert_paste`] for a separate undo step.
     pub fn insert_text(&mut self, text: &str) -> Result<(), Error> {
         let mut context = CommandContext::new(self);
