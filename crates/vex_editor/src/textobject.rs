@@ -3,15 +3,17 @@
 
 use crate::Error;
 use vex_core::{
-    Rope, SelectionSet, motion,
+    Rope, Selection, SelectionSet, grapheme, motion, pairs,
     textobject::{paragraph, word},
 };
+use vex_syntax::ParsedSyntax;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Object {
     Word,
     LongWord,
     Paragraph,
+    Pair(Option<char>),
 }
 
 pub(crate) fn select(
@@ -20,6 +22,7 @@ pub(crate) fn select(
     object: Object,
     around: bool,
     count: usize,
+    syntax: Option<&ParsedSyntax>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<SelectionSet, Error> {
     let mut ranges = Vec::with_capacity(origins.ranges().len());
@@ -37,8 +40,86 @@ pub(crate) fn select(
                 cancelled,
             )?,
             Object::Paragraph => paragraph(text, position, around, count, cancelled)?,
+            Object::Pair(character) => {
+                if let Some(pair) = delimiters(text, syntax, origin, character, count, cancelled)? {
+                    let start = if around {
+                        grapheme::floor(text, pair.open)?
+                    } else {
+                        grapheme::next(text, pair.open, 1)?
+                    };
+                    let end = if around {
+                        grapheme::next(text, pair.close, 1)?
+                    } else {
+                        grapheme::floor(text, pair.close)?
+                    };
+                    if origin.is_backward() {
+                        Selection::new(end, start.min(end))
+                    } else {
+                        Selection::new(start.min(end), end)
+                    }
+                } else {
+                    origin
+                }
+            }
         };
         ranges.push(selected);
+    }
+    Ok(SelectionSet::new(ranges, origins.primary_index())?)
+}
+
+pub(crate) fn delimiters(
+    text: &Rope,
+    syntax: Option<&ParsedSyntax>,
+    origin: Selection,
+    character: Option<char>,
+    count: usize,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Option<pairs::Delimiters>, Error> {
+    let syntax = syntax.filter(|syntax| syntax.available());
+    Ok(if let Some(character) = character {
+        let position = motion::cursor(text, origin)?;
+        let (open, close) = pairs::pair(character);
+        if open == close && text.get_char(position.0) == Some(character) {
+            syntax
+                .and_then(|syntax| syntax.matching(position, true, cancelled))
+                .filter(|other| text.get_char(other.0) == Some(character) && *other != position)
+                .map(|other| pairs::Delimiters {
+                    open: position.min(other),
+                    close: position.max(other),
+                })
+        } else {
+            pairs::enclosing(text.slice(..), position, character, count, cancelled)
+        }
+    } else if let Some(syntax) = syntax {
+        syntax.closest(origin, count, cancelled)
+    } else {
+        pairs::closest(text.slice(..), origin, count, cancelled)
+    })
+}
+
+pub(crate) fn match_brackets(
+    text: &Rope,
+    syntax: Option<&ParsedSyntax>,
+    origins: &SelectionSet,
+    extend: bool,
+    cancelled: &impl Fn() -> bool,
+) -> Result<SelectionSet, Error> {
+    let mut ranges = Vec::with_capacity(origins.ranges().len());
+    for &origin in origins.ranges() {
+        if cancelled() {
+            return Ok(origins.clone());
+        }
+        let position = motion::cursor(text, origin)?;
+        let destination = if let Some(syntax) = syntax.filter(|syntax| syntax.available()) {
+            syntax.matching(position, true, cancelled)
+        } else {
+            pairs::matching(text.slice(..), position, cancelled)
+        };
+        ranges.push(if let Some(destination) = destination {
+            motion::put_cursor(text, origin, destination, extend)?
+        } else {
+            origin
+        });
     }
     Ok(SelectionSet::new(ranges, origins.primary_index())?)
 }
@@ -95,6 +176,74 @@ mod tests {
                 assert!(grapheme::is_boundary(editor.document().text(), endpoint).unwrap());
             }
         }
+    }
+
+    #[test]
+    fn delimiter_objects_include_or_exclude_pairs_preserve_direction_and_keep_missing_ranges() {
+        for (text, at, keys, expected) in [
+            ("(a(b)c)", 3, "mi)", "b"),
+            ("(a(b)c)", 3, "2ma(", "(a(b)c)"),
+            ("(a(b)c)", 2, "2mi(", "b)c"),
+            ("{[x] y}", 2, "mim", "x"),
+            ("{[x] y}", 2, "2mam", "{[x] y}"),
+            ("{[x] y}", 2, "mammam", "{[x] y}"),
+            ("\"word\"", 3, "mi\"", "word"),
+            ("\"word\"", 0, "mi\"", "\""),
+            ("word", 1, "mi)", "o"),
+            ("()", 0, "mi(", ""),
+            ("«e\u{301}界»", 2, "ma»", "«e\u{301}界»"),
+            ("(\r\nx\r\n)", 3, "mi(", "\r\nx\r\n"),
+        ] {
+            assert_eq!(selected(text, at, keys).1, expected, "{text:?} {at} {keys}");
+        }
+        let mut editor = Editor::new(Document::from("(one) [two]"));
+        editor
+            .set_selections(
+                SelectionSet::new(
+                    vec![
+                        Selection::new(CharOffset(3), CharOffset(2)),
+                        Selection::new(CharOffset(8), CharOffset(9)),
+                    ],
+                    1,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut keys = KeyHandler::default();
+        for ch in "vmam".chars() {
+            keys.handle(&mut editor, Key::Char(ch)).unwrap();
+        }
+        assert_eq!(editor.mode(), Mode::Select);
+        assert_eq!(
+            editor.selections().ranges(),
+            &[
+                Selection::new(CharOffset(5), CharOffset(0)),
+                Selection::new(CharOffset(6), CharOffset(11)),
+            ]
+        );
+        assert_eq!(editor.selections().primary_index(), 1);
+    }
+
+    #[test]
+    fn matching_moves_or_extends_and_plain_text_requires_a_bracket_under_the_cursor() {
+        let (editor, selected) = selected("(a[b])", 0, "99mm");
+        assert_eq!(selected, ")");
+        assert_eq!(
+            editor.selections().primary(),
+            Selection::new(CharOffset(5), CharOffset(6))
+        );
+        let (editor, selected) = self::selected("(a[b])", 0, "vmm");
+        assert_eq!(selected, "(a[b])");
+        assert_eq!(editor.mode(), Mode::Select);
+        assert_eq!(self::selected("(a[b])", 0, "mmmm").1, "(");
+        assert_eq!(self::selected("(abc)", 2, "mm").1, "b");
+        let mut editor = Editor::new(Document::from("fn f() { f(\"a)\\\"b\"); }"));
+        editor.set_language(Some(crate::Language::Rust));
+        editor
+            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(12))))
+            .unwrap();
+        editor.execute("match_brackets", 1).unwrap();
+        assert_eq!(editor.selections().primary().start(), CharOffset(17));
     }
 
     #[test]
@@ -179,7 +328,7 @@ mod tests {
             ("mi", "Match inside"),
             ("ma", "Match around"),
         ] {
-            for cancel in [Key::Escape, Key::Ctrl('c')] {
+            for cancel in [Key::Escape, Key::Ctrl('c'), Key::Enter, Key::Tab] {
                 let mut editor = Editor::new(Document::from("alpha beta"));
                 let mut keys = KeyHandler::default();
                 let original = editor.selections().clone();

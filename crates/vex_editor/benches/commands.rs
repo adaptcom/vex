@@ -217,6 +217,65 @@ fn textobjects(c: &mut Criterion) {
     group.finish();
 }
 
+fn delimiter_matching(c: &mut Criterion) {
+    let mut group = c.benchmark_group("delimiter_matching");
+    for bytes in [1 << 20, 100 << 20] {
+        let text = Rope::from_str(&"(word)\n".repeat(bytes / 7));
+        for count in [1, 1000] {
+            let mut editor = Editor::new(Document::from(text.clone()));
+            editor
+                .set_selections(
+                    SelectionSet::new(
+                        (0..count)
+                            .map(|index| Selection::cursor(CharOffset(index * 7)))
+                            .collect(),
+                        0,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            group.bench_function(
+                BenchmarkId::new(format!("local_round_trip_{count}"), bytes),
+                |b| {
+                    b.iter(|| {
+                        editor.execute("match_brackets", 1).unwrap();
+                        editor.execute("match_brackets", 1).unwrap();
+                        black_box(editor.selections());
+                    });
+                },
+            );
+            if count == 1 {
+                editor.set_background_search(true);
+                group.bench_function(BenchmarkId::new("schedule_cancel", bytes), |b| {
+                    b.iter(|| {
+                        editor.execute("match_brackets", 1).unwrap();
+                        black_box(editor.take_search_job().unwrap());
+                        editor.finish_undo_group();
+                    });
+                });
+            }
+        }
+    }
+    for bytes in [1024, 64 << 10] {
+        let line = "fn f() { f(1); }\n";
+        let mut editor = Editor::new(Document::from(line.repeat(bytes / line.len()).as_str()));
+        editor.set_language(Some(vex_editor::Language::Rust));
+        editor
+            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(11))))
+            .unwrap();
+        editor.execute("match_brackets", 1).unwrap();
+        assert_eq!(editor.selections().primary().start(), CharOffset(12));
+        group.bench_function(BenchmarkId::new("warm_syntax_round_trip", bytes), |b| {
+            b.iter(|| {
+                editor.execute("match_brackets", 1).unwrap();
+                editor.execute("match_brackets", 1).unwrap();
+                black_box(editor.selections());
+            });
+        });
+    }
+    group.finish();
+}
+
 fn surround_add(c: &mut Criterion) {
     let mut group = c.benchmark_group("surround_add_undo");
     for bytes in [1 << 20, 100 << 20] {
@@ -245,6 +304,6 @@ criterion_group! {
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects, surround_add
+    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects, delimiter_matching, surround_add
 }
 criterion_main!(benches);

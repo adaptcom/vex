@@ -439,6 +439,15 @@ def main():
         assert surrounds_path.read_text() == "(alpha) beta\n"
         print("PASS: textobject selection then surround, undo, redo, and save")
 
+        delimiters_path = Path(directory) / "delimiters.txt"
+        delimiters_path.write_text("(alpha) [beta]\n")
+        with Terminal([binary, str(delimiters_path)]) as terminal:
+            terminal.start()
+            terminal.send(b"mmmi)d:w\r:q\r")
+            terminal.finish()
+        assert delimiters_path.read_text() == "() [beta]\n"
+        print("PASS: bracket matching and delimiter objects precede queued edits")
+
         burst_path = Path(directory) / "input burst.txt"
         burst_path.write_text("")
         with Terminal([binary, str(burst_path)]) as terminal:

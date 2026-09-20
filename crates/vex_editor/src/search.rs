@@ -58,6 +58,9 @@ enum Pattern {
 
 #[derive(Debug)]
 enum Work {
+    MatchBrackets {
+        extend: bool,
+    },
     Textobject {
         object: crate::textobject::Object,
         around: bool,
@@ -96,6 +99,8 @@ pub struct SearchJob {
     origins: SelectionSet,
     work: Work,
     cancellation: SearchCancellation,
+    syntax: Option<vex_syntax::ParsedSyntax>,
+    language: Option<crate::Language>,
 }
 
 /// An opaque completion, applicable only to the request that produced it.
@@ -103,6 +108,7 @@ pub struct SearchJob {
 pub struct SearchResult {
     cancellation: SearchCancellation,
     outcome: Result<Outcome, Error>,
+    syntax: Option<vex_syntax::ParsedSyntax>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,12 +127,29 @@ impl SearchJob {
     /// Compile and scan the snapshot. Cancelled jobs return no completion.
     /// Cancellation is checked before/after compilation and during scanning;
     /// grapheme-boundary and individual display-column lookups are not preemptible.
-    pub fn run(self) -> Option<SearchResult> {
+    pub fn run(mut self) -> Option<SearchResult> {
         let cancelled = || self.cancellation.is_cancelled();
         if cancelled() {
             return None;
         }
+        if self.syntax.is_none()
+            && let Some(language) = self.language
+            && self.snapshot.text().len_bytes() <= vex_syntax::MAX_HIGHLIGHT_BYTES
+        {
+            self.syntax = Some(
+                vex_syntax::Syntax::from_snapshot(language, self.snapshot.clone())
+                    .parsed(&cancelled),
+            );
+        }
         let outcome = (|| match self.work {
+            Work::MatchBrackets { extend } => crate::textobject::match_brackets(
+                self.snapshot.text(),
+                self.syntax.as_ref(),
+                &self.origins,
+                extend,
+                &cancelled,
+            )
+            .map(Outcome::Selections),
             Work::Textobject {
                 object,
                 around,
@@ -137,6 +160,7 @@ impl SearchJob {
                 object,
                 around,
                 count,
+                self.syntax.as_ref(),
                 &cancelled,
             )
             .map(Outcome::Selections),
@@ -190,6 +214,7 @@ impl SearchJob {
         Some(SearchResult {
             cancellation: self.cancellation,
             outcome,
+            syntax: self.syntax,
         })
     }
 }
@@ -211,6 +236,7 @@ struct Pending {
     selections: SelectionSet,
     mode: Mode,
     kind: Kind,
+    structural: bool,
 }
 
 #[derive(Debug, Default)]
@@ -249,6 +275,15 @@ impl Search {
             .pending
             .as_ref()
             .is_some_and(|pending| matches!(pending.kind, Kind::CopyLines))
+        {
+            self.cancel_jobs();
+        }
+    }
+    pub fn invalidate_syntax(&mut self) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.structural)
         {
             self.cancel_jobs();
         }
@@ -401,6 +436,8 @@ pub(crate) fn textobject(ctx: &mut CommandContext<'_>, around: bool) -> Result<(
         'w' => crate::textobject::Object::Word,
         'W' => crate::textobject::Object::LongWord,
         'p' => crate::textobject::Object::Paragraph,
+        'm' => crate::textobject::Object::Pair(None),
+        ch if !ch.is_ascii_alphanumeric() => crate::textobject::Object::Pair(Some(ch)),
         _ => return Ok(()),
     };
     require_normal_or_select(ctx.editor)?;
@@ -416,9 +453,29 @@ pub(crate) fn textobject(ctx: &mut CommandContext<'_>, around: bool) -> Result<(
     )
 }
 
+pub(crate) fn match_brackets(ctx: &mut CommandContext<'_>) -> Result<(), Error> {
+    require_normal_or_select(ctx.editor)?;
+    ctx.editor.finish_undo_group();
+    dispatch(
+        ctx.editor,
+        Work::MatchBrackets {
+            extend: ctx.editor.mode == Mode::Select,
+        },
+        Kind::Textobject,
+    )
+}
+
 fn dispatch(editor: &mut Editor, work: Work, kind: Kind) -> Result<(), Error> {
     let cancellation = SearchCancellation::default();
     let snapshot = editor.document.snapshot();
+    let structural = matches!(
+        work,
+        Work::MatchBrackets { .. }
+            | Work::Textobject {
+                object: crate::textobject::Object::Pair(_),
+                ..
+            }
+    );
     editor.search.pending = Some(Pending {
         cancellation: cancellation.clone(),
         document: snapshot.id(),
@@ -426,12 +483,19 @@ fn dispatch(editor: &mut Editor, work: Work, kind: Kind) -> Result<(), Error> {
         selections: editor.selections.clone(),
         mode: editor.mode,
         kind,
+        structural,
     });
     let job = SearchJob {
         snapshot,
         origins: editor.selections.clone(),
         work,
         cancellation,
+        syntax: if structural {
+            editor.parsed_syntax()
+        } else {
+            None
+        },
+        language: if structural { editor.language() } else { None },
     };
     if editor.search.background {
         editor.search.outgoing = Some(job);
@@ -468,6 +532,9 @@ pub(crate) fn apply_result(
             editor.search.preview = None;
         }
         return Ok(SearchCompletion::Ignored);
+    }
+    if let Some(syntax) = result.syntax {
+        editor.cache_parsed_syntax(syntax);
     }
     let (pattern, selections) = match result.outcome {
         Ok(Outcome::Search(pattern, selections)) => (pattern, selections),
@@ -624,6 +691,57 @@ mod tests {
         editor.set_background_search(true);
         editor.execute("search_forward", 1).unwrap();
         editor
+    }
+
+    #[test]
+    fn structural_jobs_reuse_highlight_trees_and_reject_edits_and_language_changes() {
+        use vex_core::ByteOffset;
+        let mut editor = Editor::new(Document::from("fn f() { f(1); }"));
+        editor.set_language(Some(crate::Language::Rust));
+        editor.set_background_search(true);
+        editor.set_background_syntax(true);
+        editor.syntax_highlights(ByteOffset(0)..ByteOffset(editor.document.text().len_bytes()));
+        let result = crate::SyntaxWorker::default()
+            .run(editor.take_syntax_job().unwrap())
+            .unwrap();
+        assert!(editor.apply_syntax_result(result));
+        editor
+            .set_selections(SelectionSet::single(range(11, 12)))
+            .unwrap();
+        editor.execute("match_brackets", 1).unwrap();
+        let job = editor.take_search_job().unwrap();
+        assert!(job.syntax.as_ref().unwrap().available());
+        let result = job.run().unwrap();
+        assert_eq!(
+            editor.apply_search_result(result).unwrap(),
+            SearchCompletion::Navigation
+        );
+        assert_eq!(editor.selections.primary(), range(12, 13));
+        editor.execute("match_brackets", 1).unwrap();
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        editor.set_language(None);
+        assert_eq!(
+            editor.apply_search_result(result).unwrap(),
+            SearchCompletion::Ignored
+        );
+        assert!(editor.parsed_syntax().is_none());
+        editor.set_language(Some(crate::Language::Rust));
+        editor.execute("match_brackets", 1).unwrap();
+        let job = editor.take_search_job().unwrap();
+        assert!(job.syntax.is_none());
+        editor.apply_search_result(job.run().unwrap()).unwrap();
+        assert!(editor.parsed_syntax().unwrap().available());
+        editor.execute("insert_mode", 1).unwrap();
+        editor.insert_text("x").unwrap();
+        assert!(editor.parsed_syntax().is_none());
+        editor.execute("normal_mode", 1).unwrap();
+        editor.execute("match_brackets", 1).unwrap();
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        editor.execute("move_left", 1).unwrap();
+        assert_eq!(
+            editor.apply_search_result(result).unwrap(),
+            SearchCompletion::Ignored
+        );
     }
 
     #[test]

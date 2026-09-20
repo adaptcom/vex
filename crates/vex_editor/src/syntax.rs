@@ -1,10 +1,11 @@
 //! Revision-checked syntax requests. The UI keeps only snapshots, small edit
-//! metadata, and completed spans; a persistent worker owns all Tree-sitter state.
+//! metadata, completed spans, and an immutable tree clone; parsing and querying
+//! belong to workers. Match commands share the tree without reparsing on the UI.
 
 use crate::{Editor, HighlightSpan, Language, background::Cancellation};
 use std::{collections::VecDeque, ops::Range, sync::Arc};
 use vex_core::{ByteOffset, ChangeExtent, CharOffset, Document, Revision, Snapshot};
-use vex_syntax::{MAX_HIGHLIGHT_BYTES, Syntax};
+use vex_syntax::{MAX_HIGHLIGHT_BYTES, ParsedSyntax, Syntax};
 
 const MAX_RANGES: usize = 128;
 const MAX_CHANGES: usize = 256;
@@ -34,6 +35,7 @@ pub(crate) struct Highlighting {
     language: Option<Language>,
     background: bool,
     synchronous: Option<Syntax>,
+    parsed: Option<ParsedSyntax>,
     snapshot: Option<Snapshot>,
     session: Cancellation,
     changes: VecDeque<Change>,
@@ -56,6 +58,7 @@ impl Highlighting {
             background,
             snapshot: language.map(|_| document.snapshot()),
             synchronous: None,
+            parsed: None,
             session: Cancellation::default(),
             changes: VecDeque::new(),
             requested: Vec::new(),
@@ -87,6 +90,7 @@ impl Highlighting {
         self.cancel();
         self.requested.clear();
         self.cache.clear();
+        self.parsed = None;
         self.snapshot = Some(document.snapshot());
         if let Some(syntax) = &mut self.synchronous {
             syntax.synchronize(document);
@@ -105,6 +109,7 @@ impl Editor {
     /// query on the syntax worker (or at first draw for synchronous integrations).
     /// Selecting the same language again also invalidates pending results.
     pub fn set_language(&mut self, language: Option<Language>) {
+        self.search.invalidate_syntax();
         if self.language() != language {
             self.set_indentation(language.map(Language::indentation).unwrap_or_default());
         }
@@ -114,6 +119,29 @@ impl Editor {
 
     pub fn language(&self) -> Option<Language> {
         self.syntax.borrow().language
+    }
+
+    /// Reuse only a parse for the current document revision and language.
+    pub(crate) fn parsed_syntax(&self) -> Option<ParsedSyntax> {
+        let state = self.syntax.borrow();
+        state
+            .parsed
+            .clone()
+            .or_else(|| state.synchronous.as_ref()?.parsed_if_ready())
+            .filter(|parsed| {
+                parsed.snapshot().id() == self.document.id()
+                    && parsed.snapshot().revision() == self.document.revision()
+                    && Some(parsed.language()) == state.language
+            })
+    }
+
+    pub(crate) fn cache_parsed_syntax(&mut self, parsed: ParsedSyntax) {
+        if parsed.snapshot().id() == self.document.id()
+            && parsed.snapshot().revision() == self.document.revision()
+            && Some(parsed.language()) == self.language()
+        {
+            self.syntax.get_mut().parsed = Some(parsed);
+        }
     }
 
     /// Enable asynchronous syntax. Frontends call begin_syntax_frame before
@@ -133,6 +161,14 @@ impl Editor {
     /// ranges stay available and missing ranges can immediately be reissued.
     pub fn cancel_syntax_request(&mut self) {
         self.syntax.get_mut().cancel();
+    }
+
+    /// Release structural caches when a buffer stops being visible. Cached
+    /// viewport colors remain available; the next structural job may parse again.
+    pub fn release_syntax_tree(&mut self) {
+        let state = self.syntax.get_mut();
+        state.parsed = None;
+        state.synchronous = None;
     }
 
     /// Return cached colors or plain text while requesting background work.
@@ -228,6 +264,7 @@ impl Editor {
             return false;
         }
         state.pending = None;
+        state.parsed = Some(result.parsed);
         for entry in result.ranges {
             if state.cache.len() == MAX_RANGES {
                 state.cache.pop_front();
@@ -294,6 +331,7 @@ pub struct SyntaxResult {
     session: Cancellation,
     cancellation: Cancellation,
     ranges: Vec<CachedRange>,
+    parsed: ParsedSyntax,
 }
 
 impl SyntaxResult {
@@ -303,7 +341,8 @@ impl SyntaxResult {
 }
 
 /// Persistent, runtime-independent worker state. Construct and run on a worker
-/// thread; parser, tree, query cursor, and grammar initialization stay there.
+/// thread; mutable parse state, query cursor, and grammar initialization stay
+/// there. Results may share an immutable tree clone with selection workers.
 #[derive(Default)]
 pub struct SyntaxWorker {
     syntax: Option<Syntax>,
@@ -350,12 +389,17 @@ impl SyntaxWorker {
         if cancelled() {
             return None;
         }
+        let parsed = syntax.parsed(&cancelled);
+        if cancelled() {
+            return None;
+        }
         Some(SyntaxResult {
             document: job.snapshot.id(),
             revision: job.snapshot.revision(),
             session: job.session,
             cancellation: job.cancellation,
             ranges,
+            parsed,
         })
     }
 }
@@ -411,6 +455,17 @@ mod tests {
         ));
         assert!(editor.take_syntax_job().is_none());
         assert!(editor.syntax.borrow().synchronous.is_none());
+    }
+
+    #[test]
+    fn synchronous_highlighting_lends_its_tree_without_another_parse() {
+        let mut editor = editor("fn f() { f(1); }");
+        editor.set_background_syntax(false);
+        assert!(editor.parsed_syntax().is_none());
+        editor.syntax_highlights(ByteOffset(0)..ByteOffset(editor.document.text().len_bytes()));
+        assert!(editor.parsed_syntax().unwrap().available());
+        editor.release_syntax_tree();
+        assert!(editor.parsed_syntax().is_none());
     }
 
     #[test]

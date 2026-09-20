@@ -454,10 +454,13 @@ commands! {
     /// Surround each selection with a character or bracket pair, selecting the result and returning to normal mode. Either bracket chooses its matching pair; other characters repeat on both sides. Enter uses the buffer's line ending. Ignores counts, leaves registers unchanged, and records one undo step.
     fn surround_add(ctx) [SurroundAdd] { crate::surround::add(ctx) }
 
-    /// Select the word (w), WORD (W), or paragraph (p) at each cursor, retaining normal/select mode. Counts select successive paragraphs; word objects ignore counts. Scans support background cancellation.
+    /// Move to the matching bracket, extending in select mode. Syntax also finds the enclosing scope from inside it. Counts are ignored.
+    fn match_brackets(ctx) { crate::search::match_brackets(ctx) }
+
+    /// Select inside a word (w), WORD (W), paragraph (p), specified delimiter, or closest pair (m), retaining normal/select mode. Counts select outer pairs or multiple paragraphs; word objects ignore counts. Scans support background cancellation.
     fn select_textobject_inner(ctx) [TextobjectInner] { crate::search::textobject(ctx, false) }
 
-    /// Select each cursor's word (w) or WORD (W) with following horizontal whitespace, falling back to preceding whitespace, or paragraph (p) including following blank lines. Counts select successive paragraphs; word objects ignore counts.
+    /// Select around a word (w), WORD (W), paragraph (p), specified delimiter, or closest pair (m), including adjacent whitespace or delimiters. Counts select outer pairs or multiple paragraphs; word objects ignore counts.
     fn select_textobject_around(ctx) [TextobjectAround] { crate::search::textobject(ctx, true) }
     /// Add copies of each selection on following logical lines at the same display columns. Counts add copies, skipping lines that cannot fit both endpoints. Multi-line selections advance by their height; the primary follows its last copy. Uses the cancellable search worker when enabled.
     fn copy_selection_on_next_line(ctx) { crate::search::copy_lines(ctx, true) }

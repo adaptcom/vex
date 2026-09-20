@@ -6,6 +6,8 @@
 
 mod language;
 pub use language::{Comments, IndentStyle, Indentation, Language, LanguageServer};
+mod pairs;
+pub use pairs::ParsedSyntax;
 
 use std::{
     cell::Cell,
@@ -203,6 +205,27 @@ impl Syntax {
 
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
+    }
+
+    /// Parse on the owning worker and return an immutable, cheaply cloned tree
+    /// for revision-checked structural lookups. Parse ceilings and budgets apply.
+    pub fn parsed(&mut self, cancelled: &impl Fn() -> bool) -> ParsedSyntax {
+        self.parse(cancelled);
+        ParsedSyntax {
+            tree: if self.dirty { None } else { self.tree.clone() },
+            snapshot: self.snapshot.clone(),
+            language: self.language,
+        }
+    }
+
+    /// Share an already completed parse without running the parser. Useful for
+    /// synchronous highlighters lending their tree to background match commands.
+    pub fn parsed_if_ready(&self) -> Option<ParsedSyntax> {
+        (!self.dirty).then(|| ParsedSyntax {
+            tree: self.tree.clone(),
+            snapshot: self.snapshot.clone(),
+            language: self.language,
+        })
     }
 
     /// Update tree coordinates without parsing. Adjacent edits can be batched

@@ -206,6 +206,7 @@ impl Default for Keymap {
                 (vec![Char('n')], "search_next"),
                 (vec![Char('N')], "search_previous"),
                 (vec![Char('C')], "copy_selection_on_next_line"),
+                (vec![Char('m'), Char('m')], "match_brackets"),
                 (vec![Char(' '), Char('f')], "file_picker"),
                 (vec![Char(' '), Char('b')], "buffer_picker"),
                 (vec![Char(' '), Char('g')], "git_status"),
@@ -407,6 +408,9 @@ impl KeyHandler {
                     (Key::Char('w'), "Word"),
                     (Key::Char('W'), "WORD"),
                     (Key::Char('p'), "Paragraph"),
+                    (Key::Char('m'), "Closest surrounding pair"),
+                    (Key::Char('('), "Delimiter pair (either bracket)"),
+                    (Key::Char('"'), "Quotes or another delimiter"),
                     (Key::Escape, "Cancel"),
                 ],
             });
@@ -448,7 +452,14 @@ impl KeyHandler {
         if let Some(command) = self.character_command {
             let character = match key {
                 Key::Char(ch) if !ch.is_control() => ch,
-                Key::Enter => '\n',
+                Key::Enter
+                    if matches!(
+                        command.input,
+                        crate::CommandInput::Character | crate::CommandInput::SurroundAdd
+                    ) =>
+                {
+                    '\n'
+                }
                 Key::Tab if command.input == crate::CommandInput::Character => '\t',
                 _ => {
                     self.cancel();

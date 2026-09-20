@@ -83,11 +83,17 @@ receive literal styling; highlighting their embedded language is future work.
 Drawing reads cached spans and records visible byte ranges. After drawing, the
 event loop submits a batch of snapshot requests containing the missing ranges
 for all visible buffers. Views of the same buffer contribute to one request and
-share its cached spans. The worker retains a parser per open buffer; a batch
+share its cached spans. The worker retains a parser per visible buffer; a batch
 completion prevents one buffer from overwriting another buffer's results. Text
 appears immediately; completed colors trigger a redraw even while input is idle.
 Search and syntax have independent workers and completion slots in the shared
-event queue. Neither worker accesses mutable editor state.
+event queue. Neither worker accesses mutable editor state. Completed highlights
+also publish a cheap immutable tree clone for match-mode commands. The editor
+shares that tree with selection jobs only at the same document revision and
+language. Edits invalidate it, and hiding a buffer releases it. A cold structural
+request parses on the selection worker under the same limits and caches its
+result; subsequent bracket navigation reuses it while the buffer stays visible
+and its revision and language remain unchanged.
 
 The parser and query predicates read borrowed rope chunks without flattening the
 file. Every edit and undo/redo records a conservative changed extent using

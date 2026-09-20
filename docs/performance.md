@@ -333,6 +333,33 @@ invalidate its later checkpoints. Large clusters and long Unicode lookbehind
 remain possible costs. These measurements establish the improvement for indexed
 positions, not a blanket bound on cold queries or end-to-end p95 latency.
 
+## Delimiter navigation
+
+`cargo bench -p vex_editor --bench commands --locked -- delimiter_matching --noplot`
+measures two `match_brackets` commands, returning cursors to their starting
+brackets. On this machine:
+
+| Buffer | One local pair round trip | 1,000 local pair round trips | Schedule and cancel |
+|---|---:|---:|---:|
+| 1 MiB | 0.546 µs | 0.803 ms | 40.9 ns |
+| 100 MiB | 0.698 µs | 1.006 ms | 45.1 ns |
+
+The text contains short `(word)` lines; cursors occupy the first 1,000 lines.
+This checks local navigation and rope-height overhead, not a scan across the
+whole file. Synchronous command measurements include selection transformations
+and request validation. Scheduling excludes worker wakeup/scanning; all timings
+exclude key dispatch and rendering. Cached Rust syntax round trips measured
+2.08 µs for 1 KiB and 2.32 µs for 64 KiB, excluding the first parse.
+
+Plain-text matching scans borrowed rope chunks with cancellation at each scalar.
+Closest-pair counts reuse reverse iterators and fixed nesting counters, so deeply
+nested counts do not rescan each inner pair. A deterministic test bounds visits
+for 4,096 nested pairs to 8,193 characters. Syntax counts traverse ancestors once;
+bounded sibling lookups handle delimiters such as closure bars. Trees share
+storage with highlighting, and matching jobs reuse them until the revision or
+language changes. A missing tree parses on the worker under the existing 25 ms
+and 2 MiB limits. Hidden buffers release their structural tree cache.
+
 ## Initial Rust syntax highlighting
 
 Tree-sitter 0.27.0 with the bundled Rust 0.24.2 grammar, measured at 120 × 40

@@ -344,6 +344,7 @@ impl App {
                     self.with_file_buffer_mut(id, |editor, _, _| {
                         editor.begin_syntax_frame();
                         editor.cancel_syntax_request();
+                        editor.release_syntax_tree();
                     });
                 }
             }
