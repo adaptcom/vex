@@ -22,8 +22,11 @@ pub enum Style {
     Syntax(Highlight),
     Gutter,
     Status,
+    StatusLine,
+    StatusBorder,
     InactiveStatus,
     Message,
+    PopupTitle,
     Error,
     Selection,
     PrimaryCursor(Option<Highlight>),
@@ -34,6 +37,13 @@ pub enum Style {
 }
 
 impl Style {
+    fn bold(self) -> bool {
+        matches!(
+            self,
+            Self::StatusLine | Self::InactiveStatus | Self::PopupTitle
+        )
+    }
+
     fn reversed(self) -> bool {
         matches!(self, Self::PrimaryCursor(_))
     }
@@ -62,8 +72,9 @@ impl Style {
             ),
             Self::Gutter => (DarkGrey, Reset),
             Self::Status => (Black, Grey),
-            Self::InactiveStatus => (Grey, DarkGrey),
-            Self::Message => (DarkCyan, Reset),
+            Self::StatusLine => (Reset, Reset),
+            Self::StatusBorder | Self::InactiveStatus => (DarkGrey, Reset),
+            Self::Message | Self::PopupTitle => (DarkCyan, Reset),
             Self::Error => (Red, Reset),
             Self::Selection => (Black, Grey),
             Self::PrimaryCursor(highlight) => highlight.map_or(Self::Text, Self::Syntax).colors(),
@@ -144,7 +155,7 @@ impl Frame {
         self.cursor = None;
         for cell in &mut self.cells {
             cell.style = match cell.style {
-                Style::Status => Style::InactiveStatus,
+                Style::Status | Style::StatusLine => Style::InactiveStatus,
                 Style::PrimaryCursor(_) | Style::SecondaryCursor => Style::InactiveCursor,
                 other => other,
             };
@@ -307,6 +318,16 @@ impl Renderer {
                         SetForegroundColor(foreground),
                         SetBackgroundColor(background)
                     )?;
+                    if last_style.is_some_and(Style::bold) != cell.style.bold() {
+                        queue!(
+                            self.output,
+                            SetAttribute(if cell.style.bold() {
+                                Attribute::Bold
+                            } else {
+                                Attribute::NormalIntensity
+                            })
+                        )?;
+                    }
                     if last_style.is_some_and(Style::reversed) != cell.style.reversed() {
                         queue!(
                             self.output,

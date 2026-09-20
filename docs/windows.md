@@ -29,9 +29,12 @@ different pane ends the current typing group. Half-page and Page Up/Down movemen
 use the focused pane's dimensions.
 
 The command/search prompt and message line appear once, across the bottom of the
-terminal. Each pane has only its own status line. Horizontal splits meet at the
-upper pane's status line, with no extra divider row. Grey vertical separators
-divide side-by-side panes. The focused status line is brighter, and only the
+terminal. Each pane's status is embedded in a thin grey border on the normal
+terminal background, with bold labels in all panes and dim grey labels in
+inactive panes. Horizontal splits meet at that status border, with no extra row.
+The border connects to vertical pane dividers with box-drawing junctions. Long
+paths are shortened from the left, and a selection count appears only for
+multiple selections. Only the
 focused pane owns the terminal cursor. Completion and hover stay inside that
 pane. The active cursor reverses the text's foreground/background colors,
 including syntax colors. Unfocused cursors use dim grey text with no block

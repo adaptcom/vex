@@ -5,7 +5,9 @@ Normal and select modes have named prefix groups: `g` (Goto), Space, `[` (Previo
 same Rustdoc as command help. Completing a command or pressing an unbound key
 leaves the group. Escape cancels a pending prefix/count while preserving the
 editing mode; Escape with no pending input enters normal mode. Groups are
-one-shot; sticky groups are not implemented yet.
+one-shot; sticky groups are not implemented yet. Shortcut hints use the same
+box-drawing borders and bold titles as the picker and completion menu, with
+plain-text entries inside and the global command line left visible below.
 
 The keymap still supports arbitrary nested sequences. After binding commands,
 `Keymap::name_group(mode, prefix, title)` names a group for discovery. Unnamed

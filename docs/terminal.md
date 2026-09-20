@@ -144,7 +144,11 @@ encoding. It has no UI framework or Ratatui dependency:
 
 The primary cursor changes shape between block and bar. Other cursors and
 selected ranges use cell styles. The status line shows mode, unsaved changes
-(`[+]`), pending keys/count, path, primary position, and selection count. The
+(`[+]`), pending keys/count, path, primary position, and a count for multiple
+selections. Labels sit within a thin grey border on the normal terminal
+background; all labels are bold, with inactive labels dimmed. Long paths are
+shortened from the left to keep the cursor position visible. Status borders join vertical pane dividers
+with box-drawing junctions. The
 bottom line shows messages, errors, or the prompt. This line is global across all
 splits; each pane has only its own status line.
 

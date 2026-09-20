@@ -4,6 +4,7 @@
 use crate::screen::{Cursor, CursorShape, Frame, Style};
 use std::num::NonZeroUsize;
 use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 use vex_core::{ByteOffset, CharOffset, display, grapheme, motion};
 use vex_editor::{Editor, Mode};
 
@@ -242,40 +243,126 @@ pub(crate) fn paint_view(
         });
     }
     if height > usize::from(reserved_bottom) {
-        let status_row = body_height as u16;
-        frame.fill_row(status_row, Style::Status);
-        let mode = match editor.mode() {
-            Mode::Normal => "NOR",
-            Mode::Select => "SEL",
-            Mode::Insert => "INS",
-        };
-        let left = format!(
-            " {mode}{} {} {}",
-            if chrome.dirty { " [+]" } else { "" },
-            chrome.pending,
-            if chrome.prompt.is_some() && chrome.error {
-                chrome.message
-            } else {
-                chrome.filename
-            }
+        paint_status(
+            frame,
+            body_height as u16,
+            editor.mode(),
+            chrome,
+            (row + 1, column + 1),
+            editor.selections().ranges().len(),
         );
-        frame.label(0, status_row, &left, Style::Status);
-        let right = format!(
-            " {}:{}  {} sel ",
-            row + 1,
-            column + 1,
-            editor.selections().ranges().len()
-        );
-        if right.len() < width {
-            frame.label(
-                (width - right.len()) as u16,
-                status_row,
-                &right,
-                Style::Status,
-            );
-        }
     }
     Ok(())
+}
+
+/// Status occupies the pane's existing bottom row; its rule also separates
+/// horizontal splits. Labels leave the terminal's background untouched.
+fn paint_status(
+    frame: &mut Frame,
+    row: u16,
+    mode: Mode,
+    chrome: Chrome<'_>,
+    position: (usize, usize),
+    selections: usize,
+) {
+    let width = usize::from(frame.width());
+    for x in 0..frame.width() {
+        frame.put(x, row, "─", Style::StatusBorder);
+    }
+    let mode = match mode {
+        Mode::Normal => " NOR ",
+        Mode::Select => " SEL ",
+        Mode::Insert => " INS ",
+    };
+    if width < mode.len() + 2 {
+        return;
+    }
+    frame.label(1, row, mode, Style::StatusLine);
+    let mut right = format!(" {}:{} ", position.0, position.1);
+    if selections > 1 {
+        right = format!(" {}:{}  {selections} sel ", position.0, position.1);
+    }
+    let mut end = width - 1;
+    if right.len() + mode.len() + 3 <= width {
+        end -= right.len();
+        frame.label(end as u16, row, &right, Style::StatusLine);
+        end -= 1;
+    }
+    let start = mode.len() + 2;
+    let pending = chrome.pending.trim();
+    let pending_width = pending
+        .graphemes(true)
+        .map(|g| display::visible(g).width())
+        .sum::<usize>()
+        + 2;
+    // Pending work stays visible in narrow panes even when the filename must
+    // give way. A modified file still keeps room for its indicator.
+    let minimum_filename = if chrome.dirty { 8 } else { 1 };
+    if !pending.is_empty() && end.saturating_sub(start) >= pending_width + minimum_filename {
+        end -= pending_width;
+        frame.label(end as u16, row, &format!(" {pending} "), Style::StatusLine);
+        end -= 1;
+    }
+    let available = end.saturating_sub(start);
+    let suffix = if chrome.dirty { " [+] " } else { " " };
+    if available <= suffix.len() + 1 {
+        return;
+    }
+    let error = chrome.prompt.is_some() && chrome.error;
+    let name = if error {
+        chrome.message
+    } else {
+        chrome.filename
+    };
+    let name = status_text(name, available - suffix.len() - 1, !error);
+    frame.label(
+        start as u16,
+        row,
+        &format!(" {name}{suffix}"),
+        Style::StatusLine,
+    );
+}
+
+/// Clip whole visible graphemes, retaining the filename end of a long path.
+fn status_text(text: &str, width: usize, keep_end: bool) -> String {
+    let visible_width = text
+        .graphemes(true)
+        .map(|g| display::visible(g).width())
+        .sum::<usize>();
+    if visible_width <= width {
+        return text.graphemes(true).map(display::visible).collect();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut remaining = width - 1;
+    let mut parts = Vec::new();
+    let mut take = |grapheme: &str| {
+        let visible = display::visible(grapheme);
+        let size = visible.width();
+        if size > remaining {
+            return false;
+        }
+        remaining -= size;
+        parts.push(visible.to_owned());
+        true
+    };
+    if keep_end {
+        for g in text.graphemes(true).rev() {
+            if !take(g) {
+                break;
+            }
+        }
+        parts.reverse();
+        format!("…{}", parts.concat())
+    } else {
+        for g in text.graphemes(true) {
+            if !take(g) {
+                break;
+            }
+        }
+        format!("{}…", parts.concat())
+    }
 }
 
 /// Paint the single application-wide command/message line after composing panes.

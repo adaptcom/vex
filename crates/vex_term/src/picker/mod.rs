@@ -364,7 +364,7 @@ pub(crate) fn paint_box(
         top,
         (right - left).saturating_sub(4),
         title,
-        Style::Message,
+        Style::PopupTitle,
     );
 }
 

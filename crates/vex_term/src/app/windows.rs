@@ -528,7 +528,7 @@ impl App {
             return Ok(());
         }
         let mut local = std::mem::take(&mut self.windows.frame);
-        for (id, rect) in leaves {
+        for &(id, rect) in &leaves {
             local.reset(rect.width, rect.height)?;
             if id == self.windows.layout.active {
                 self.paint_current_window(&mut local, 0)?;
@@ -570,13 +570,7 @@ impl App {
             frame.blit(rect.x, rect.y, &local);
         }
         self.windows.frame = local;
-        for divider in dividers {
-            for y in divider.y..divider.y + divider.height {
-                for x in divider.x..divider.x + divider.width {
-                    frame.put(x, y, "│", Style::Gutter);
-                }
-            }
-        }
+        paint_dividers(frame, &leaves, &dividers);
         Ok(())
     }
 
@@ -595,6 +589,49 @@ impl App {
             }
         }
         Ok(())
+    }
+}
+
+/// Join pane status rules to vertical dividers, including a divider starting
+/// below a wider pane. Embedded labels take precedence over a border junction.
+fn paint_dividers(
+    frame: &mut Frame,
+    panes: &[(WindowId, layout::Rect)],
+    dividers: &[layout::Rect],
+) {
+    let vertical = |x: u16, y: u16| {
+        dividers
+            .iter()
+            .any(|d| d.x == x && d.y <= y && y < d.y + d.height)
+    };
+    for divider in dividers {
+        let x = divider.x;
+        for y in divider.y.saturating_sub(1)..divider.y + divider.height {
+            if y < divider.y && frame.style_at(x, y) != Some(Style::StatusBorder) {
+                continue;
+            }
+            let up = y.checked_sub(1).is_some_and(|y| vertical(x, y));
+            let down = vertical(x, y + 1);
+            let left = panes.iter().any(|(_, pane)| {
+                pane.y + pane.height - 1 == y && pane.x < x && pane.x + pane.width >= x
+            });
+            let right = panes.iter().any(|(_, pane)| {
+                pane.y + pane.height - 1 == y && pane.x <= x + 1 && pane.x + pane.width > x + 1
+            });
+            let glyph = match (up, down, left, right) {
+                (true, true, true, true) => "┼",
+                (true, true, true, false) => "┤",
+                (true, true, false, true) => "├",
+                (true, false, true, true) => "┴",
+                (false, true, true, true) => "┬",
+                (true, false, true, false) => "┘",
+                (true, false, false, true) => "└",
+                (false, true, true, false) => "┐",
+                (false, true, false, true) => "┌",
+                _ => "│",
+            };
+            frame.put(x, y, glyph, Style::StatusBorder);
+        }
     }
 }
 
@@ -637,10 +674,20 @@ mod tests {
         assert_eq!(panes[1].1.y, 6);
         assert_eq!(panes[1].1.height, 6);
         let frame = draw(&mut app);
-        assert_eq!(frame.style_at(0, 5), Some(Style::InactiveStatus));
+        assert_eq!(frame.style_at(0, 5), Some(Style::StatusBorder));
+        assert_eq!(frame.style_at(2, 5), Some(Style::InactiveStatus));
         assert!(frame.row_text(6).contains("alpha"));
-        assert_eq!(frame.style_at(0, 11), Some(Style::Status));
-        assert!((0..13).all(|row| !frame.row_text(row).contains('─')));
+        assert_eq!(frame.style_at(0, 11), Some(Style::StatusBorder));
+        assert_eq!(frame.style_at(2, 11), Some(Style::StatusLine));
+        assert!(
+            (0..13)
+                .filter(|row| ![5, 11].contains(row))
+                .all(|row| !frame.row_text(row).contains('─'))
+        );
+        app.execute("vsplit").unwrap();
+        let frame = draw(&mut app);
+        assert_eq!(frame.row_text(5).chars().nth(39), Some('┬'));
+        assert_eq!(frame.row_text(11).chars().nth(39), Some('┴'));
     }
 
     #[test]
@@ -661,11 +708,13 @@ mod tests {
         let (panes, _) = app.windows.layout.visible(app.window_area());
         for (_, rect) in panes {
             assert!(matches!(
-                frame.style_at(rect.x, rect.y + rect.height - 1),
-                Some(Style::Status | Style::InactiveStatus)
+                frame.style_at(rect.x + 2, rect.y + rect.height - 1),
+                Some(Style::StatusLine | Style::InactiveStatus)
             ));
             assert!(rect.y + rect.height <= 20);
         }
+        assert_eq!(frame.row_text(9).chars().nth(40), Some('├'));
+        assert_eq!(frame.row_text(19).chars().nth(40), Some('┴'));
         key(&mut app, KeyCode::Esc);
         press(&mut app, "/beta");
         let frame = draw(&mut app);

@@ -286,38 +286,30 @@ impl App {
         }
         let width = frame.width().min(78);
         let bottom = frame.height().saturating_sub(1);
-        let height = bottom.min((entries.len() + 1) as u16);
-        if width == 0 || height == 0 {
+        let height = (entries.len() + 2).min(usize::from(bottom)) as u16;
+        if width < 4 || height < 3 {
             return;
         }
         let x = frame.width() - width;
         let y = bottom - height;
-        for row in y..bottom {
-            for col in x..frame.width() {
-                frame.put(col, row, " ", Style::Selection);
-            }
-        }
-        picker::label(
+        picker::paint_box(
             frame,
             x,
             y,
-            width,
-            &format!(" {} · Esc cancel", hints.title),
-            Style::Status,
+            x + width,
+            bottom,
+            &format!(" {} · Esc cancel ", hints.title),
         );
-        for (offset, (key, description)) in entries
-            .iter()
-            .take(usize::from(height.saturating_sub(1)))
-            .enumerate()
+        for (offset, (key, description)) in entries.iter().take(usize::from(height - 2)).enumerate()
         {
             let description = description.lines().next().unwrap_or(description);
             picker::label(
                 frame,
-                x,
+                x + 2,
                 y + 1 + offset as u16,
-                width,
-                &format!(" {key}  {description}"),
-                Style::Selection,
+                width - 4,
+                &format!("{key}  {description}"),
+                Style::Text,
             );
         }
         frame.cursor = None;
