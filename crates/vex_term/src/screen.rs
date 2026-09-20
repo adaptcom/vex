@@ -34,7 +34,6 @@ pub enum Style {
     PopupTitle,
     Error,
     Selection,
-    SelectedSyntax(Highlight),
     PrimaryCursor(Option<Highlight>),
     /// Keep the glyph's colors; the terminal draws the primary insert caret.
     InsertCursor(Option<Highlight>),
@@ -101,15 +100,14 @@ impl Style {
             Self::StatusBorder | Self::InactiveStatus => (DarkGrey, Reset),
             Self::Message | Self::PopupTitle => (DarkCyan, Reset),
             Self::Error => (Red, Reset),
-            Self::Selection => (Reset, Grey),
-            Self::SelectedSyntax(highlight) => (Self::Syntax(highlight).colors().0, Grey),
+            Self::Selection => (Black, Grey),
             Self::PrimaryCursor(highlight) | Self::InsertCursor(highlight) => {
                 highlight.map_or(Self::Text, Self::Syntax).colors()
             }
             Self::SecondaryCursor => (Black, DarkCyan),
             Self::InactiveCursor => (DarkGrey, Reset),
             Self::PickerMatch => (Yellow, Reset),
-            Self::PickerSelectedMatch => (Yellow, Grey),
+            Self::PickerSelectedMatch => (DarkYellow, Grey),
         }
     }
 }

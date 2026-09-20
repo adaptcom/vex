@@ -168,10 +168,7 @@ pub(crate) fn paint_view(
         let ranges = editor.selections().ranges();
         let index = ranges.partition_point(|s| s.start() <= position);
         if index > 0 && position < ranges[index - 1].end() {
-            match syntax {
-                Style::Syntax(highlight) => Style::SelectedSyntax(highlight),
-                _ => Style::Selection,
-            }
+            Style::Selection
         } else {
             syntax
         }
@@ -635,10 +632,7 @@ mod tests {
             )))
             .unwrap();
         let frame = render(&editor, 50, 8, &mut Viewport::default());
-        assert_eq!(
-            frame.style_at(5, 0),
-            Some(Style::SelectedSyntax(Highlight::Keyword))
-        );
+        assert_eq!(frame.style_at(5, 0), Some(Style::Selection));
         assert_eq!(
             frame.style_at(6, 0),
             Some(Style::PrimaryCursor(Some(Highlight::Keyword)))
