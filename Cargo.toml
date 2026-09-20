@@ -39,6 +39,7 @@ crossterm = "0.29"
 tempfile = "3.27"
 signal-hook = "0.3.18"
 ropey = "1.6.1"
+regex-automata = { version = "0.4.18", default-features = false, features = ["std", "syntax", "unicode", "nfa-thompson", "dfa-build", "dfa-search"] }
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }

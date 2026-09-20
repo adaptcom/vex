@@ -1087,6 +1087,7 @@ version = "0.0.1"
 dependencies = [
  "criterion",
  "proptest",
+ "regex-automata",
  "ropey",
  "unicode-segmentation",
  "unicode-width",

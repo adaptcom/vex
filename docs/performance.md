@@ -339,6 +339,36 @@ describe the original synchronous search path; many selections can each require
 a traversal. Interactive search now runs on a cancellable worker, as measured
 below. See [search behavior](search.md).
 
+## Rope regex engine
+
+Recorded on 2026-09-19 with the same machine and release profile:
+
+```sh
+cargo bench -p vex_core --bench search --locked -- regex_search --noplot
+```
+
+| Buffer | Nearby `value = [0-9]+` | Nearby `\bvalue\b` | Missing `value_missing[0-9]+` |
+|---|---:|---:|---:|
+| 1 MiB | 76.5 ns | 63.8 ns | 1.25 ms |
+| 100 MiB | 77.0 ns | 63.6 ns | 125.9 ms |
+
+These are Criterion central estimates with ten samples, a 200 ms warmup, and
+a 500 ms target (extended for the full 100 MiB scan). The fixture repeats the
+same short ASCII source line used by literal search. Compilation and rope
+construction are outside timing; a reusable cache and constant-false cancellation
+callback are supplied. Drawing, job transport, and real cancellation atomics are
+excluded. These cases use the DFA path; Unicode word-boundary fallbacks can cost
+more and are not represented by the ASCII boundary case.
+
+The adapter visits rope chunks without copying the document. Compilation is
+bounded to a 64 KiB query, an 8 MiB NFA, and independently limited DFA construction.
+Unsupported DFA searches fall back to a prioritized NFA simulation, with scratch
+space proportional to the compiled pattern. Both paths check cancellation while
+scanning; NFA epsilon expansion checks it too. Regex compilation itself is not
+preemptible and belongs on a worker. Inline tests compare both execution paths
+against regex-automata's string matcher, including arbitrary byte spans, empty
+matches, Unicode, and assertions crossing rope chunks.
+
 ## Background search
 
 Recorded on 2026-09-19 using the same machine and release profile:

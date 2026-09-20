@@ -9,10 +9,12 @@ repository.workspace = true
 ropey.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
+regex-automata.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
+regex-automata = { workspace = true, features = ["meta"] }
 
 [[bench]]
 name = "editing"
