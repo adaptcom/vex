@@ -25,6 +25,10 @@ requesting completion again. Additional edits such as imports are applied only
 when accepting the original completion. Invalid or overlapping replacement ranges
 stop replay before that replacement is applied; earlier completed actions remain
 undoable. Language-service and application-UI requests are not recorded.
+Clipboard changes and insert-mode Ctrl-r are recorded as logical commands:
+playback requests the current clipboard, waits for completion, and resumes
+without splitting its undo group. A failed copy never applies a cut, and a
+failed or cancelled request stops playback at its completed prefix.
 
 A repeat, including its count, forms one undo step unless it contains explicit
 Ctrl-s insert checkpoints. Escape or Ctrl-c stops a pending repeat and returns
@@ -45,3 +49,8 @@ Frontends create buffers with `Editor::with_session(document, editor.session())`
 to share registers and repeat history. They enable `set_deferred_repeat(true)`,
 call `advance_repeat` between event batches, and defer ordinary input while
 `repeat_pending()` is true. Standalone command calls are synchronous by default.
+`repeat_ready()` distinguishes runnable playback from a clipboard wait, so the
+event loop can sleep while a service is working. Frontends validate request
+identities, deliver clipboard completions through `complete_clipboard_command`,
+and use `cancel_clipboard_command` on failure/cancellation. Standalone replay
+also yields when an external clipboard service is required.

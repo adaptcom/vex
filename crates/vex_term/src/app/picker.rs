@@ -60,6 +60,19 @@ pub(super) struct State {
 }
 
 impl App {
+    pub(super) fn picker_query_stamp(&self) -> Option<(u64, crate::input::PromptStamp)> {
+        self.picker
+            .active
+            .as_ref()
+            .map(|active| (active.session, active.view.query.stamp()))
+    }
+
+    pub(super) fn insert_picker_register(&mut self, text: &str) {
+        if let Some(active) = &mut self.picker.active {
+            active.view.paste(text);
+            self.submit_picker_query();
+        }
+    }
     pub(super) fn open_file_picker(&mut self) {
         let cwd = match std::env::current_dir() {
             Ok(path) => path,
@@ -319,6 +332,11 @@ impl App {
             _ => return Some(false),
         };
         match action {
+            Action::Register(name) if vex_editor::ClipboardKind::from_register(name).is_some() => {
+                self.begin_picker_clipboard(
+                    vex_editor::ClipboardKind::from_register(name).unwrap(),
+                );
+            }
             Action::Register(name) => match self.editor.register_first(name) {
                 Ok(Some(value)) => {
                     active.view.paste(&value);
@@ -589,6 +607,65 @@ mod tests {
         app.handle(key(KeyCode::Enter));
         assert!(app.picker.active.is_none());
         assert_eq!(app.editor.document().text(), "beta contents");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_picker_reads_are_bounded_and_reject_a_reopened_query() {
+        let (directory, mut app) = fixture();
+        let path = directory.path().join(".clipboard");
+        fs::write(&path, "beta\r\n").unwrap();
+        let mut clipboard = crate::clipboard::tests::file_worker(&path);
+        let mut files = FileWorker::default();
+        press(&mut app, " f");
+        finish(&mut app, &mut files);
+        let ctrl_r = || Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        app.handle(ctrl_r());
+        press(&mut app, "+");
+        let result = clipboard.run(app.take_clipboard_job().unwrap()).unwrap();
+        assert!(app.handle_clipboard_result(result));
+        assert_eq!(
+            app.picker.active.as_ref().unwrap().view.query.text(),
+            "beta"
+        );
+        finish(&mut app, &mut files);
+        assert_eq!(
+            app.picker
+                .active
+                .as_ref()
+                .unwrap()
+                .view
+                .selected()
+                .unwrap()
+                .label,
+            "beta.txt"
+        );
+        app.handle(ctrl_r());
+        press(&mut app, "+");
+        let result = clipboard.run(app.take_clipboard_job().unwrap()).unwrap();
+        app.close_picker();
+        app.open_file_picker();
+        assert!(!app.handle_clipboard_result(result));
+        assert!(
+            app.picker
+                .active
+                .as_ref()
+                .unwrap()
+                .view
+                .query
+                .text()
+                .is_empty()
+        );
+        fs::write(&path, "界".repeat(2048)).unwrap();
+        app.handle(ctrl_r());
+        press(&mut app, "+");
+        let result = clipboard.run(app.take_clipboard_job().unwrap()).unwrap();
+        assert!(app.handle_clipboard_result(result));
+        assert_eq!(
+            app.picker.active.as_ref().unwrap().view.query.text().len(),
+            1023
+        );
+        assert_eq!(app.editor.document().text(), "alpha contents");
     }
 
     #[test]

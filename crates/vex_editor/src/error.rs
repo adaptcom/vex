@@ -28,6 +28,7 @@ pub enum Error {
     EmptyRegister(char),
     ReadOnlyRegister(char),
     ExternalRegister(char),
+    ClipboardChanged,
     SurroundNotFound,
     SurroundOverlap,
     SurroundAmbiguous,
@@ -59,6 +60,9 @@ impl fmt::Display for Error {
             Self::ReadOnlyRegister(name) => write!(f, "register {name} is read-only"),
             Self::ExternalRegister(name) => {
                 write!(f, "register {name} requires a frontend service")
+            }
+            Self::ClipboardChanged => {
+                write!(f, "clipboard destination changed or request cancelled")
             }
             Self::SurroundNotFound => write!(f, "surround pair not found around every cursor"),
             Self::SurroundOverlap => {

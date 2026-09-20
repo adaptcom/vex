@@ -35,6 +35,8 @@ The boxed register helper shows short previews while collecting the name.
 | `%` | Current file name, or `[scratch]`; read-only |
 | `/` | Last accepted search, unless a different register was chosen |
 | `:` | Last submitted nonempty colon command |
+| `+` | System clipboard, shared with the Space clipboard commands |
+| `*` | Primary clipboard where a Wayland/X11 provider is available |
 
 `"a/` or `"a?` stores an accepted search in `a`. `"an` and `"aN` search with
 the first fragment of `a` as a regex. Plain `n`/`N` use the register from the
@@ -46,9 +48,16 @@ invalid prompts leave stored queries intact.
 
 Ctrl-r `%`, `/`, or `:` inserts the file name, saved search, or command just
 like an ordinary register. The file-name value follows successful save-as and
-buffer switching. Clipboard registers `+` and `*` still need frontend integration
-and currently return an error; use [Space clipboard commands](clipboard.md).
-That remaining integration is tracked in [TODO](../TODO.md).
+buffer switching. `+` and `*` use the [background clipboard service](clipboard.md)
+for all reads/writes, including `d`/`c`, insert/prompt Ctrl-r, and searches.
+The primary clipboard has its own fragment cache and requires a supported display
+server; it does not alias the system clipboard on platforms without one.
+
+Cuts apply only after copying succeeds. Insert replay waits for each clipboard
+operation and reads the current contents, preserving undo grouping and input
+order. Command/search prompt reads are limited to 64 KiB after stripping controls;
+picker reads use the existing 1 KiB query limit. Search reads retain literal
+control characters and obey the regex engine's 64 KiB pattern limit.
 
 Stored fragments are immutable and shared across buffers without text copies.
 Undo/redo and closing the source buffer do not rewind or discard registers.

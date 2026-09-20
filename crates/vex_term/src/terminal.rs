@@ -189,7 +189,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             redraw = false;
         }
-        let timeout = if app.editor.repeat_pending() {
+        let timeout = if app.editor.repeat_ready() {
             Duration::ZERO
         } else {
             app.completion_deadline()

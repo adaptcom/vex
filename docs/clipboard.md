@@ -25,6 +25,31 @@ lines; replacement uses the exact selected ranges. Each paste is one undo step.
 Counts do not affect copying. Clipboard reads preserve whitespace, Unicode, and
 trailing newlines rather than trimming them.
 
+The `+` [register](registers.md) uses this same clipboard and fragment cache.
+Use `"+y`, `"+p`/`P`/`R`, `"+d`/`c`, or insert-mode Ctrl-r `+`. `*` addresses
+the separate primary clipboard on Wayland or X11, with its own cache. It requires
+wl-clipboard or xclip/xsel and a running display server; it does not silently
+redirect to the system clipboard when primary selection is unavailable.
+
+Clipboard cuts prepare both the copy and deletion on the worker, then delete
+only after the write succeeds and the destination still matches. `"+c` enters
+insert mode at that point, and the cut plus subsequent typing is one undo step.
+Ctrl-r inserts at carets, ignoring linewise placement, and stays in insert mode.
+`.` replays the logical clipboard command and waits for its current result.
+
+Ctrl-r also inserts the first clipboard fragment into prompts/picker queries,
+without submitting or opening anything. Control filtering happens on the worker.
+Command/search prompt reads are limited to 64 KiB of filtered text; picker
+queries retain their 1 KiB limit. A replaced prompt, moved prompt cursor, changed
+query, or reopened picker invalidates an older read. Escape cancels a pending
+read first, leaving the prompt/picker open.
+
+`"+n`/`N` reads a query, then hands it to the regex worker. `"+/`, `"+?`, and
+`"+*` write the accepted/derived pattern and make `+` active for subsequent
+`n`/`N` only after success. Selection prompts can write queries without changing
+the active register. `*` supports the same operations. These worker handoffs keep
+following editing keys queued until the complete command finishes.
+
 Vex uses these command helpers without an additional clipboard dependency:
 
 | Environment | Helpers |
@@ -56,6 +81,9 @@ copy/read data is limited to 128 MiB, with a 256 MiB conservative bound for
 counted paste text across destinations, including line-ending conversion space.
 The main thread applies the completed transaction and normalizes selections;
 large rope edits, allocation, and Unicode boundary work are not preemptible.
+Clipboard reads during replay suspend runnable playback, allowing the event loop
+to wait for a completion instead of polling with a zero timeout. Cancellation
+returns to normal mode and preserves the completed prefix as an undoable group.
 
 Tests use private file-backed helpers and never access the desktop clipboard.
 See [performance measurements](performance.md) for the scheduling cost.

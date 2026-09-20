@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 use vex_core::display;
 use vex_editor::Key;
 
-const MAX_QUERY_BYTES: usize = 1024;
+pub(crate) const MAX_QUERY_BYTES: usize = 1024;
 
 /// Shared geometry for drawing, paging, and deciding whether to load a preview.
 /// Bounds are exclusive; margins leave the current document visible behind us.

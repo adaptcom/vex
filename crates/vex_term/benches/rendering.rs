@@ -300,6 +300,35 @@ fn clipboard(c: &mut Criterion) {
         });
     }
     group.finish();
+
+    let mut group = c.benchmark_group("clipboard_register_schedule_cancel");
+    for mib in [1usize, 100] {
+        let mut app = App::from_document(
+            Document::from("line\n".repeat((mib << 20).div_ceil(5)).as_str()),
+            (120, 40),
+        );
+        app.editor.execute("select_all", 1).unwrap();
+        for (name, sequence) in [
+            ("cut", "\"+d"),
+            ("change", "\"+c"),
+            ("paste", "\"+P"),
+            ("search", "\"+n"),
+        ] {
+            group.bench_function(BenchmarkId::new(name, mib), |b| {
+                b.iter(|| {
+                    for ch in sequence.chars() {
+                        app.handle(Event::Key(KeyEvent::new(
+                            KeyCode::Char(ch),
+                            KeyModifiers::NONE,
+                        )));
+                    }
+                    app.handle(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+                    black_box(app.editor.selections());
+                });
+            });
+        }
+    }
+    group.finish();
 }
 
 criterion_group! {

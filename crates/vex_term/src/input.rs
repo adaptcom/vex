@@ -40,14 +40,40 @@ pub fn key(event: KeyEvent) -> Option<Key> {
 }
 
 /// Editable prompt text with a UTF-8 byte cursor on grapheme boundaries.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Prompt {
     text: String,
     cursor: usize,
     register_pending: bool,
+    stamp: PromptStamp,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PromptStamp {
+    identity: u64,
+    revision: u64,
+}
+
+impl Default for Prompt {
+    fn default() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self {
+            text: String::new(),
+            cursor: 0,
+            register_pending: false,
+            stamp: PromptStamp {
+                identity: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+                revision: 0,
+            },
+        }
+    }
 }
 
 impl Prompt {
+    pub(crate) fn stamp(&self) -> PromptStamp {
+        self.stamp
+    }
     pub fn register_pending(&self) -> bool {
         self.register_pending
     }
@@ -56,6 +82,7 @@ impl Prompt {
     /// prefix. The frontend resolves text and performs any platform I/O.
     pub fn register_key(&mut self, key: Key) -> Option<Option<char>> {
         if self.register_pending {
+            self.stamp.revision += 1;
             self.register_pending = false;
             return Some(match key {
                 Key::Char(ch) if !ch.is_control() => Some(ch),
@@ -63,6 +90,7 @@ impl Prompt {
             });
         }
         if key == Key::Ctrl('r') {
+            self.stamp.revision += 1;
             self.register_pending = true;
             return Some(None);
         }
@@ -76,6 +104,7 @@ impl Prompt {
         self.cursor
     }
     pub fn insert(&mut self, text: &str) {
+        self.stamp.revision += 1;
         self.register_pending = false;
         // Pasting into a prompt never submits a command or introduces new lines.
         let text: String = text.chars().filter(|ch| !ch.is_control()).collect();
@@ -92,6 +121,7 @@ impl Prompt {
             .unwrap_or(self.text.len());
     }
     pub fn handle(&mut self, key: Key) {
+        self.stamp.revision += 1;
         match key {
             Key::Char(ch) if !ch.is_control() => self.insert(ch.encode_utf8(&mut [0; 4])),
             Key::Left => self.cursor = self.previous(),

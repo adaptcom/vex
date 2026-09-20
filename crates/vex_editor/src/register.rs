@@ -67,6 +67,10 @@ impl YankRegister {
         self.values.lock().expect("register lock").last_search
     }
 
+    pub(crate) fn activate_search(&self, name: char) {
+        self.values.lock().expect("register lock").last_search = name;
+    }
+
     pub(crate) fn remember_search(
         &self,
         name: char,
@@ -251,6 +255,58 @@ impl Editor {
         self.preferred_columns = None;
         Ok(())
     }
+
+    /// Finish a guarded clipboard command. The frontend must also validate its
+    /// request identity before delivering the result. Failed/cancelled writes
+    /// must call `cancel_clipboard_command` instead of applying a cut.
+    pub fn complete_clipboard_command(
+        &mut self,
+        action: crate::ClipboardAction,
+        transaction: Option<Transaction>,
+    ) -> Result<(), Error> {
+        crate::repeat::complete_clipboard(self, action, |editor, _| match action {
+            crate::ClipboardAction::Search { .. } => Err(Error::ClipboardChanged),
+            crate::ClipboardAction::SetSearch { register, activate } => {
+                if activate {
+                    editor.yank_register.activate_search(register);
+                }
+                Ok(())
+            }
+            crate::ClipboardAction::Yank | crate::ClipboardAction::YankMain => {
+                editor.finish_undo_group();
+                editor.mode = Mode::Normal;
+                editor.selections = editor.normalized(editor.selections.clone(), Mode::Normal)?;
+                Ok(())
+            }
+            crate::ClipboardAction::Paste(Paste::Cursor) => {
+                editor.apply_register_insert(transaction.ok_or(Error::ClipboardChanged)?)
+            }
+            crate::ClipboardAction::Paste(_) | crate::ClipboardAction::Delete => {
+                editor.apply_paste(transaction.ok_or(Error::ClipboardChanged)?)
+            }
+            crate::ClipboardAction::Change => {
+                editor.finish_undo_group();
+                editor.apply(transaction.ok_or(Error::ClipboardChanged)?, true)?;
+                editor.mode = Mode::Insert;
+                editor.selections = editor.normalized(editor.selections.clone(), Mode::Insert)?;
+                editor.preferred_columns = None;
+                Ok(())
+            }
+        })
+    }
+
+    /// Continue clipboard-backed n/N on the selection worker after a guarded read.
+    pub fn complete_clipboard_search(
+        &mut self,
+        reverse: bool,
+        text: Arc<str>,
+    ) -> Result<(), Error> {
+        crate::repeat::complete_clipboard(
+            self,
+            crate::ClipboardAction::Search { reverse },
+            |editor, count| crate::search::from_clipboard(editor, text, reverse, count.get()),
+        )
+    }
 }
 
 fn check(cancelled: &impl Fn() -> bool) -> Result<(), Error> {
@@ -359,6 +415,10 @@ impl Group {
 pub(crate) fn paste(ctx: &mut CommandContext<'_>, action: Paste) -> Result<(), Error> {
     let name = ctx.register.unwrap_or('"');
     let editor = &mut *ctx.editor;
+    if let Some(kind) = crate::ClipboardKind::from_register(name) {
+        editor.request_clipboard(kind, crate::ClipboardAction::Paste(action), ctx.count.get());
+        return Ok(());
+    }
     let values = editor.register(name)?;
     if name == '_' {
         return Ok(());

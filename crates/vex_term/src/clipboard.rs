@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 use vex_core::{SelectionSet, Snapshot, Transaction};
-use vex_editor::{Paste, PastePlan, background::Cancellation};
+use vex_editor::{ClipboardKind, Paste, PastePlan, background::Cancellation};
 
 const MAX_BYTES: usize = 128 << 20;
 const MAX_EDIT_BYTES: usize = 256 << 20;
@@ -22,6 +22,7 @@ pub(crate) enum Operation {
     Copy {
         snapshot: Snapshot,
         selections: SelectionSet,
+        cut: Option<PastePlan>,
     },
     Paste {
         plan: PastePlan,
@@ -29,10 +30,19 @@ pub(crate) enum Operation {
         count: NonZeroUsize,
         selections: usize,
     },
+    Read {
+        limit: usize,
+        trim_controls: bool,
+        truncate: bool,
+    },
+    Write {
+        values: Fragments,
+    },
 }
 
 pub(crate) struct Job {
     pub id: u64,
+    pub kind: ClipboardKind,
     pub operation: Operation,
     pub cancellation: Cancellation,
 }
@@ -40,6 +50,7 @@ pub(crate) struct Job {
 pub(crate) enum Outcome {
     Copied(usize),
     Paste(Transaction),
+    Text(Arc<str>),
 }
 
 pub(crate) struct Result {
@@ -49,59 +60,62 @@ pub(crate) struct Result {
 
 #[derive(Default)]
 pub(crate) struct Worker {
+    slots: [Slot; 2],
+}
+
+#[derive(Default)]
+struct Slot {
     provider: Option<Provider>,
     saved: Option<Fragments>,
 }
 
 impl Worker {
     pub fn run(&mut self, job: Job) -> Option<Result> {
-        let outcome = self
-            .execute(job.operation, &job.cancellation)
+        let index = match job.kind {
+            ClipboardKind::System => 0,
+            ClipboardKind::Primary => 1,
+        };
+        let outcome = self.slots[index]
+            .execute(job.kind, job.operation, &job.cancellation)
             .map_err(|e| e.to_string());
         (!job.cancellation.is_cancelled()).then_some(Result {
             id: job.id,
             outcome,
         })
     }
+}
 
+impl Slot {
     fn execute(
         &mut self,
+        kind: ClipboardKind,
         operation: Operation,
         cancellation: &Cancellation,
     ) -> io::Result<Outcome> {
         check(cancellation)?;
         if self.provider.is_none() {
-            self.provider = Some(Provider::detect()?);
+            self.provider = Some(Provider::detect(kind)?);
         }
-        let provider = self.provider.as_ref().unwrap();
         match operation {
             Operation::Copy {
                 snapshot,
                 selections,
+                cut,
             } => {
                 let values = capture(&snapshot, &selections, cancellation)?;
-                let mut input = tempfile::tempfile()?;
-                for (index, value) in values.iter().enumerate() {
-                    if index > 0 {
-                        input.write_all(SEPARATOR.as_bytes())?;
-                    }
-                    for chunk in value.as_bytes().chunks(8192) {
-                        check(cancellation)?;
-                        input.write_all(chunk)?;
-                    }
-                }
-                input.seek(SeekFrom::Start(0))?;
-                run(
-                    &mut provider.write.command(),
-                    Some(input),
-                    cancellation,
-                    TIMEOUT,
-                )?;
+                // Construct the edit before writing: failures must not delete
+                // text, and an invalid edit should not overwrite the clipboard.
+                let transaction = cut
+                    .map(|plan| {
+                        plan.prepare(&[Arc::from("")], Paste::Replace, NonZeroUsize::MIN, &|| {
+                            cancellation.is_cancelled()
+                        })
+                    })
+                    .transpose()
+                    .map_err(io::Error::other)?;
                 let len = values.len();
-                // Keep fragments, never the full source document. A later read
-                // must equal all joined bytes before these boundaries are reused.
-                self.saved = Some(values);
-                Ok(Outcome::Copied(len))
+                self.write(values, cancellation)?;
+                Ok(transaction.map_or(Outcome::Copied(len), Outcome::Paste))
             }
             Operation::Paste {
                 plan,
@@ -109,15 +123,7 @@ impl Worker {
                 count,
                 selections,
             } => {
-                let bytes = run(&mut provider.read.command(), None, cancellation, TIMEOUT)?;
-                let text = String::from_utf8(bytes)
-                    .map_err(|_| io::Error::other("clipboard contains invalid UTF-8"))?;
-                let values = self
-                    .saved
-                    .as_ref()
-                    .filter(|values| matches(values, &text, cancellation))
-                    .cloned()
-                    .unwrap_or_else(|| Arc::from([Arc::from(text)]));
+                let values = self.read(cancellation)?;
                 let mut size = 0usize;
                 for index in 0..selections {
                     check(cancellation)?;
@@ -137,7 +143,93 @@ impl Worker {
                 check(cancellation)?;
                 Ok(Outcome::Paste(transaction))
             }
+            Operation::Read {
+                limit,
+                trim_controls,
+                truncate,
+            } => {
+                let values = self.read(cancellation)?;
+                let text = values.first().map_or("", AsRef::as_ref);
+                if !trim_controls && !truncate {
+                    if text.len() > limit {
+                        return Err(io::Error::other("clipboard regex exceeds 64 KiB"));
+                    }
+                    return Ok(Outcome::Text(
+                        values.first().cloned().unwrap_or_else(|| Arc::from("")),
+                    ));
+                }
+                let mut result = String::with_capacity(text.len().min(limit));
+                for (index, ch) in text.chars().enumerate() {
+                    if index % 1024 == 0 {
+                        check(cancellation)?;
+                    }
+                    if trim_controls && ch.is_control() {
+                        continue;
+                    }
+                    if result.len() + ch.len_utf8() > limit {
+                        if truncate {
+                            break;
+                        }
+                        return Err(io::Error::other("clipboard text exceeds prompt size limit"));
+                    }
+                    result.push(ch);
+                }
+                Ok(Outcome::Text(result.into()))
+            }
+            Operation::Write { values } => {
+                let count = values.len();
+                self.write(values, cancellation)?;
+                Ok(Outcome::Copied(count))
+            }
         }
+    }
+
+    fn write(&mut self, values: Fragments, cancellation: &Cancellation) -> io::Result<()> {
+        let mut size = values
+            .len()
+            .saturating_sub(1)
+            .saturating_mul(SEPARATOR.len());
+        let mut input = tempfile::tempfile()?;
+        for (index, value) in values.iter().enumerate() {
+            size = size
+                .checked_add(value.len())
+                .filter(|&size| size <= MAX_BYTES)
+                .ok_or_else(|| io::Error::other("clipboard copy exceeds 128 MiB"))?;
+            if index > 0 {
+                input.write_all(SEPARATOR.as_bytes())?;
+            }
+            for chunk in value.as_bytes().chunks(8192) {
+                check(cancellation)?;
+                input.write_all(chunk)?;
+            }
+        }
+        input.seek(SeekFrom::Start(0))?;
+        run(
+            &mut self.provider.as_ref().unwrap().write.command(),
+            Some(input),
+            cancellation,
+            TIMEOUT,
+        )?;
+        // Keep fragments, never the source snapshot. Reads compare all bytes.
+        self.saved = Some(values);
+        Ok(())
+    }
+
+    fn read(&self, cancellation: &Cancellation) -> io::Result<Fragments> {
+        let bytes = run(
+            &mut self.provider.as_ref().unwrap().read.command(),
+            None,
+            cancellation,
+            TIMEOUT,
+        )?;
+        let text = String::from_utf8(bytes)
+            .map_err(|_| io::Error::other("clipboard contains invalid UTF-8"))?;
+        Ok(self
+            .saved
+            .as_ref()
+            .filter(|values| matches(values, &text, cancellation))
+            .cloned()
+            .unwrap_or_else(|| Arc::from([Arc::from(text)])))
     }
 }
 
@@ -241,8 +333,32 @@ impl Provider {
         }
     }
 
-    fn detect() -> io::Result<Self> {
+    fn detect(kind: ClipboardKind) -> io::Result<Self> {
         let set = |name| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+        if kind == ClipboardKind::Primary {
+            if set("WAYLAND_DISPLAY") && available("wl-copy") && available("wl-paste") {
+                return Ok(Self::new(
+                    "wl-paste",
+                    &["-p", "--no-newline"],
+                    "wl-copy",
+                    &["-p", "--type", "text/plain"],
+                ));
+            }
+            if set("DISPLAY") && available("xclip") {
+                return Ok(Self::new(
+                    "xclip",
+                    &["-o", "-selection", "primary"],
+                    "xclip",
+                    &["-i", "-selection", "primary"],
+                ));
+            }
+            if set("DISPLAY") && available("xsel") {
+                return Ok(Self::new("xsel", &["-o", "-p"], "xsel", &["-i", "-p"]));
+            }
+            return Err(io::Error::other(
+                "primary clipboard requires wl-clipboard or xclip/xsel with a running display server",
+            ));
+        }
         if set("TMUX") && available("tmux") {
             return Ok(Self::new(
                 "tmux",
@@ -403,6 +519,18 @@ pub(crate) mod tests {
     // read or overwrite the developer's desktop clipboard or mutate PATH.
     pub(crate) fn file_worker(path: &std::path::Path) -> Worker {
         Worker {
+            slots: [file_slot(path), Slot::default()],
+        }
+    }
+
+    pub(crate) fn two_file_worker(system: &std::path::Path, primary: &std::path::Path) -> Worker {
+        Worker {
+            slots: [file_slot(system), file_slot(primary)],
+        }
+    }
+
+    fn file_slot(path: &std::path::Path) -> Slot {
+        Slot {
             provider: Some(Provider {
                 read: Spec {
                     program: "cat".into(),
@@ -431,6 +559,65 @@ pub(crate) mod tests {
         assert!(!matches(&values, "\ncat", &cancellation));
         cancellation.cancel();
         assert!(!matches(&values, "\ncat\n", &cancellation));
+    }
+
+    #[test]
+    fn prompt_reads_keep_first_fragment_controls_and_size_limits_on_worker() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clipboard");
+        let mut worker = file_worker(&path);
+        let mut request = |operation| {
+            worker
+                .run(Job {
+                    id: 1,
+                    kind: ClipboardKind::System,
+                    operation,
+                    cancellation: Cancellation::default(),
+                })
+                .unwrap()
+                .outcome
+        };
+        request(Operation::Write {
+            values: Arc::from([Arc::from("e\u{301}\n"), Arc::from("unused")]),
+        })
+        .unwrap();
+        let Outcome::Text(text) = request(Operation::Read {
+            limit: 64,
+            trim_controls: true,
+            truncate: false,
+        })
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(text.as_ref(), "e\u{301}");
+        std::fs::write(&path, "界".repeat(128)).unwrap();
+        assert!(
+            request(Operation::Read {
+                limit: 64,
+                trim_controls: true,
+                truncate: false
+            })
+            .is_err()
+        );
+        let Outcome::Text(text) = request(Operation::Read {
+            limit: 64,
+            trim_controls: true,
+            truncate: true,
+        })
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(text.len(), 63);
+        std::fs::write(&path, "line\r\n").unwrap();
+        let Outcome::Text(text) = request(Operation::Read {
+            limit: 64,
+            trim_controls: false,
+            truncate: false,
+        })
+        .unwrap() else {
+            panic!()
+        };
+        assert_eq!(text.as_ref(), "line\r\n");
     }
 
     #[test]
@@ -502,8 +689,10 @@ pub(crate) mod tests {
         let result = worker
             .run(Job {
                 id: 3,
+                kind: ClipboardKind::System,
                 cancellation: Cancellation::default(),
                 operation: Operation::Copy {
+                    cut: None,
                     snapshot: document.snapshot(),
                     selections: SelectionSet::single(Selection::new(
                         CharOffset(0),

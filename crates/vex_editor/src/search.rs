@@ -415,7 +415,7 @@ pub(crate) fn begin(ctx: &mut CommandContext<'_>, operation: SearchPrompt) -> Re
     }
     require_normal_or_select(editor)?;
     let register = ctx.register.unwrap_or('/');
-    crate::register::writable(register)?;
+    writable_query(register)?;
     editor.finish_undo_group();
     editor.search.preview = Some(Preview {
         origin: editor.selections.clone(),
@@ -675,10 +675,7 @@ pub(crate) fn apply_result(
             let Kind::Remember(register) = pending.kind else {
                 unreachable!("remember request")
             };
-            editor
-                .yank_register
-                .remember_search(register, pattern.text.clone(), true)?;
-            editor.search.accepted = Some(pattern);
+            publish(editor, register, pattern, true)?;
             return Ok(SearchCompletion::Navigation);
         }
         Ok(Outcome::Selections(selections)) => {
@@ -752,15 +749,15 @@ pub(crate) fn accept(editor: &mut Editor) -> Result<(), Error> {
         SearchStatus::Match => {
             let preview = editor.search.preview.take().unwrap();
             let pattern = preview.pattern.as_ref().expect("matched pattern");
-            editor.yank_register.remember_search(
+            publish(
+                editor,
                 preview.register,
-                pattern.text.clone(),
+                pattern.clone(),
                 matches!(
                     preview.operation,
                     SearchPrompt::Forward | SearchPrompt::Backward
                 ),
             )?;
-            editor.search.accepted = preview.pattern;
             Ok(())
         }
     }
@@ -784,20 +781,21 @@ pub(crate) fn repeat(ctx: &mut CommandContext<'_>, reverse: bool) -> Result<(), 
     let register = ctx
         .register
         .unwrap_or_else(|| editor.yank_register.last_search());
+    if let Some(kind) = crate::ClipboardKind::from_register(register) {
+        editor.finish_undo_group();
+        editor.request_clipboard(
+            kind,
+            crate::ClipboardAction::Search { reverse },
+            ctx.count.get(),
+        );
+        return Ok(());
+    }
     let pattern = if register == '.' {
         // Capturing a potentially large dynamic register belongs on the worker.
         Pattern::Selection
     } else {
         let text = editor.register_first(register)?.ok_or(Error::NoSearch)?;
-        match editor.search.accepted.as_ref() {
-            Some(pattern)
-                if Arc::ptr_eq(&pattern.text, &text)
-                    && pattern.crlf == (editor.newline == "\r\n") =>
-            {
-                Pattern::Compiled(pattern.clone())
-            }
-            _ => Pattern::Text(text),
-        }
+        cached_pattern(editor, text)
     };
     let operation = if reverse {
         SearchPrompt::Backward
@@ -806,6 +804,67 @@ pub(crate) fn repeat(ctx: &mut CommandContext<'_>, reverse: bool) -> Result<(), 
     };
     editor.finish_undo_group();
     schedule(editor, pattern, operation, ctx.count.get(), Kind::Repeat)
+}
+
+fn writable_query(name: char) -> Result<(), Error> {
+    if crate::ClipboardKind::from_register(name).is_some() {
+        Ok(())
+    } else {
+        crate::register::writable(name)
+    }
+}
+
+fn publish(
+    editor: &mut Editor,
+    register: char,
+    pattern: Arc<CompiledPattern>,
+    activate: bool,
+) -> Result<(), Error> {
+    if let Some(kind) = crate::ClipboardKind::from_register(register) {
+        editor.request_clipboard_search_write(kind, pattern.text.clone(), activate);
+    } else {
+        editor
+            .yank_register
+            .remember_search(register, pattern.text.clone(), activate)?;
+    }
+    editor.search.accepted = Some(pattern);
+    Ok(())
+}
+
+fn cached_pattern(editor: &Editor, text: Arc<str>) -> Pattern {
+    match editor.search.accepted.as_ref() {
+        Some(pattern)
+            if Arc::ptr_eq(&pattern.text, &text) && pattern.crlf == (editor.newline == "\r\n") =>
+        {
+            Pattern::Compiled(pattern.clone())
+        }
+        _ => Pattern::Text(text),
+    }
+}
+
+pub(crate) fn from_clipboard(
+    editor: &mut Editor,
+    text: Arc<str>,
+    reverse: bool,
+    count: usize,
+) -> Result<(), Error> {
+    require_normal_or_select(editor)?;
+    if editor.search.preview.is_some() {
+        return Err(Error::SearchActive);
+    }
+    let pattern = cached_pattern(editor, text);
+    editor.finish_undo_group();
+    schedule(
+        editor,
+        pattern,
+        if reverse {
+            SearchPrompt::Backward
+        } else {
+            SearchPrompt::Forward
+        },
+        count,
+        Kind::Repeat,
+    )
 }
 
 fn compile(query: Arc<str>, crlf: bool) -> Result<Arc<CompiledPattern>, Error> {
@@ -835,7 +894,7 @@ pub(crate) fn remember(ctx: &mut CommandContext<'_>, boundaries: bool) -> Result
         return Err(Error::SearchActive);
     }
     let register = ctx.register.unwrap_or('/');
-    crate::register::writable(register)?;
+    writable_query(register)?;
     editor.finish_undo_group();
     dispatch(
         editor,

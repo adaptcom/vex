@@ -41,12 +41,12 @@ selections, and measure operations that could affect input latency.
 - [x] System clipboard commands: `<space>y`/`Y`, `<space>p`/`P`, and `<space>R`.
   Platform helpers, copy capture, and paste preparation run on the background
   worker, preserving fragment boundaries, input order, cancellation, and undo.
-- [ ] Named registers with `"<register>` and insert/prompt Ctrl-r. Preserve
+- [x] Named registers with `"<register>` and insert/prompt Ctrl-r. Preserve
   fragment boundaries when copying between editor selections.
   Ordinary names, `_`/`#`/`.`/`%`, automatic `/`/`:` registers, prompt/picker
   insertion, insert repeat, and searching with a chosen register are implemented.
-  Finish `+`/`*` clipboard-register integration, including insert/prompt reads
-  and cuts/changes through the background worker.
+  `+`/`*` clipboard reads, writes, cuts, changes, and searches use the workers;
+  replay waits for current clipboard contents and preserves input/undo ordering.
 - [x] Insert-mode word deletion and line kills: Ctrl-w, Ctrl-u, Ctrl-k, plus
   Ctrl-d/Ctrl-j aliases for Delete/Enter.
 - [ ] Prompt history, command/path completion, word movement, and line kills.

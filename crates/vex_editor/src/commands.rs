@@ -474,7 +474,7 @@ fn clipboard(ctx: &mut CommandContext<'_>, action: crate::ClipboardAction) -> Re
     ctx.editor.finish_undo_group();
     ctx.editor.mode = Mode::Normal;
     ctx.editor
-        .request_application_action(crate::ApplicationAction::Clipboard(action, ctx.count.get()));
+        .request_clipboard(crate::ClipboardKind::System, action, ctx.count.get());
     Ok(())
 }
 
@@ -1100,6 +1100,10 @@ commands! {
     /// Copy selections to the chosen register (default: last-yanked text), retaining their order and leaving select mode. Registers are shared across buffers; undo history is unchanged.
     fn yank(ctx) {
         let name = ctx.register.unwrap_or('"');
+        if let Some(kind) = crate::ClipboardKind::from_register(name) {
+            ctx.editor.request_clipboard(kind, crate::ClipboardAction::Yank, ctx.count.get());
+            return Ok(());
+        }
         let values = crate::register::capture_for(ctx.editor, name)?;
         ctx.editor.set_register(name, values)?;
         ctx.editor.finish_undo_group();
@@ -1122,6 +1126,10 @@ commands! {
     /// Cut selections into the chosen register (default: last-yanked text) and delete them atomically, leaving normal-mode cursors at the edit locations. The discard register avoids copying selected text.
     fn delete_selection(ctx) {
         let name = ctx.register.unwrap_or('"');
+        if let Some(kind) = crate::ClipboardKind::from_register(name) {
+            ctx.editor.request_clipboard(kind, crate::ClipboardAction::Delete, ctx.count.get());
+            return Ok(());
+        }
         let values = crate::register::capture_for(ctx.editor, name)?;
         delete_selection_without_yank(ctx)?;
         ctx.editor.set_register(name, values)?;
@@ -1140,6 +1148,10 @@ commands! {
     /// Cut selections into the chosen register (default: last-yanked text) and enter insert mode; the deletion and subsequent typing share one undo step. The discard register avoids copying selected text.
     fn change_selection(ctx) {
         let name = ctx.register.unwrap_or('"');
+        if let Some(kind) = crate::ClipboardKind::from_register(name) {
+            ctx.editor.request_clipboard(kind, crate::ClipboardAction::Change, ctx.count.get());
+            return Ok(());
+        }
         let values = crate::register::capture_for(ctx.editor, name)?;
         let editor = &mut *ctx.editor;
         editor.finish_undo_group();

@@ -67,9 +67,10 @@ pub enum LanguageAction {
 }
 
 /// Application UI requested by documented commands without performing file I/O.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApplicationAction {
-    Clipboard(ClipboardAction, usize),
+    Clipboard(ClipboardKind, ClipboardAction, usize),
+    ClipboardWrite(ClipboardKind, std::sync::Arc<str>, bool),
     SaveSelection,
     GitStatus,
     FilePicker,
@@ -87,7 +88,35 @@ pub enum ApplicationAction {
 pub enum ClipboardAction {
     Yank,
     YankMain,
+    Delete,
+    Change,
+    Search { reverse: bool },
+    SetSearch { register: char, activate: bool },
     Paste(Paste),
+}
+
+/// The system clipboard (+) and the separate primary selection (*) where supported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardKind {
+    System,
+    Primary,
+}
+
+impl ClipboardKind {
+    pub fn from_register(name: char) -> Option<Self> {
+        match name {
+            '+' => Some(Self::System),
+            '*' => Some(Self::Primary),
+            _ => None,
+        }
+    }
+
+    pub fn register(self) -> char {
+        match self {
+            Self::System => '+',
+            Self::Primary => '*',
+        }
+    }
 }
 
 /// Buffer navigation interpreted by the frontend, without reading files here.
@@ -227,6 +256,33 @@ impl Editor {
         self.application_action = Some(action);
     }
 
+    pub(crate) fn request_clipboard(
+        &mut self,
+        kind: ClipboardKind,
+        action: ClipboardAction,
+        count: usize,
+    ) {
+        self.request_application_action(ApplicationAction::Clipboard(kind, action, count));
+        repeat::request_clipboard(self, action, count);
+    }
+
+    pub(crate) fn request_clipboard_search_write(
+        &mut self,
+        kind: ClipboardKind,
+        text: std::sync::Arc<str>,
+        activate: bool,
+    ) {
+        self.request_application_action(ApplicationAction::ClipboardWrite(kind, text, activate));
+        repeat::request_clipboard(
+            self,
+            ClipboardAction::SetSearch {
+                register: kind.register(),
+                activate,
+            },
+            1,
+        );
+    }
+
     /// The active regex prompt requested by an editor command.
     pub fn search_prompt(&self) -> Option<SearchPrompt> {
         self.search
@@ -363,11 +419,12 @@ impl Editor {
     /// Separate subsequent typing from the current undo step. Integrations must
     /// call this at savepoints so undo can return to the saved text. Movements,
     /// mode/selection changes, explicit edits, paste, and undo/redo do so already.
-    /// Outside a replayed action, this also cancels pending insert playback.
+    /// Outside a replayed action, this also cancels pending clipboard commands
+    /// and insert playback, even when a later view/cursor change returns here.
     pub fn finish_undo_group(&mut self) {
         self.selected_register = None;
         if !self.recorder.stepping {
-            self.cancel_repeat();
+            self.cancel_clipboard_command();
         }
         surround::cancel(self);
         self.search.invalidate();

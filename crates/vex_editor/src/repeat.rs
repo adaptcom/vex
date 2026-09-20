@@ -82,12 +82,30 @@ struct Playback {
 }
 
 #[derive(Debug)]
+struct DeferredClipboard {
+    action: crate::ClipboardAction,
+    command: Option<&'static Command>,
+    count: NonZeroUsize,
+    explicit: bool,
+    character: Option<char>,
+    register: Option<char>,
+    before: Mode,
+    mode: Mode,
+    revision: Revision,
+    view: ViewId,
+    selections: SelectionSet,
+    replaying: bool,
+}
+
+#[derive(Debug)]
 pub(crate) struct Recorder {
     pub session: Session,
     building: Option<Program>,
     depth: usize,
     pub stepping: bool,
     pub service: bool,
+    pub clipboard_requested: Option<crate::ClipboardAction>,
+    awaiting_clipboard: Option<Box<DeferredClipboard>>,
     playback: Option<Playback>,
     deferred: bool,
 }
@@ -100,6 +118,8 @@ impl Recorder {
             depth: 0,
             stepping: false,
             service: false,
+            clipboard_requested: None,
+            awaiting_clipboard: None,
             playback: None,
             deferred: false,
         }
@@ -124,6 +144,8 @@ pub(crate) fn invoke(
     }
     let before = ctx.editor.mode;
     if ctx.editor.recorder.depth == 0 {
+        ctx.editor.recorder.awaiting_clipboard = None;
+        ctx.editor.recorder.clipboard_requested = None;
         let selected = ctx.editor.selected_register.take();
         if ctx.register.is_none() {
             ctx.register = selected;
@@ -133,6 +155,20 @@ pub(crate) fn invoke(
     ctx.editor.recorder.depth += 1;
     let result = run(ctx);
     ctx.editor.recorder.depth -= 1;
+    if result.is_ok()
+        && ctx.editor.recorder.depth == 0
+        && ctx.editor.recorder.clipboard_requested.take().is_some()
+    {
+        if let Some(pending) = &mut ctx.editor.recorder.awaiting_clipboard {
+            pending.command = Some(command);
+            pending.count = ctx.count;
+            pending.explicit = ctx.count_given;
+            pending.character = ctx.character;
+            pending.register = ctx.register;
+            pending.before = before;
+        }
+        return result;
+    }
     if result.is_err()
         || ctx.editor.recorder.depth != 0
         || ctx.editor.recorder.stepping
@@ -141,6 +177,11 @@ pub(crate) fn invoke(
     {
         return result;
     }
+    record(ctx, command, before);
+    result
+}
+
+fn record(ctx: &mut CommandContext<'_>, command: &'static Command, before: Mode) {
     if before != Mode::Insert && ctx.editor.mode == Mode::Insert {
         ctx.editor.recorder.building = Some(Program::default());
     }
@@ -152,6 +193,69 @@ pub(crate) fn invoke(
         if ctx.editor.mode != Mode::Insert {
             ctx.editor.recorder.publish();
         }
+    }
+}
+
+pub(crate) fn request_clipboard(editor: &mut Editor, action: crate::ClipboardAction, count: usize) {
+    editor.recorder.clipboard_requested = Some(action);
+    editor.recorder.awaiting_clipboard = Some(Box::new(DeferredClipboard {
+        action,
+        command: None,
+        count: NonZeroUsize::new(count).unwrap_or(NonZeroUsize::MIN),
+        explicit: false,
+        character: None,
+        register: None,
+        before: editor.mode,
+        mode: editor.mode,
+        revision: editor.document.revision(),
+        view: editor.active_view(),
+        selections: editor.selections.clone(),
+        replaying: editor.recorder.stepping,
+    }));
+}
+
+pub(crate) fn complete_clipboard(
+    editor: &mut Editor,
+    action: crate::ClipboardAction,
+    apply: impl FnOnce(&mut Editor, NonZeroUsize) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let pending = editor
+        .recorder
+        .awaiting_clipboard
+        .take()
+        .ok_or(Error::ClipboardChanged)?;
+    editor.recorder.clipboard_requested = None;
+    if pending.action != action
+        || pending.revision != editor.document.revision()
+        || pending.view != editor.active_view()
+        || pending.mode != editor.mode
+        || pending.selections != editor.selections
+    {
+        editor.cancel_repeat();
+        return Err(Error::ClipboardChanged);
+    }
+    editor.recorder.stepping = pending.replaying;
+    let result = apply(editor, pending.count);
+    editor.recorder.stepping = false;
+    if result.is_err() {
+        editor.cancel_repeat();
+        return result;
+    }
+    if pending.replaying {
+        if let Some(playback) = &mut editor.recorder.playback {
+            playback.revision = editor.document.revision();
+            if playback.remaining == 0 {
+                editor.recorder.playback = None;
+                editor.document.finish_undo_group();
+            }
+        }
+    } else if let Some(command) = pending.command {
+        let mut ctx = CommandContext::new(editor);
+        ctx.count = pending.count;
+        ctx.count_given = pending.explicit;
+        ctx.character = pending.character;
+        ctx.register = pending.register;
+        record(&mut ctx, command, pending.before);
     }
     result
 }
@@ -176,7 +280,7 @@ pub(crate) fn start(ctx: &mut CommandContext<'_>) -> Result<(), Error> {
         view: editor.active_view(),
     });
     if !editor.recorder.deferred {
-        while editor.repeat_pending() {
+        while editor.repeat_ready() {
             editor.advance_repeat(64)?;
         }
     }
@@ -198,9 +302,27 @@ impl Editor {
         self.recorder.playback.is_some()
     }
 
+    /// Playback has runnable work; a frontend service may temporarily suspend it.
+    pub fn repeat_ready(&self) -> bool {
+        self.repeat_pending() && self.recorder.awaiting_clipboard.is_none()
+    }
+
+    pub fn clipboard_command_pending(&self) -> bool {
+        self.recorder.awaiting_clipboard.is_some()
+    }
+
+    pub fn cancel_clipboard_command(&mut self) {
+        self.recorder.awaiting_clipboard = None;
+        self.recorder.clipboard_requested = None;
+        self.cancel_repeat();
+    }
+
     /// Run at most `max_actions` logical actions, yielding after four milliseconds
     /// between actions. An individual command retains its own complexity bounds.
     pub fn advance_repeat(&mut self, max_actions: usize) -> Result<bool, Error> {
+        if self.recorder.awaiting_clipboard.is_some() {
+            return Ok(false);
+        }
         let Some(mut playback) = self.recorder.playback.take() else {
             return Ok(false);
         };
@@ -210,6 +332,10 @@ impl Editor {
             return Err(Error::RepeatChanged);
         }
         let started = Instant::now();
+        // Synchronous replay can be entered from the repeat command wrapper.
+        // Each replayed action still owns its own deferred-service boundary.
+        let outer_depth = self.recorder.depth;
+        self.recorder.depth = 0;
         self.recorder.stepping = true;
         let mut result = Ok(());
         let mut ran = false;
@@ -250,13 +376,16 @@ impl Editor {
                     break;
                 }
             }
-            if started.elapsed() >= Duration::from_millis(4) {
+            if self.recorder.awaiting_clipboard.is_some()
+                || started.elapsed() >= Duration::from_millis(4)
+            {
                 break;
             }
         }
         self.recorder.stepping = false;
+        self.recorder.depth = outer_depth;
         playback.revision = self.document.revision();
-        if playback.remaining != 0 {
+        if playback.remaining != 0 || self.recorder.awaiting_clipboard.is_some() {
             self.recorder.playback = Some(playback);
         }
         if result.is_err() {
@@ -274,6 +403,7 @@ impl Editor {
         if self.recorder.playback.take().is_none() {
             return;
         }
+        self.recorder.awaiting_clipboard = None;
         self.recorder.stepping = true;
         let _ = commands::normal_mode(&mut CommandContext::new(self));
         self.recorder.stepping = false;

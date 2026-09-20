@@ -160,6 +160,7 @@ impl App {
                 self.fail(error);
             }
         }
+        self.apply_application_action();
         self.observe_buffer_revision();
         true
     }
@@ -172,12 +173,13 @@ impl App {
     /// Cooperatively replay before the next event batch, keeping background
     /// services, drawing, resize, and cancellation live during large counts.
     pub(crate) fn advance_repeat(&mut self) -> bool {
-        if !self.editor.repeat_pending() {
+        if !self.editor.repeat_ready() {
             return false;
         }
         self.completion.clear();
         match self.editor.advance_repeat(64) {
             Ok(changed) => {
+                self.apply_application_action();
                 self.observe_buffer_revision();
                 changed
             }
@@ -198,6 +200,15 @@ impl App {
     }
 
     fn handle_event_at(&mut self, event: Event, now: std::time::Instant) -> bool {
+        if self.clipboard_waiting()
+            && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release
+                && matches!(input::key(*key), Some(Key::Escape | Key::Ctrl('c'))))
+        {
+            self.cancel_clipboard();
+            self.keys.cancel(&mut self.editor);
+            self.clear_message();
+            return true;
+        }
         if matches!(event, Event::FocusGained) {
             self.refresh_git();
             self.refresh_status();
@@ -491,8 +502,12 @@ impl App {
 
     fn apply_application_action(&mut self) {
         let result = match self.editor.take_application_action() {
-            Some(ApplicationAction::Clipboard(action, count)) => {
-                self.begin_clipboard(action, count);
+            Some(ApplicationAction::Clipboard(kind, action, count)) => {
+                self.begin_clipboard(kind, action, count);
+                Ok(())
+            }
+            Some(ApplicationAction::ClipboardWrite(kind, text, activate)) => {
+                self.begin_clipboard_search_write(kind, text, activate);
                 Ok(())
             }
             Some(ApplicationAction::SaveSelection) => {
@@ -606,6 +621,11 @@ impl App {
                 self.keys.cache_register_hints(&self.editor);
             }
             if let Some(name) = name {
+                if let Some(kind) = vex_editor::ClipboardKind::from_register(name) {
+                    self.prompt = Some(prompt);
+                    self.begin_prompt_clipboard(kind);
+                    return;
+                }
                 match self.editor.register_first(name) {
                     Ok(Some(value)) => {
                         prompt.input.insert(&value);

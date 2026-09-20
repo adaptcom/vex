@@ -97,6 +97,29 @@ handoff cost, excluding worker wakeup, text capture, clipboard processes, paste
 preparation/application, drawing, and terminal latency. Actual copying remains
 proportional to selected text on the worker.
 
+With clipboard registers and resumable replay integrated, the same Space-y case
+measured 0.208 µs at 1 MiB and 0.204 µs at 100 MiB. The additional request state
+holds command arguments and shared selections, supporting stale-result rejection
+and recording only successful clipboard edits.
+
+The `clipboard_register_schedule_cancel` cases select the entire buffer before
+timing, dispatch a register prefix and command, and then cancel with Escape:
+
+| Buffer | `"+d` cut | `"+c` change | `"+P` paste | `"+n` search |
+|---|---:|---:|---:|---:|
+| 1 MiB | 0.461 µs | 0.452 µs | 0.460 µs | 0.453 µs |
+| 100 MiB | 0.467 µs | 0.447 µs | 0.454 µs | 0.446 µs |
+
+These include opening the bounded register helper, four input events, request
+construction, and cancellation. They exclude drawing the helper, worker wakeup,
+provider processes, selected-text capture, transaction preparation/application,
+search compilation/scanning, and terminal latency. Reproduce both groups with
+`cargo bench -p vex_term --bench rendering --locked -- clipboard --noplot`.
+
+Clipboard replay exposes `repeat_ready()` separately from `repeat_pending()`.
+While a clipboard result is pending, the event loop waits for input/completions
+with its normal deadlines instead of spinning through a zero-duration timeout.
+
 ## Named registers
 
 Recorded on 2026-09-20 with the same optimized profile, including file-name and

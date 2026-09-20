@@ -402,6 +402,8 @@ impl KeyHandler {
             ('#', "Selection indices"),
             ('.', "Current selections"),
             ('%', "Current file name"),
+            ('+', "System clipboard"),
+            ('*', "Primary clipboard"),
         ]
         .into_iter()
         .map(|(key, text)| (key, text.to_owned()))

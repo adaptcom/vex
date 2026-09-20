@@ -526,6 +526,39 @@ def main():
             assert clipboard_path.read_text() == "XXabc"
         print("PASS: background clipboard copy/paste, CRLF, counts, undo, and queued save")
 
+        clipboard_path.write_text("abc")
+        clipboard_file.write_text("old")
+        with Terminal([binary, str(clipboard_path)], env=clipboard_env) as terminal:
+            terminal.start()
+            mark = terminal.send(b'"+cX')
+            terminal.expect(b"INS", mark)
+            mark = terminal.send(b"\x1b")
+            terminal.expect(b"NOR", mark)
+            terminal.send(b"l.uU:wq\r")
+            terminal.finish()
+            assert clipboard_path.read_text() == "XXc"
+            assert clipboard_file.read_text() == "b"
+        clipboard_path.write_text("ab")
+        clipboard_file.write_text("X")
+        with Terminal([binary, str(clipboard_path)], env=clipboard_env) as terminal:
+            terminal.start()
+            mark = terminal.send(b"a\x12+")
+            terminal.expect(b"X", mark)
+            mark = terminal.send(b"\x1b")
+            terminal.expect(b"NOR", mark)
+            clipboard_file.write_text("Y")
+            terminal.send(b"2.:wq\r")
+            terminal.finish()
+            assert clipboard_path.read_text() == "aXYYb"
+        clipboard_path.write_text("cat dog cat dog")
+        clipboard_file.write_text("dog")
+        with Terminal([binary, str(clipboard_path)], env=clipboard_env) as terminal:
+            terminal.start()
+            terminal.send(b'"+2nd:wq\r')
+            terminal.finish()
+            assert clipboard_path.read_text() == "cat dog cat "
+        print("PASS: clipboard registers, delayed changes, live insert replay, search, and queued edits")
+
         register_path = Path(directory) / "registers.txt"
         register_path.write_text("cat")
         with Terminal([binary, str(register_path)]) as terminal:
