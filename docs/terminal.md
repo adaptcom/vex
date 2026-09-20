@@ -191,9 +191,10 @@ encoding. It has no UI framework or Ratatui dependency:
   sleeps on the inbox while idle; terminal events and worker completions wake it.
   Focus gain invalidates the grid; resizing rebuilds it.
 
-The primary cursor changes shape between block and bar. Other cursors and
-selected ranges use cell styles. The status line shows mode, unsaved changes
-(`[+]`), pending keys/count, path, primary position, and a count for multiple
+The primary cursor is a reversed block in normal/select mode and a terminal bar
+in insert mode. The bar preserves the underlying text's syntax colors. Other
+cursors and selected ranges use cell styles. The status line shows mode, unsaved
+changes (`[+]`), pending keys/count, path, primary position, and a count for multiple
 selections. Labels sit within a thin grey border on the normal terminal
 background; all labels are bold, with inactive labels dimmed. Long paths are
 shortened from the left to keep the cursor position visible. Status borders join vertical pane dividers

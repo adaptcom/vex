@@ -33,6 +33,8 @@ pub enum Style {
     Error,
     Selection,
     PrimaryCursor(Option<Highlight>),
+    /// Keep the glyph's colors; the terminal draws the primary insert caret.
+    InsertCursor(Option<Highlight>),
     SecondaryCursor,
     InactiveCursor,
     PickerMatch,
@@ -83,7 +85,9 @@ impl Style {
             Self::Message | Self::PopupTitle => (DarkCyan, Reset),
             Self::Error => (Red, Reset),
             Self::Selection => (Black, Grey),
-            Self::PrimaryCursor(highlight) => highlight.map_or(Self::Text, Self::Syntax).colors(),
+            Self::PrimaryCursor(highlight) | Self::InsertCursor(highlight) => {
+                highlight.map_or(Self::Text, Self::Syntax).colors()
+            }
             Self::SecondaryCursor => (Black, DarkCyan),
             Self::InactiveCursor => (DarkGrey, Reset),
             Self::PickerMatch => (Yellow, Reset),
@@ -162,7 +166,9 @@ impl Frame {
         for cell in &mut self.cells {
             cell.style = match cell.style {
                 Style::Status | Style::StatusLine => Style::InactiveStatus,
-                Style::PrimaryCursor(_) | Style::SecondaryCursor => Style::InactiveCursor,
+                Style::PrimaryCursor(_) | Style::InsertCursor(_) | Style::SecondaryCursor => {
+                    Style::InactiveCursor
+                }
                 other => other,
             };
         }
@@ -411,7 +417,9 @@ mod tests {
             assert!(!output.contains("\x1b[?25h"));
             let frame = renderer.frame(3, 1).unwrap();
             frame.put(0, 0, "a", underlying);
-            frame.put(1, 0, "b", underlying);
+            let caret = Style::InsertCursor(highlight);
+            assert_eq!(caret.colors(), underlying.colors());
+            frame.put(1, 0, "b", caret);
             frame.cursor = Some(Cursor {
                 x: 1,
                 y: 0,
@@ -421,6 +429,7 @@ mod tests {
             renderer.present(&mut bytes).unwrap();
             let output = String::from_utf8(bytes).unwrap();
             assert!(!output.contains("\x1b[7m"));
+            assert!(output.contains("\x1b[6 q"));
             assert!(output.contains("\x1b[?25h"));
         }
         assert_eq!(

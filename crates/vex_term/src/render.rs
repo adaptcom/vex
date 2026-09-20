@@ -152,10 +152,15 @@ pub(crate) fn paint_view(
         .collect::<Result<Vec<_>, _>>()?;
     let style = |position: CharOffset, syntax: Style| {
         if position == primary {
-            return Style::PrimaryCursor(match syntax {
+            let highlight = match syntax {
                 Style::Syntax(highlight) => Some(highlight),
                 _ => None,
-            });
+            };
+            return if editor.mode() == Mode::Insert {
+                Style::InsertCursor(highlight)
+            } else {
+                Style::PrimaryCursor(highlight)
+            };
         }
         if cursors.binary_search(&position).is_ok() {
             return Style::SecondaryCursor;
@@ -623,6 +628,25 @@ mod tests {
             frame.style_at(6, 0),
             Some(Style::PrimaryCursor(Some(Highlight::Keyword)))
         );
+
+        editor.execute("insert_mode", 1).unwrap();
+        let mut frame = render(&editor, 50, 8, &mut Viewport::default());
+        assert_eq!(
+            frame.style_at(5, 0),
+            Some(Style::InsertCursor(Some(Highlight::Keyword)))
+        );
+        assert_eq!(frame.cursor.unwrap().shape, CursorShape::Bar);
+        frame.inactive();
+        assert_eq!(frame.style_at(5, 0), Some(Style::InactiveCursor));
+        assert!(frame.cursor.is_none());
+
+        editor.execute("normal_mode", 1).unwrap();
+        let frame = render(&editor, 50, 8, &mut Viewport::default());
+        assert_eq!(
+            frame.style_at(5, 0),
+            Some(Style::PrimaryCursor(Some(Highlight::Keyword)))
+        );
+        assert_eq!(frame.cursor.unwrap().shape, CursorShape::Block);
     }
 
     #[test]
