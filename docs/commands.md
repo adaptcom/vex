@@ -4,6 +4,8 @@ Generated from command Rustdoc and the default keymap.
 
 | Command | Bindings by mode | Description |
 |---|---|---|
+| `toggle_comments` | Normal: `<Space>c`, Normal: `<C-c>`, Select: `<Space>c`, Select: `<C-c>` | Toggle comments on selected lines, preferring line comments and recognizing existing block comments. Uses language delimiters, skips blank lines, preserves selections and mode, and creates one undo step. |
+| `toggle_block_comments` | Normal: `<Space>C`, Select: `<Space>C` | Toggle block comments around selections, retaining their direction and selecting added delimiters. Languages with only line comments use those instead; plain text defaults to /* */. One undo step, with normal/select mode retained. |
 | `rotate_view` | Normal: `<Space>ww`, Normal: `<Space>w<C-w>`, Normal: `<C-w>w`, Normal: `<C-w><C-w>`, Select: `<Space>ww`, Select: `<Space>w<C-w>`, Select: `<C-w>w`, Select: `<C-w><C-w>` | Focus the next window in layout order. A count advances multiple windows. |
 | `vsplit` | Normal: `<Space>wv`, Normal: `<Space>w<C-v>`, Normal: `<C-w>v`, Normal: `<C-w><C-v>`, Select: `<Space>wv`, Select: `<Space>w<C-v>`, Select: `<C-w>v`, Select: `<C-w><C-v>` | Split the current window vertically, opening a shared view on the right. |
 | `hsplit` | Normal: `<Space>ws`, Normal: `<Space>w<C-s>`, Normal: `<C-w>s`, Normal: `<C-w><C-s>`, Select: `<Space>ws`, Select: `<Space>w<C-s>`, Select: `<C-w>s`, Select: `<C-w><C-s>` | Split the current window horizontally, opening a shared view below. |

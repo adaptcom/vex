@@ -40,6 +40,8 @@ and calls that existing dispatcher.
 | `r<char>` | Replace each selected grapheme with a character; Enter and Tab also work |
 | `>`, `<` | Indent/unindent selected lines, using language defaults and repeat counts |
 | `J` | Join selected lines, or join the next line for a single-line selection |
+| Space-c, Ctrl-c in normal/select mode | Toggle comments using the language's delimiters |
+| Space-C | Toggle block comments; use line comments for languages that only support those |
 | `[Space`, `]Space` | Add empty lines above/below selections, retaining normal/select mode |
 | `o`, `O` | Open lines below/above selections and enter insert mode |
 | Enter in insert mode | Split the line and copy indentation before the caret |
@@ -66,7 +68,7 @@ and calls that existing dispatcher.
 | Escape | Cancel a prefix/picker/prompt; otherwise enter normal mode |
 | `:` in normal/select mode | Open the command prompt |
 | Ctrl-s, Ctrl-q | Save / close the current pane with an unsaved-change check |
-| Ctrl-c | Cancel a prompt or pending command; otherwise return to normal mode |
+| Ctrl-c | Cancel prompts, completion, or pending key sequences; toggle comments in normal/select mode |
 
 See the [editing command reference](commands.md) for exact movement semantics.
 

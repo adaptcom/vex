@@ -21,6 +21,7 @@ use vex_core::{CharOffset, Document, Selection, SelectionSet, grapheme, motion};
 
 pub mod background;
 pub mod commands;
+mod comments;
 mod editing;
 mod error;
 mod keymap;

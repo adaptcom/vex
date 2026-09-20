@@ -204,6 +204,9 @@ impl Default for Keymap {
                 (vec![Char(' '), Char('s')], "symbol_picker"),
                 (vec![Char(' '), Char('S')], "workspace_symbol_picker"),
                 (vec![Char(' '), Char('k')], "hover"),
+                (vec![Char(' '), Char('c')], "toggle_comments"),
+                (vec![Char(' '), Char('C')], "toggle_block_comments"),
+                (vec![Ctrl('c')], "toggle_comments"),
                 (vec![Ctrl('o')], "jump_back"),
                 (vec![Char('g'), Char('d')], "goto_definition"),
                 (vec![Char(']'), Char('d')], "goto_next_diagnostic"),
@@ -373,7 +376,7 @@ impl KeyHandler {
             self.cancel();
         }
         self.mode = Some(editor.mode());
-        if key == Key::Escape {
+        if key == Key::Escape || (key == Key::Ctrl('c') && !self.pending.is_empty()) {
             if !self.pending.is_empty() || self.count.is_some() {
                 self.cancel();
                 return Ok(Dispatch::Ignored);

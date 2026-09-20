@@ -48,6 +48,23 @@ Project/user configuration and indentation detection remain future work.
 Tab in insert mode still inserts a literal tab. Syntax-based indentation is
 not inferred by these settings.
 
+## Comments
+
+`Space-c` and normal/select-mode Ctrl-c toggle comments; `Space-C` requests block
+comments. Rust and JavaScript/TypeScript use `//` and `/* */`; shell uses `#`,
+including for the block command. Markdown toggles `<!-- -->` per selected line
+with `Space-c` or around selections with `Space-C`. Plain text defaults to `#`
+for lines and `/* */` for blocks. Rust recognizes existing `///` and `//!`
+comments as well as block documentation comments.
+
+Line comments share the minimum indentation of the selected nonblank lines;
+overlapping line selections are edited once. Block toggling skips whitespace
+selections and retains existing comments when other selections need commenting.
+Both preserve mode, direction, the primary selection, and one-step undo.
+The implementation inspects rope prefixes and range edges without copying the
+buffer. `cargo bench -p vex_editor --bench commands -- comment_selected_lines_and_undo`
+measures selected-line work in 1 MiB and 100 MiB buffers.
+
 ## Parsing and drawing
 
 `vex_syntax` owns the parser, syntax tree, a shared document snapshot, and a bounded
@@ -150,7 +167,7 @@ smoke test checks idle completion, editing, and undo colors in a real PTY.
 
 The shared registry is [`crates/vex_syntax/src/language.rs`](../crates/vex_syntax/src/language.rs).
 Each `languages!` entry defines names/aliases, extensions, filenames, interpreters,
-LSP language ID, indentation, grammar, ordered highlight queries, and an optional server.
+LSP language ID, indentation, comment delimiters, grammar, ordered highlight queries, and an optional server.
 The macro generates language identities and lookup; query compilation is cached
 once per language. Editor opening, Save As, `:language`, file previews, server
 startup, and completion all use this registry.

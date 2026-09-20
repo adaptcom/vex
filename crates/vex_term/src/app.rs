@@ -268,14 +268,6 @@ impl App {
                                 self.fail(error);
                             }
                         }
-                        Key::Ctrl('c') => {
-                            let pending =
-                                !self.keys.pending_keys().is_empty() || self.keys.count().is_some();
-                            self.keys.cancel();
-                            if !pending && let Err(error) = self.editor.execute("normal_mode", 1) {
-                                self.fail(error);
-                            }
-                        }
                         _ => {
                             if let Err(error) = self.keys.handle(&mut self.editor, key) {
                                 self.fail(error);
@@ -1049,6 +1041,24 @@ mod tests {
         assert!(!app.is_dirty());
         press(&mut app, "i/?nN");
         assert!(app.editor.document().text().to_string().starts_with("/?nN"));
+    }
+
+    #[test]
+    fn control_c_comments_document_text_and_cancels_prefixes_and_prompts() {
+        let mut app = App::from_document(Document::from("let x = 1;\n"), (80, 24));
+        app.editor.set_language(Some(Language::Rust));
+        let control_c = || Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        app.handle(control_c());
+        assert_eq!(app.editor.document().text(), "// let x = 1;\n");
+        press(&mut app, "r");
+        app.handle(control_c());
+        assert_eq!(app.editor.document().text(), "// let x = 1;\n");
+        assert!(app.keys.pending_keys().is_empty());
+        press(&mut app, ":write");
+        app.handle(control_c());
+        assert!(app.prompt.is_none());
+        app.handle(control_c());
+        assert_eq!(app.editor.document().text(), "let x = 1;\n");
     }
 
     #[test]

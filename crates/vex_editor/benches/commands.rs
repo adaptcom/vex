@@ -114,11 +114,31 @@ fn background_search(c: &mut Criterion) {
     group.finish();
 }
 
+fn comments(c: &mut Criterion) {
+    let mut group = c.benchmark_group("comment_selected_lines_and_undo");
+    for bytes in [1 << 20, 100 << 20] {
+        let line = "    let value = 123;\n";
+        let rope = Rope::from_str(&line.repeat(bytes / line.len()));
+        for count in [1, 1_000] {
+            let mut editor = editor(&rope, count);
+            editor.set_language(Some(vex_editor::Language::Rust));
+            group.bench_function(BenchmarkId::new(bytes.to_string(), count), |b| {
+                b.iter(|| {
+                    editor.execute("toggle_comments", 1).unwrap();
+                    editor.execute("undo", 1).unwrap();
+                    black_box(editor.selections());
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = commands, search, background_search
+    targets = commands, search, background_search, comments
 }
 criterion_main!(benches);

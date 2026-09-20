@@ -425,6 +425,12 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
 }
 
 commands! {
+    /// Toggle comments on selected lines, preferring line comments and recognizing existing block comments. Uses language delimiters, skips blank lines, preserves selections and mode, and creates one undo step.
+    fn toggle_comments(ctx) { crate::comments::toggle(ctx.editor, false) }
+
+    /// Toggle block comments around selections, retaining their direction and selecting added delimiters. Languages with only line comments use those instead; plain text defaults to /* */. One undo step, with normal/select mode retained.
+    fn toggle_block_comments(ctx) { crate::comments::toggle(ctx.editor, true) }
+
     /// Focus the next window in layout order. A count advances multiple windows.
     fn rotate_view(ctx) {
         ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::Rotate, ctx.count.get()));

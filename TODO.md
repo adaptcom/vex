@@ -3,9 +3,11 @@
 ## Editing priorities
 
 Ordered by everyday usefulness and dependencies after the shared internal yank
-register, `y`/`p`/`P`/`R`, and cut behavior for `d`/`c`. Bindings follow the
-[Helix keymap](https://docs.helix-editor.com/keymap.html); compatibility differences
-should be deliberate and documented. Alt bindings are deferred for now.
+register, `y`/`p`/`P`/`R`, and cut behavior for `d`/`c`. Bindings must follow the
+[Helix keymap](https://docs.helix-editor.com/keymap.html) rather than Vim.
+The current goal includes previously held
+items and Alt bindings. Keep editing work proportional to affected text and
+selections, and measure operations that could affect input latency.
 
 1. [x] Selection controls: `%` select all, `;` collapse, `,` keep primary, `X`
    extend to line boundaries, and `_` trim whitespace. Make repeated `x` extend
@@ -15,9 +17,8 @@ should be deliberate and documented. Alt bindings are deferred for now.
    counts or cancellation.
 3. [x] Everyday edits: `I`, `A`, `r`, `>`, `<`, `J`, and `[Space`/`]Space`.
    Add language indentation settings for indent/unindent.
-4. [ ] (Hold for now) Comments: `<space>c` and `<space>C`, with language-specific line/block
-   delimiters. Decide whether normal-mode Ctrl-c should keep its current cancel
-   behavior or adopt Helix's comment binding.
+4. [x] Comments: `<space>c`, `<space>C`, and normal/select-mode Ctrl-c, with
+   language-specific line/block delimiters. Pending commands retain cancellation.
 5. [ ] Multiple selections and search: `s`, `S`, `C`, `K`, `*`, regex `/`/`?`,
    and accumulating matches with `n`/`N` in select mode. Move the current `K`
    hover alias if it is needed for selection filtering; `<space>k` already works.
@@ -27,7 +28,7 @@ should be deliberate and documented. Alt bindings are deferred for now.
    when switching files.
 7. [ ] Match mode: `mm`, `mi`/`ma` textobjects for words, paragraphs, and paired
    delimiters, followed by `ms`/`mr`/`md` surrounds.
-8. [ ] (Hold for now) Repeat the last insert with `.`. Record logical editing actions, including
+8. [ ] Repeat the last insert with `.`. Record logical editing actions, including
    counted commands and completion, so replay stays independent of terminal input.
 
 ## Registers and input follow-ups
@@ -95,7 +96,7 @@ should be deliberate and documented. Alt bindings are deferred for now.
   insert undo checkpoints. Ctrl-s currently saves in insert mode.
 - [ ] Label-based word navigation (`gw`); debugger integration is a separate,
   lower-priority project.
-- [ ] Deferred Alt support: represent modifiers in the key model and terminal
+- [ ] Alt support: represent modifiers in the key model and terminal
   adapter, then add selection reversal, splitting/merging/filtering, cursor-above,
   syntax expansion/siblings, non-yanking deletion, motion repeat, and related
   picker/insert/prompt variants.

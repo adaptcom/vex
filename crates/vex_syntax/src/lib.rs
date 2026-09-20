@@ -5,7 +5,7 @@
 //! Highlight queries use byte ranges and return non-overlapping semantic spans.
 
 mod language;
-pub use language::{IndentStyle, Indentation, Language, LanguageServer};
+pub use language::{Comments, IndentStyle, Indentation, Language, LanguageServer};
 
 use std::{
     cell::Cell,

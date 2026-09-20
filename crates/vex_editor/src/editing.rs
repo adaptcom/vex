@@ -29,7 +29,7 @@ fn line_range(text: &Rope, selection: Selection) -> Range<usize> {
 
 // Selections are sorted, but their line ranges can overlap. Merge intervals
 // before walking lines so multi-cursor edits never touch a line twice.
-fn line_ranges(editor: &Editor, join: bool) -> Vec<Range<usize>> {
+pub(super) fn line_ranges(editor: &Editor, join: bool) -> Vec<Range<usize>> {
     let text = editor.document.text();
     let mut ranges: Vec<Range<usize>> = Vec::new();
     for &selection in editor.selections.ranges() {
