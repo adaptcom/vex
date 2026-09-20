@@ -539,6 +539,16 @@ def main():
             assert register_path.read_text() == "cacatt"
         print("PASS: named register, discard deletion, insert Ctrl-r, and queued save")
 
+        register_path.write_text("cat dog cat dog")
+        with Terminal([binary, str(register_path)]) as terminal:
+            terminal.start()
+            mark = terminal.send(b'"a/dog\rn"bd:w\r')
+            terminal.expect(b"wrote", mark)
+            terminal.send(b":\x12:\r:q\r")
+            terminal.finish()
+            assert register_path.read_text() == "cat dog cat "
+        print("PASS: named search register, queued repeat/cut, and last-command insertion")
+
         with Terminal([binary]) as terminal:
             terminal.start()
             mark = terminal.send(b"i")

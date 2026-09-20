@@ -53,7 +53,15 @@ pub type SearchCancellation = crate::background::Cancellation;
 #[derive(Debug)]
 enum Pattern {
     Text(Arc<str>),
-    Compiled(Arc<Regex>),
+    Selection,
+    Compiled(Arc<CompiledPattern>),
+}
+
+#[derive(Debug)]
+struct CompiledPattern {
+    text: Arc<str>,
+    regex: Regex,
+    crlf: bool,
 }
 
 #[derive(Debug)]
@@ -97,9 +105,9 @@ enum Work {
 enum Outcome {
     SurroundPreview(crate::surround::Resolved),
     Edit(vex_core::Transaction),
-    Search(Arc<Regex>, Option<SelectionSet>),
+    Search(Arc<CompiledPattern>, Option<SelectionSet>),
     Selections(SelectionSet),
-    Remember(Arc<Regex>),
+    Remember(Arc<CompiledPattern>),
 }
 
 /// Owned, Send text-search or selection-scan work. No mutable editor state
@@ -218,13 +226,24 @@ impl SearchJob {
                 crlf,
             } => {
                 let pattern = match pattern {
-                    Pattern::Text(text) => compile(&text, crlf)?,
+                    Pattern::Text(text) => compile(text, crlf)?,
+                    Pattern::Selection => {
+                        let selection = self.origins.ranges()[0];
+                        let text = self
+                            .snapshot
+                            .text()
+                            .slice(selection.start().0..selection.end().0);
+                        if text.len_bytes() > vex_core::regex::MAX_PATTERN_BYTES {
+                            return Err(Error::InvalidRegex("regex exceeds 64 KiB".into()));
+                        }
+                        compile(Arc::from(text.to_string()), crlf)?
+                    }
                     Pattern::Compiled(pattern) => pattern,
                 };
                 matching::apply(
                     self.snapshot.text(),
                     &self.origins,
-                    &pattern,
+                    &pattern.regex,
                     operation,
                     count,
                     extend,
@@ -239,7 +258,7 @@ impl SearchJob {
                     boundaries,
                     &cancelled,
                 )?;
-                compile(&query, crlf).map(Outcome::Remember)
+                compile(query.into(), crlf).map(Outcome::Remember)
             }
             Work::CopyLines { count, down, tabs } => {
                 let document = vex_core::Document::from(self.snapshot.text().clone());
@@ -273,7 +292,7 @@ enum Kind {
     Repeat,
     CopyLines,
     Textobject,
-    Remember,
+    Remember(char),
 }
 
 #[derive(Debug)]
@@ -289,7 +308,7 @@ struct Pending {
 
 #[derive(Debug, Default)]
 pub(crate) struct Search {
-    accepted: Option<Arc<Regex>>,
+    accepted: Option<Arc<CompiledPattern>>,
     pub preview: Option<Preview>,
     pub background: bool,
     pub outgoing: Option<SearchJob>,
@@ -309,7 +328,7 @@ impl Search {
                     | Kind::SurroundEdit
                     | Kind::CopyLines
                     | Kind::Textobject
-                    | Kind::Remember
+                    | Kind::Remember(_)
                     | Kind::Preview { accept: true }
             )
         })
@@ -382,7 +401,8 @@ pub(crate) struct Preview {
     revision: Revision,
     mode: Mode,
     count: usize,
-    pattern: Option<Arc<Regex>>,
+    pattern: Option<Arc<CompiledPattern>>,
+    register: char,
     pub operation: SearchPrompt,
     pub error: Option<Error>,
     pub status: SearchStatus,
@@ -394,6 +414,8 @@ pub(crate) fn begin(ctx: &mut CommandContext<'_>, operation: SearchPrompt) -> Re
         return Err(Error::SearchActive);
     }
     require_normal_or_select(editor)?;
+    let register = ctx.register.unwrap_or('/');
+    crate::register::writable(register)?;
     editor.finish_undo_group();
     editor.search.preview = Some(Preview {
         origin: editor.selections.clone(),
@@ -402,6 +424,7 @@ pub(crate) fn begin(ctx: &mut CommandContext<'_>, operation: SearchPrompt) -> Re
         mode: editor.mode,
         count: ctx.count.get(),
         pattern: None,
+        register,
         operation,
         error: None,
         status: SearchStatus::Empty,
@@ -649,6 +672,12 @@ pub(crate) fn apply_result(
         }
         Ok(Outcome::Search(pattern, selections)) => (pattern, selections),
         Ok(Outcome::Remember(pattern)) => {
+            let Kind::Remember(register) = pending.kind else {
+                unreachable!("remember request")
+            };
+            editor
+                .yank_register
+                .remember_search(register, pattern.text.clone(), true)?;
             editor.search.accepted = Some(pattern);
             return Ok(SearchCompletion::Navigation);
         }
@@ -691,13 +720,14 @@ pub(crate) fn apply_result(
             Ok(SearchCompletion::Preview)
         }
         Kind::Repeat => {
+            editor.search.accepted = Some(pattern);
             editor.selections = selections.ok_or(Error::NoMatch)?;
             editor.preferred_columns = None;
             Ok(SearchCompletion::Navigation)
         }
         Kind::CopyLines
         | Kind::Textobject
-        | Kind::Remember
+        | Kind::Remember(_)
         | Kind::SurroundPrepare
         | Kind::SurroundEdit => unreachable!("handled above"),
     }
@@ -721,6 +751,15 @@ pub(crate) fn accept(editor: &mut Editor) -> Result<(), Error> {
         SearchStatus::NoMatch => Err(Error::NoMatch),
         SearchStatus::Match => {
             let preview = editor.search.preview.take().unwrap();
+            let pattern = preview.pattern.as_ref().expect("matched pattern");
+            editor.yank_register.remember_search(
+                preview.register,
+                pattern.text.clone(),
+                matches!(
+                    preview.operation,
+                    SearchPrompt::Forward | SearchPrompt::Backward
+                ),
+            )?;
             editor.search.accepted = preview.pattern;
             Ok(())
         }
@@ -742,33 +781,51 @@ pub(crate) fn repeat(ctx: &mut CommandContext<'_>, reverse: bool) -> Result<(), 
         return Err(Error::SearchActive);
     }
     require_normal_or_select(editor)?;
-    let pattern = Arc::clone(editor.search.accepted.as_ref().ok_or(Error::NoSearch)?);
+    let register = ctx
+        .register
+        .unwrap_or_else(|| editor.yank_register.last_search());
+    let pattern = if register == '.' {
+        // Capturing a potentially large dynamic register belongs on the worker.
+        Pattern::Selection
+    } else {
+        let text = editor.register_first(register)?.ok_or(Error::NoSearch)?;
+        match editor.search.accepted.as_ref() {
+            Some(pattern)
+                if Arc::ptr_eq(&pattern.text, &text)
+                    && pattern.crlf == (editor.newline == "\r\n") =>
+            {
+                Pattern::Compiled(pattern.clone())
+            }
+            _ => Pattern::Text(text),
+        }
+    };
     let operation = if reverse {
         SearchPrompt::Backward
     } else {
         SearchPrompt::Forward
     };
     editor.finish_undo_group();
-    schedule(
-        editor,
-        Pattern::Compiled(pattern),
-        operation,
-        ctx.count.get(),
-        Kind::Repeat,
-    )
+    schedule(editor, pattern, operation, ctx.count.get(), Kind::Repeat)
 }
 
-fn compile(query: &str, crlf: bool) -> Result<Arc<Regex>, Error> {
-    Regex::new(
-        query,
+fn compile(query: Arc<str>, crlf: bool) -> Result<Arc<CompiledPattern>, Error> {
+    if query.len() > vex_core::regex::MAX_PATTERN_BYTES {
+        return Err(Error::InvalidRegex("regex exceeds 64 KiB".into()));
+    }
+    let regex = Regex::new(
+        &query,
         Options {
             case_insensitive: !query.chars().any(char::is_uppercase),
             multi_line: true,
             crlf,
         },
     )
-    .map(Arc::new)
-    .map_err(|error| Error::InvalidRegex(error.to_string()))
+    .map_err(|error| Error::InvalidRegex(error.to_string()))?;
+    Ok(Arc::new(CompiledPattern {
+        text: query,
+        regex,
+        crlf,
+    }))
 }
 
 pub(crate) fn remember(ctx: &mut CommandContext<'_>, boundaries: bool) -> Result<(), Error> {
@@ -777,6 +834,8 @@ pub(crate) fn remember(ctx: &mut CommandContext<'_>, boundaries: bool) -> Result
     if editor.search.preview.is_some() {
         return Err(Error::SearchActive);
     }
+    let register = ctx.register.unwrap_or('/');
+    crate::register::writable(register)?;
     editor.finish_undo_group();
     dispatch(
         editor,
@@ -784,7 +843,7 @@ pub(crate) fn remember(ctx: &mut CommandContext<'_>, boundaries: bool) -> Result
             boundaries,
             crlf: editor.newline == "\r\n",
         },
-        Kind::Remember,
+        Kind::Remember(register),
     )
 }
 
@@ -805,6 +864,192 @@ mod tests {
         editor.set_background_search(true);
         editor.execute("search_forward", 1).unwrap();
         editor
+    }
+
+    fn registered(editor: &mut Editor, name: char, command: &str) -> Result<(), Error> {
+        let mut context = CommandContext::new(editor);
+        context.register = Some(name);
+        (commands::find(command).unwrap().run)(&mut context)
+    }
+
+    #[test]
+    fn search_registers_share_queries_and_follow_later_writes_without_reusing_stale_patterns() {
+        let mut source = Editor::new(Document::from("cat dog cat dog"));
+        source.execute("search_forward", 1).unwrap();
+        source.update_search("dog").unwrap();
+        source.execute("search_accept", 1).unwrap();
+        assert_eq!(source.register_first('/').unwrap().as_deref(), Some("dog"));
+        registered(&mut source, 'a', "search_forward").unwrap();
+        source.update_search("cat").unwrap();
+        source.execute("search_accept", 1).unwrap();
+        assert_eq!(source.register_first('/').unwrap().as_deref(), Some("dog"));
+        assert_eq!(source.register_first('a').unwrap().as_deref(), Some("cat"));
+
+        let mut target =
+            Editor::with_session(Document::from("x cat dog cat dog"), source.session());
+        target.execute("search_next", 1).unwrap();
+        assert_eq!(target.selections.primary(), range(2, 5));
+        let cached = target.search.accepted.clone().unwrap();
+        target.execute("search_next", 1).unwrap();
+        assert!(Arc::ptr_eq(
+            &cached,
+            target.search.accepted.as_ref().unwrap()
+        ));
+        assert_eq!(target.selections.primary(), range(10, 13));
+
+        registered(&mut target, '/', "search_next").unwrap();
+        assert_eq!(target.selections.primary(), range(14, 17));
+        target.execute("search_next", 1).unwrap(); // Still uses a.
+        assert_eq!(target.selections.primary(), range(2, 5));
+        source
+            .set_register('a', Arc::from([Arc::from("dog")]))
+            .unwrap();
+        target.execute("search_next", 1).unwrap();
+        assert_eq!(target.selections.primary(), range(6, 9));
+        assert!(!Arc::ptr_eq(
+            &cached,
+            target.search.accepted.as_ref().unwrap()
+        ));
+    }
+
+    #[test]
+    fn accepting_and_cancelling_worker_previews_update_only_the_chosen_register() {
+        let mut editor = Editor::new(Document::from("x cat dog cat"));
+        editor.set_background_search(true);
+        editor
+            .set_register('a', Arc::from([Arc::from("old")]))
+            .unwrap();
+        registered(&mut editor, 'a', "search_forward").unwrap();
+        editor.update_search("cat").unwrap();
+        let stale = editor.take_search_job().unwrap().run().unwrap();
+        editor.execute("search_cancel", 1).unwrap();
+        assert_eq!(
+            editor.apply_search_result(stale).unwrap(),
+            SearchCompletion::Ignored
+        );
+        assert_eq!(editor.register_first('a').unwrap().as_deref(), Some("old"));
+        registered(&mut editor, 'a', "search_forward").unwrap();
+        editor.update_search("cat").unwrap();
+        editor.execute("search_accept", 1).unwrap();
+        assert_eq!(editor.register_first('a').unwrap().as_deref(), Some("old"));
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        assert_eq!(
+            editor.apply_search_result(result).unwrap(),
+            SearchCompletion::Accepted
+        );
+        assert_eq!(editor.register_first('a').unwrap().as_deref(), Some("cat"));
+        assert!(editor.register_first('/').unwrap().is_none());
+        registered(&mut editor, 'a', "search_forward").unwrap();
+        editor.update_search("[").unwrap();
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        assert!(editor.apply_search_result(result).is_err());
+        assert_eq!(editor.register_first('a').unwrap().as_deref(), Some("cat"));
+        editor.execute("search_cancel", 1).unwrap();
+        for name in ['#', '.', '%'] {
+            assert_eq!(
+                registered(&mut editor, name, "search_forward"),
+                Err(Error::ReadOnlyRegister(name))
+            );
+            assert_eq!(
+                registered(&mut editor, name, "search_selection"),
+                Err(Error::ReadOnlyRegister(name))
+            );
+            assert!(editor.search.preview.is_none());
+            assert!(editor.take_search_job().is_none());
+        }
+    }
+
+    #[test]
+    fn selection_queries_keep_custom_search_choice_and_star_can_activate_it() {
+        let mut editor = Editor::new(Document::from("cat a.b cat a.b"));
+        registered(&mut editor, 'a', "search_forward").unwrap();
+        editor.update_search("cat").unwrap();
+        editor.execute("search_accept", 1).unwrap();
+        editor.execute("select_all", 1).unwrap();
+        registered(&mut editor, 'b', "select_regex").unwrap();
+        editor.update_search(r"a\.b").unwrap();
+        editor.execute("search_accept", 1).unwrap();
+        assert_eq!(
+            editor.register_first('b').unwrap().as_deref(),
+            Some(r"a\.b")
+        );
+        assert_eq!(editor.yank_register.last_search(), 'a');
+        registered(&mut editor, 'c', "search_selection").unwrap();
+        assert_eq!(editor.yank_register.last_search(), 'c');
+        assert!(
+            editor
+                .register_first('c')
+                .unwrap()
+                .unwrap()
+                .contains(r"a\.b")
+        );
+        assert_eq!(editor.register_first('a').unwrap().as_deref(), Some("cat"));
+    }
+
+    #[test]
+    fn register_queries_compile_on_worker_with_destination_line_endings_and_cancel() {
+        let mut editor = Editor::new(Document::from("x\r\ncat\r\ncat\r\n"));
+        editor.set_background_search(true);
+        editor
+            .set_register('a', Arc::from([Arc::from("cat$")]))
+            .unwrap();
+        registered(&mut editor, 'a', "search_next").unwrap();
+        let job = editor.take_search_job().unwrap();
+        assert!(matches!(
+            &job.work,
+            Work::Search {
+                pattern: Pattern::Text(_),
+                crlf: true,
+                ..
+            }
+        ));
+        editor
+            .set_register('a', Arc::from([Arc::from("x")]))
+            .unwrap();
+        editor.apply_search_result(job.run().unwrap()).unwrap();
+        assert_eq!(editor.selections.primary(), range(3, 6));
+        registered(&mut editor, 'a', "search_next").unwrap();
+        let job = editor.take_search_job().unwrap();
+        editor.execute("move_left", 1).unwrap();
+        assert!(job.run().is_none());
+
+        editor
+            .set_selections(SelectionSet::single(range(3, 6)))
+            .unwrap();
+        registered(&mut editor, '.', "search_next").unwrap();
+        let job = editor.take_search_job().unwrap();
+        assert!(matches!(
+            &job.work,
+            Work::Search {
+                pattern: Pattern::Selection,
+                ..
+            }
+        ));
+        editor.apply_search_result(job.run().unwrap()).unwrap();
+        assert_eq!(editor.selections.primary(), range(8, 11));
+    }
+
+    #[test]
+    fn oversized_dynamic_queries_reject_on_worker_before_capturing_selection_text() {
+        let mut editor = Editor::new(Document::from("x".repeat(1 << 20).as_str()));
+        editor.set_background_search(true);
+        editor.execute("select_all", 1).unwrap();
+        registered(&mut editor, '.', "search_next").unwrap();
+        let origin = editor.selections.clone();
+        let job = editor.take_search_job().unwrap();
+        assert!(matches!(
+            &job.work,
+            Work::Search {
+                pattern: Pattern::Selection,
+                ..
+            }
+        ));
+        assert_eq!(
+            editor.apply_search_result(job.run().unwrap()),
+            Err(Error::InvalidRegex("regex exceeds 64 KiB".into()))
+        );
+        assert_eq!(editor.selections, origin);
+        assert!(!editor.search_waiting());
     }
 
     #[test]

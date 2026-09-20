@@ -13,7 +13,8 @@ use regex_automata::{
 };
 use std::{fmt, ops::Range};
 
-const MAX_PATTERN_BYTES: usize = 64 << 10;
+/// Bound used before copying a dynamic pattern from a document snapshot.
+pub const MAX_PATTERN_BYTES: usize = 64 << 10;
 const NFA_LIMIT: usize = 8 << 20;
 const DFA_LIMIT: usize = 1 << 20;
 

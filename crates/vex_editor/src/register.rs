@@ -20,7 +20,22 @@ type Fragments = RegisterValues;
 /// A standalone [`Editor::new`] starts with its own empty register.
 #[derive(Clone, Debug, Default)]
 pub struct YankRegister {
-    values: Arc<Mutex<BTreeMap<char, Fragments>>>,
+    values: Arc<Mutex<StoredRegisters>>,
+}
+
+#[derive(Debug)]
+struct StoredRegisters {
+    values: BTreeMap<char, Fragments>,
+    last_search: char,
+}
+
+impl Default for StoredRegisters {
+    fn default() -> Self {
+        Self {
+            values: BTreeMap::new(),
+            last_search: '/',
+        }
+    }
 }
 
 impl YankRegister {
@@ -32,6 +47,7 @@ impl YankRegister {
         self.values
             .lock()
             .expect("register lock")
+            .values
             .get(&name)
             .cloned()
             .unwrap_or_default()
@@ -42,8 +58,30 @@ impl YankRegister {
             self.values
                 .lock()
                 .expect("register lock")
+                .values
                 .insert(name, values);
         }
+    }
+
+    pub(crate) fn last_search(&self) -> char {
+        self.values.lock().expect("register lock").last_search
+    }
+
+    pub(crate) fn remember_search(
+        &self,
+        name: char,
+        query: Arc<str>,
+        activate: bool,
+    ) -> Result<(), Error> {
+        writable(name)?;
+        let mut stored = self.values.lock().expect("register lock");
+        if name != '_' {
+            stored.values.insert(name, Arc::from([query]));
+        }
+        if activate {
+            stored.last_search = name;
+        }
+        Ok(())
     }
 }
 
@@ -67,7 +105,7 @@ pub(crate) fn capture_for(editor: &Editor, name: char) -> Result<Fragments, Erro
 impl Editor {
     /// Read a named register. Uppercase names are independent of lowercase.
     /// Dynamic registers return current selection indices (#) or text (.).
-    /// Frontends resolve file names (%) and platform clipboard registers (+/*).
+    /// Frontends supply a display name (%) and resolve clipboard registers (+/*).
     pub fn register(&self, name: char) -> Result<RegisterValues, Error> {
         Ok(match name {
             '_' => Arc::from([]),
@@ -75,7 +113,8 @@ impl Editor {
                 .map(|index| Arc::from(index.to_string()))
                 .collect(),
             '.' => capture(self),
-            '%' | '+' | '*' => return Err(Error::ExternalRegister(name)),
+            '%' => Arc::from([self.display_name.clone()]),
+            '+' | '*' => return Err(Error::ExternalRegister(name)),
             '"' => self.yank_register.read(),
             _ => self.yank_register.read_named(name),
         })
@@ -87,9 +126,18 @@ impl Editor {
         Ok(())
     }
 
+    /// Set the buffer's display name for `%`, without accessing the filesystem.
+    /// Frontends update this after opening a file or successfully saving as one.
+    pub fn set_display_name(&mut self, name: Arc<str>) {
+        self.display_name = name;
+    }
+
     /// Read only the first fragment for a prompt. In particular, `.` does not
     /// copy every selected range when the caller needs just one.
     pub fn register_first(&self, name: char) -> Result<Option<Arc<str>>, Error> {
+        if name == '%' {
+            return Ok(Some(self.display_name.clone()));
+        }
         if name == '.' {
             let selection = self.selections.ranges()[0];
             return Ok(Some(Arc::from(
@@ -118,6 +166,7 @@ impl Editor {
     pub fn register_previews(&self) -> Vec<(char, String)> {
         let values = self.yank_register.values.lock().expect("register lock");
         values
+            .values
             .iter()
             .take(64)
             .map(|(&name, fragments)| {

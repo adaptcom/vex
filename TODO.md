@@ -43,9 +43,10 @@ selections, and measure operations that could affect input latency.
   worker, preserving fragment boundaries, input order, cancellation, and undo.
 - [ ] Named registers with `"<register>` and insert/prompt Ctrl-r. Preserve
   fragment boundaries when copying between editor selections.
-  Ordinary named registers, `_`/`#`/`.`, prompt/picker insertion, and insert
-  repeat are implemented. Finish `%`/`+`/`*` frontend integration and automatic
-  `/`/`:` registers, including searching with a chosen register.
+  Ordinary names, `_`/`#`/`.`/`%`, automatic `/`/`:` registers, prompt/picker
+  insertion, insert repeat, and searching with a chosen register are implemented.
+  Finish `+`/`*` clipboard-register integration, including insert/prompt reads
+  and cuts/changes through the background worker.
 - [x] Insert-mode word deletion and line kills: Ctrl-w, Ctrl-u, Ctrl-k, plus
   Ctrl-d/Ctrl-j aliases for Delete/Enter.
 - [ ] Prompt history, command/path completion, word movement, and line kills.

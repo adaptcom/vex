@@ -82,6 +82,7 @@ impl App {
 
     fn new(document: Document, files: FileState, size: (u16, u16)) -> Self {
         let mut editor = Editor::new(document);
+        editor.set_display_name(files.display_name());
         editor.set_language(Language::detect(files.path(), editor.document().text()));
         let windows = windows::State::new(&editor);
         Self {
@@ -331,6 +332,9 @@ impl App {
         if text.is_empty() {
             return Ok(());
         }
+        self.editor
+            .set_register(':', std::sync::Arc::from([std::sync::Arc::from(text)]))
+            .map_err(io::Error::other)?;
         let split = text.find(char::is_whitespace).unwrap_or(text.len());
         let (name, argument) = text.split_at(split);
         let force = name.ends_with('!');
@@ -796,6 +800,7 @@ commands! {
         app.check_save_target(argument)?;
         app.editor.finish_undo_group();
         let bytes = app.files.save(app.editor.document(), if argument.is_empty() { None } else { Some(Path::new(argument)) }, force)?;
+        app.editor.set_display_name(app.files.display_name());
         if app.automatic_language {
             let language = Language::detect(app.files.path(), app.editor.document().text());
             if language != app.editor.language() { app.editor.set_language(language); }
@@ -1465,6 +1470,60 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         assert!(app.prompt.is_none());
         assert_eq!(app.editor.document().text(), "find cat");
+    }
+
+    #[test]
+    fn file_and_command_registers_follow_save_as_switching_and_prompt_insertion() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.txt");
+        let second = directory.path().join("second.txt");
+        let mut app = App::from_document(Document::from("abc"), (80, 24));
+        assert_eq!(
+            app.editor.register_first('%').unwrap().as_deref(),
+            Some("[scratch]")
+        );
+        let save = format!("w {}", first.display());
+        app.execute(&save).unwrap();
+        assert_eq!(
+            app.editor.register_first('%').unwrap().unwrap().as_ref(),
+            first.to_str().unwrap()
+        );
+        assert_eq!(
+            app.editor.register_first(':').unwrap().as_deref(),
+            Some(save.as_str())
+        );
+        app.execute(&format!("w {}", second.display())).unwrap();
+        assert_eq!(
+            app.editor.register_first('%').unwrap().unwrap().as_ref(),
+            second.to_str().unwrap()
+        );
+        app.execute(&format!("vsplit {}", first.display())).unwrap();
+        assert_eq!(
+            app.editor.register_first('%').unwrap().unwrap().as_ref(),
+            first.to_str().unwrap()
+        );
+        app.execute("jump_view_left").unwrap();
+        assert_eq!(
+            app.editor.register_first('%').unwrap().unwrap().as_ref(),
+            second.to_str().unwrap()
+        );
+        let ctrl_r = || Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        press(&mut app, ":");
+        app.handle(ctrl_r());
+        press(&mut app, ":");
+        assert_eq!(app.prompt.as_ref().unwrap().input.text(), "jump_view_left");
+        key(&mut app, KeyCode::Esc);
+        press(&mut app, "i");
+        app.handle(ctrl_r());
+        press(&mut app, "%");
+        assert_eq!(app.editor.mode(), Mode::Insert);
+        assert_eq!(
+            app.editor.document().text().to_string(),
+            format!("{}abc", second.display())
+        );
+        key(&mut app, KeyCode::Esc);
+        press(&mut app, "u");
+        assert_eq!(app.editor.document().text(), "abc");
     }
 
     #[test]

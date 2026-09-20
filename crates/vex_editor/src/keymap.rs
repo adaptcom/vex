@@ -401,6 +401,7 @@ impl KeyHandler {
             ('_', "Discard values"),
             ('#', "Selection indices"),
             ('.', "Current selections"),
+            ('%', "Current file name"),
         ]
         .into_iter()
         .map(|(key, text)| (key, text.to_owned()))

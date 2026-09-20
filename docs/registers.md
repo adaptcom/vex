@@ -32,11 +32,23 @@ The boxed register helper shows short previews while collecting the name.
 | `_` | Discard writes; pasting does nothing |
 | `#` | Current selection indices, starting at 1; read-only |
 | `.` | Current selection contents; read-only |
+| `%` | Current file name, or `[scratch]`; read-only |
+| `/` | Last accepted search, unless a different register was chosen |
+| `:` | Last submitted nonempty colon command |
 
-The `%`, `+`, and `*` special registers still need frontend integration and
-currently return an error. Use [Space clipboard commands](clipboard.md) for
-system clipboard access. Automatic search/command registers (`/` and `:`) and
-searching with a chosen register are also tracked in [TODO](../TODO.md).
+`"a/` or `"a?` stores an accepted search in `a`. `"an` and `"aN` search with
+the first fragment of `a` as a regex. Plain `n`/`N` use the register from the
+last accepted `/`/`?` or `*`, including after switching buffers. Updating that
+register changes subsequent searches; a one-command `"an` override leaves the
+active search register unchanged. `s`/`S`/`K` store accepted queries in the chosen
+register (default `/`) without changing which register is active. Cancelled or
+invalid prompts leave stored queries intact.
+
+Ctrl-r `%`, `/`, or `:` inserts the file name, saved search, or command just
+like an ordinary register. The file-name value follows successful save-as and
+buffer switching. Clipboard registers `+` and `*` still need frontend integration
+and currently return an error; use [Space clipboard commands](clipboard.md).
+That remaining integration is tracked in [TODO](../TODO.md).
 
 Stored fragments are immutable and shared across buffers without text copies.
 Undo/redo and closing the source buffer do not rewind or discard registers.
@@ -49,3 +61,5 @@ Commands are ordinary documented functions (`select_register`, `insert_register`
 `yank`, etc.). Embedders can read or write `RegisterValues` through
 `Editor::register` and `Editor::set_register`, and can pass an explicit register
 in `CommandContext`. Use `Editor::with_session` to share registers across buffers.
+The frontend supplies the file name with `Editor::set_display_name`; the core
+does not resolve paths or perform filesystem I/O when reading `%`.

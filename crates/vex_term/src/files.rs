@@ -62,6 +62,13 @@ impl FileState {
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
+
+    pub fn display_name(&self) -> std::sync::Arc<str> {
+        self.path().map_or_else(
+            || "[scratch]".into(),
+            |path| path.to_string_lossy().as_ref().into(),
+        )
+    }
     /// Resolved absolute path, also used as the language server's file identity.
     pub fn target(&self) -> Option<&Path> {
         self.target.as_deref()

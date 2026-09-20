@@ -51,10 +51,22 @@ Search changes neither document text nor revision, dirty state, or undo history.
 Beginning a search closes a typing undo group. Accepted queries are reusable after
 edits and undo; matches are computed against the current snapshot.
 
+Accepted queries are stored in [registers](registers.md). `/` is the default;
+`"a/` uses `a`. `n`/`N` read the last active search register across buffers,
+and `"an`/`"aN` override it for one command. Changing a register's contents
+changes the next search. `*` writes to the chosen register and makes it active;
+selection prompts `s`/`S`/`K` write their queries without changing the active
+register. Ctrl-r followed by a register name inserts its first fragment into
+the search prompt and updates the preview.
+
 ## Worker integration
 
 Regex compilation, matching, selection splitting/filtering, `*`, and `C` scans
 run on the shared search worker. Typing a newer query cancels the old request.
+Each buffer caches its last compiled query by immutable text identity and line
+ending mode, so ordinary `n`/`N` reuse it without recompiling or comparing long
+strings. A changed query compiles on the worker. Searching with `".n` also
+captures the first selected range there, checking the 64 KiB limit before copying.
 Enter can arrive before a result; subsequent editing keys wait for completion.
 Resize/focus events continue to work. Escape or Ctrl-c cancels when it is the next
 queued key, preserving the order of preceding edits.

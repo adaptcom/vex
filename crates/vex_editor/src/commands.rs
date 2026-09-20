@@ -749,10 +749,10 @@ commands! {
         Ok(())
     }
 
-    /// Begin a forward regex search after the primary selection. Matches wrap; counts select successive matches, and select mode adds them.
+    /// Begin a forward regex search after the primary selection. Matches wrap; counts select successive matches, and select mode adds them. Acceptance stores the query in the chosen register (default: /) and makes it active for n/N across buffers.
     fn search_forward(ctx) { crate::search::begin(ctx, crate::SearchPrompt::Forward) }
 
-    /// Begin a backward regex search before the primary selection, wrapping at document boundaries.
+    /// Begin a backward regex search before the primary selection, wrapping at document boundaries. Acceptance stores the query in the chosen register (default: /) and makes it active for n/N across buffers.
     fn search_backward(ctx) { crate::search::begin(ctx, crate::SearchPrompt::Backward) }
 
     /// Select regex matches inside the current selections; lowercase queries ignore case.
@@ -776,16 +776,16 @@ commands! {
     /// Preview the context's regex from the original selections. Empty, invalid, or unmatched input restores them.
     fn search_update(ctx) { crate::search::update(ctx.editor, ctx.text.ok_or(Error::MissingText)?) }
 
-    /// Accept a matching preview for n/N navigation, waiting for pending work if needed. Invalid or unmatched queries remain editable.
+    /// Accept a matching preview and store its query in the chosen register, waiting for pending work if needed. Invalid or unmatched queries remain editable.
     fn search_accept(ctx) { crate::search::accept(ctx.editor) }
 
     /// Cancel a regex preview and restore its original selections and preferred columns.
     fn search_cancel(ctx) { crate::search::cancel(ctx.editor) }
 
-    /// Search forward from the primary selection; select mode adds matches. Counts wrap and selection direction is preserved.
+    /// Search forward with the chosen register, or the last active search register. Select mode adds matches. Counts wrap and selection direction is preserved; changed register contents are compiled on the worker.
     fn search_next(ctx) { crate::search::repeat(ctx, false) }
 
-    /// Search backward from the primary selection; select mode adds matches. This is independent of the last prompt direction.
+    /// Search backward with the chosen register, or the last active search register. Select mode adds matches. This is independent of the last prompt direction.
     fn search_previous(ctx) { crate::search::repeat(ctx, true) }
 
     /// Move right by graphemes, extending the selection in select mode.

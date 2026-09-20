@@ -467,6 +467,7 @@ impl App {
         }
         let (document, files) = FileState::load(Some(path))?;
         let mut editor = Editor::with_session(document, self.editor.session());
+        editor.set_display_name(files.display_name());
         editor.set_language(Language::detect(files.path(), editor.document().text()));
         editor.set_background_search(true);
         editor.set_deferred_repeat(true);

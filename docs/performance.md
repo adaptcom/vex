@@ -99,7 +99,8 @@ proportional to selected text on the worker.
 
 ## Named registers
 
-Recorded on 2026-09-20 with the same optimized profile:
+Recorded on 2026-09-20 with the same optimized profile, including file-name and
+search-register integration:
 
 ```sh
 cargo bench -p vex_editor --bench commands --locked -- registers --noplot
@@ -107,8 +108,8 @@ cargo bench -p vex_editor --bench commands --locked -- registers --noplot
 
 | Buffer and stored fragment | Read register | Open helper + Escape | Discard whole buffer + undo |
 |---|---:|---:|---:|
-| 1 MiB | 5.76 ns | 0.325 µs | 0.931 µs |
-| 100 MiB | 5.73 ns | 0.305 µs | 0.890 µs |
+| 1 MiB | 5.96 ns | 0.341 µs | 0.950 µs |
+| 100 MiB | 5.95 ns | 0.339 µs | 0.965 µs |
 
 The read clones an immutable register handle. The helper case dispatches `"`
 and Escape, builds a bounded preview of one stored register plus dynamic labels,
@@ -124,6 +125,16 @@ stored text size. The popup snapshots at most 64 names and 48 characters per
 first fragment once when opened, then reuses those previews across redraws.
 Prompt insertion fetches only the first fragment, including for the dynamic
 selection register. Ordinary yanks and pastes still scale with affected text.
+
+With shared search registers, `search_next_previous` measured 1.30 µs at 1 MiB
+and 1.14 µs at 100 MiB, versus the earlier 1.23/1.07 µs regex baseline. The
+`background_search_schedule_cancel` case measured 0.222/0.219 µs, versus the
+earlier 0.164/0.166 µs. These use the existing fixtures described below and the
+same Criterion settings. Reproduce with the `search_next_previous` and
+`background_search_schedule_cancel` filters. The former now reads the shared
+register and checks the compiled cache by text identity; neither path copies
+document contents on the UI thread. Compilation of a changed register value
+and capture of a dynamic selection query happen on the search worker.
 
 ## Retained buffers
 
