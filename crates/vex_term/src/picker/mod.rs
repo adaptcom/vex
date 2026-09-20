@@ -85,6 +85,7 @@ pub(crate) struct Picker<T> {
     selected: usize,
     top: usize,
     touched: bool,
+    restore: Option<Arc<Entry<T>>>,
     pub pending: bool,
     pub matched: usize,
     pub total: usize,
@@ -102,6 +103,7 @@ impl<T: Eq> Picker<T> {
             selected: 0,
             top: 0,
             touched: false,
+            restore: None,
             pending: true,
             matched: 0,
             total: 0,
@@ -116,7 +118,37 @@ impl<T: Eq> Picker<T> {
         self.items.get(self.selected).map(|item| &item.entry)
     }
 
+    /// Keep the retained selection when refreshed results arrive after reopening.
+    pub fn resume(&mut self) {
+        self.restore = self.selected().cloned();
+        self.touched = true;
+        if self.query.register_pending() {
+            self.query.register_key(Key::Escape);
+        }
+    }
+
     pub fn replace(&mut self, items: Vec<Item<T>>) {
+        self.replace_incremental(items, true);
+    }
+
+    /// A reopened picker keeps its cached rows until the selected identity is
+    /// rediscovered or the scan finishes. Early partial scans cannot lose it.
+    pub fn replace_incremental(&mut self, items: Vec<Item<T>>, complete: bool) {
+        if let Some(wanted) = &self.restore {
+            if let Some(index) = items
+                .iter()
+                .position(|item| item.entry.value == wanted.value)
+            {
+                self.selected = index;
+                self.items = items;
+                self.restore = None;
+                return;
+            }
+            if !complete {
+                return;
+            }
+            self.restore = None;
+        }
         let selected = self
             .selected()
             .filter(|_| self.touched)
@@ -168,6 +200,7 @@ impl<T: Eq> Picker<T> {
     }
 
     fn changed(&mut self) {
+        self.restore = None;
         self.items.clear();
         self.selected = 0;
         self.top = 0;
@@ -179,6 +212,7 @@ impl<T: Eq> Picker<T> {
     }
 
     fn navigate(&mut self, delta: isize) {
+        self.restore = None;
         self.selected = self
             .selected
             .saturating_add_signed(delta)
@@ -393,6 +427,36 @@ pub(crate) fn label(frame: &mut Frame, mut x: u16, y: u16, width: u16, text: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reopening_keeps_scroll_and_selection_until_incremental_scan_finds_it() {
+        let items = |values: &[usize]| {
+            values
+                .iter()
+                .map(|&value| Item {
+                    entry: Arc::new(Entry {
+                        label: value.to_string(),
+                        value,
+                    }),
+                    matched: Vec::new(),
+                })
+                .collect()
+        };
+        let mut picker = Picker::new("Files".into());
+        picker.replace(items(&[10, 20, 30]));
+        picker.navigate(2);
+        picker.top = 1;
+        picker.resume();
+        picker.replace_incremental(items(&[1, 2]), false);
+        assert_eq!(picker.selected().unwrap().value, 30);
+        assert_eq!(picker.top, 1);
+        picker.replace_incremental(items(&[1, 2, 10, 20, 30]), false);
+        assert_eq!(picker.selected().unwrap().value, 30);
+        picker.resume();
+        picker.replace_incremental(items(&[1, 2]), true);
+        assert_eq!(picker.selected().unwrap().value, 1);
+        assert!(picker.restore.is_none());
+    }
 
     #[test]
     fn floating_boxes_preserve_background_and_clip_content_and_cursor_inside_borders() {

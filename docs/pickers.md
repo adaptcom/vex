@@ -17,8 +17,19 @@ compatibility guarantee.
 
 ## Using the picker
 
-Space-f or `:file_picker` opens a fuzzy file picker. Space-k invokes the existing
-hover command. Both actions are documented functions and can be rebound.
+Space-f or `:file_picker` opens a fuzzy file picker. Space-' (`:last_picker`)
+reopens the most recently closed file, buffer, or symbol picker with its query,
+caret, selected result, and scroll position. Accepting a result and cancelling
+both retain the picker. Only one previous picker is retained, with its bounded
+result list and preview; the full file index is released on the worker.
+
+Reopening refreshes file/buffer results and previews. Cached rows remain visible
+until the selected file is rediscovered or the scan finishes, so early partial
+results cannot move the selection. Removed targets fall back to a current result.
+Symbol pickers reuse their retained catalogs; editing a workspace-symbol query
+issues a fresh request. A new session identity rejects results from before close.
+Space-k invokes the existing hover command. These actions are documented functions
+and can be rebound.
 
 | Input | Behavior |
 |---|---|

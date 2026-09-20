@@ -23,6 +23,28 @@ pub(super) struct Source {
 }
 
 impl App {
+    pub(super) fn resume_symbol_picker(&mut self) {
+        let Some(active) = &mut self.picker.active else {
+            return;
+        };
+        let super::Source::Symbols(source) = &mut active.source else {
+            return;
+        };
+        // A retained catalog remains useful after accepting a result moved the
+        // editor. Future requests and cancellation track the current context.
+        source.document = self.editor.document().id();
+        source.revision = self.editor.document().revision();
+        source.language = self.editor.language();
+        source.path = self.files.target().map(PathBuf::from);
+        source.selections = self.editor.selections().clone();
+        source.mode = self.editor.mode();
+        source.loading = false;
+        source.due = source.catalog.is_none().then(Instant::now);
+        if source.catalog.is_some() {
+            self.rank_symbols();
+        }
+    }
+
     pub(in crate::app) fn symbol_picker_active(&self) -> bool {
         self.picker
             .active
@@ -300,6 +322,46 @@ mod tests {
         };
         source.due = Some(Instant::now());
         app.take_lsp_update().unwrap()
+    }
+
+    #[test]
+    fn last_symbol_picker_keeps_query_and_selection_after_accepting_a_symbol() {
+        let (_directory, mut app) = fixture();
+        press(&mut app, " s");
+        let request = app.take_lsp_update().unwrap();
+        let symbols = catalog(&app);
+        assert!(answer(&mut app, &request, Ok(symbols)));
+        finish(&mut app);
+        press(&mut app, "bet");
+        finish(&mut app);
+        let wanted = app
+            .picker
+            .active
+            .as_ref()
+            .unwrap()
+            .view
+            .selected()
+            .unwrap()
+            .value
+            .clone();
+        app.handle(key(KeyCode::Enter));
+        assert!(app.picker.active.is_none());
+        press(&mut app, " '");
+        finish(&mut app);
+        assert_eq!(app.picker.active.as_ref().unwrap().view.query.text(), "bet");
+        assert_eq!(
+            app.picker
+                .active
+                .as_ref()
+                .unwrap()
+                .view
+                .selected()
+                .unwrap()
+                .value,
+            wanted
+        );
+        app.handle(key(KeyCode::Enter));
+        assert!(app.picker.active.is_none());
     }
 
     #[test]

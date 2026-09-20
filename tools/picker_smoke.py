@@ -60,6 +60,13 @@ def main():
             assert origin.read_text() == "original document\n"
             terminal.send(b"\x0f")
             terminal.expect_screen(b"original document")
+            terminal.send(b" '")
+            terminal.expect_screen("Files ·".encode())
+            terminal.expect_screen("界 target".encode())
+            terminal.send(b"\r")
+            terminal.expect_screen(b"Xunique preview contents")
+            terminal.send(b"\x0f")
+            terminal.expect_screen(b"original document")
             terminal.send(b"iDIRTY")
             terminal.leave_insert()
             terminal.send(b" ftarget\r")
@@ -80,9 +87,13 @@ def main():
             assert origin.read_text() == "DIRTMOREYoriginal document\n"
             terminal.send(b"gm")
             terminal.expect_screen(b"Xunique preview contents")
+            terminal.send(b" '")
+            terminal.expect_screen("Buffers ·".encode())
+            terminal.send(b"\r")
+            terminal.expect_screen(b"DIRTMOREYoriginal")
             terminal.send(b":q!\r")
             terminal.finish()
-        print("PASS: group hints, floating borders, syntax previews, Unicode fuzzy query, resize, cancellation, early acceptance/edit/save, hidden unsaved buffers, ga/gm, buffer picker, terminal cleanup")
+        print("PASS: group hints, floating borders, syntax previews, Unicode fuzzy query, resize, cancellation, early acceptance/edit/save, hidden unsaved buffers, ga/gm, last file/buffer picker, terminal cleanup")
 
 
 if __name__ == "__main__":

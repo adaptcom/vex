@@ -663,6 +663,13 @@ commands! {
         Ok(())
     }
 
+    /// Reopen the last picker with its query, selected result, and scroll position.
+    fn last_picker(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_application_action(crate::ApplicationAction::LastPicker);
+        Ok(())
+    }
+
     /// Switch to the last buffer accessed in this pane, restoring its view.
     fn goto_last_accessed_file(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::LastAccessed, 1));

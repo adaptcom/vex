@@ -534,6 +534,7 @@ impl App {
                 self.open_file_picker();
                 Ok(())
             }
+            Some(ApplicationAction::LastPicker) => self.reopen_last_picker(),
             Some(ApplicationAction::BufferPicker) => {
                 self.open_buffer_picker();
                 Ok(())

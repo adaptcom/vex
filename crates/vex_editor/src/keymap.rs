@@ -261,6 +261,7 @@ impl Default for Keymap {
                 (vec![Char('m'), Char('r')], "surround_replace"),
                 (vec![Char(' '), Char('f')], "file_picker"),
                 (vec![Char(' '), Char('b')], "buffer_picker"),
+                (vec![Char(' '), Char('\'')], "last_picker"),
                 (vec![Char(' '), Char('g')], "git_status"),
                 (vec![Char(' '), Char('s')], "symbol_picker"),
                 (vec![Char(' '), Char('S')], "workspace_symbol_picker"),

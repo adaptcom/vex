@@ -75,6 +75,7 @@ pub enum ApplicationAction {
     GitStatus,
     FilePicker,
     BufferPicker,
+    LastPicker,
     Buffer(BufferAction, usize),
     DocumentSymbols,
     WorkspaceSymbols,

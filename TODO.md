@@ -61,6 +61,8 @@ selections, and measure operations that could affect input latency.
 
 - [ ] Workspace text search with `<space>/`, then `<space>'` to reopen the last
   picker with its query and selection intact.
+  `<space>'` now retains file/buffer/symbol queries, selected results, and scroll
+  positions across acceptance/cancellation; workspace text search remains.
 - [ ] Bidirectional jump history: Ctrl-i, `<space>j`, and `g.` to return to the
   last modification. Ctrl-s now records full selection checkpoints in normal/select
   mode, and Ctrl-o restores them, including in scratch buffers.

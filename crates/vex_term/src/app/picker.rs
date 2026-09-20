@@ -52,6 +52,7 @@ impl Drop for Active {
 #[derive(Default)]
 pub(super) struct State {
     active: Option<Active>,
+    last: Option<Active>,
     next_session: u64,
     file_job: Option<FileJob>,
     preview_job: Option<PreviewJob>,
@@ -227,7 +228,10 @@ impl App {
     }
 
     fn close_picker(&mut self) {
-        if let Some(active) = self.picker.active.take() {
+        if let Some(mut active) = self.picker.active.take() {
+            active.cancellation.cancel();
+            active.preview_cancel.cancel();
+            active.accept_pending = false;
             if matches!(active.source, Source::Symbols(_)) {
                 self.cancel_language_request();
             } else {
@@ -239,10 +243,45 @@ impl App {
                     cancellation: Cancellation::default(),
                 });
             }
+            self.picker.last = Some(active);
         }
         self.picker.preview_job = None;
         self.picker.symbol_job = None;
         self.picker.buffer_job = None;
+    }
+
+    pub(super) fn reopen_last_picker(&mut self) -> io::Result<()> {
+        let mut active = self
+            .picker
+            .last
+            .take()
+            .ok_or_else(|| io::Error::other("no previous picker"))?;
+        self.close_picker();
+        self.dismiss_language_help();
+        self.keys.cancel(&mut self.editor);
+        self.prompt = None;
+        if self.editor.search_prompt().is_some() {
+            let _ = self.editor.execute("search_cancel", 1);
+        }
+        self.picker.next_session += 1;
+        active.session = self.picker.next_session;
+        active.cancellation = Cancellation::default();
+        active.preview_cancel = Cancellation::default();
+        active.preview_target = None;
+        active.accept_pending = false;
+        active.view.resume();
+        if matches!(active.source, Source::Buffers(_)) {
+            active.source = Source::Buffers(self.buffer_catalog());
+        }
+        self.picker.active = Some(active);
+        if self.symbol_picker_active() {
+            self.resume_symbol_picker();
+        } else {
+            self.submit_picker_query();
+        }
+        self.request_picker_preview();
+        self.clear_message();
+        Ok(())
     }
 
     pub(crate) fn take_picker_job(&mut self) -> Option<FileJob> {
@@ -377,7 +416,7 @@ impl App {
             return false;
         }
         active.view.title = format!("Files · {}", result.root.display());
-        active.view.replace(
+        active.view.replace_incremental(
             result
                 .items
                 .into_iter()
@@ -389,6 +428,7 @@ impl App {
                     matched: item.matched,
                 })
                 .collect(),
+            !result.scanning,
         );
         active.view.matched = result.matched;
         active.view.total = result.scanned;
@@ -757,6 +797,52 @@ mod tests {
         let late = app.take_preview_job().unwrap().run().unwrap();
         app.handle(key(KeyCode::Esc));
         assert!(!app.handle_preview_result(late));
+    }
+
+    #[test]
+    fn last_picker_restores_query_selection_and_rejects_old_session_results() {
+        let (_directory, mut app) = fixture();
+        assert!(app.reopen_last_picker().is_err());
+        let mut worker = FileWorker::default();
+        press(&mut app, " f");
+        press(&mut app, "t");
+        finish(&mut app, &mut worker);
+        app.handle(key(KeyCode::Down));
+        let wanted = app
+            .picker
+            .active
+            .as_ref()
+            .unwrap()
+            .view
+            .selected()
+            .unwrap()
+            .value
+            .clone();
+        let late_preview = app.take_preview_job().unwrap().run().unwrap();
+        let old_session = app.picker.active.as_ref().unwrap().session;
+        app.handle(key(KeyCode::Enter));
+        assert!(app.picker.active.is_none());
+        press(&mut app, " '");
+        let active = app.picker.active.as_ref().unwrap();
+        assert_ne!(active.session, old_session);
+        assert_eq!(active.view.query.text(), "t");
+        assert_eq!(active.view.selected().unwrap().value, wanted);
+        assert!(!app.handle_preview_result(late_preview));
+        finish(&mut app, &mut worker);
+        assert_eq!(
+            app.picker
+                .active
+                .as_ref()
+                .unwrap()
+                .view
+                .selected()
+                .unwrap()
+                .value,
+            wanted
+        );
+        app.handle(key(KeyCode::Esc));
+        press(&mut app, " '");
+        assert_eq!(app.picker.active.as_ref().unwrap().view.query.text(), "t");
     }
 
     #[test]
