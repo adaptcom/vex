@@ -3,6 +3,7 @@
 
 pub(crate) mod buffers;
 mod catalog;
+pub(crate) mod diagnostics;
 pub(crate) mod files;
 mod fuzzy;
 mod ignore;

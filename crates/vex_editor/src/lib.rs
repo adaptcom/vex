@@ -94,6 +94,7 @@ pub enum ApplicationAction {
     Buffer(BufferAction, usize),
     DocumentSymbols,
     WorkspaceSymbols,
+    DiagnosticPicker(bool),
     HalfPageUp(usize),
     HalfPageDown(usize),
     Window(WindowAction, usize),

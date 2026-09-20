@@ -31,6 +31,7 @@ pub(super) struct State {
     pending: Option<Pending>,
     command: Option<(super::workspace::Context, vex_lsp::ServerCommand)>,
     workspace_generation: u64,
+    pub(super) diagnostic_catalog: vex_lsp::diagnostics::Catalog,
     diagnostics: Vec<Diagnostic>,
     diagnostic_revision: Option<(DocumentId, Revision)>,
     popup: Option<crate::documentation::Popup>,
@@ -411,6 +412,11 @@ impl App {
 
     pub fn handle_lsp_event(&mut self, event: Event) -> bool {
         match event {
+            Event::DiagnosticCatalog(catalog) => {
+                let changed = !self.language.diagnostic_catalog.same_catalog(&catalog);
+                self.language.diagnostic_catalog = catalog;
+                self.refresh_diagnostic_picker(changed);
+            }
             Event::ApplyEdit {
                 epoch,
                 request_id,

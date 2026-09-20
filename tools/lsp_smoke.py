@@ -38,14 +38,24 @@ def main():
             terminal.resize(220, 24)
             terminal.expect_screen(b"RA:ready")
             terminal.expect_screen(b"1E")
+            terminal.send(b" d")
+            terminal.expect_screen(b"Document diagnostics")
+            terminal.expect_screen(b"expected")
+            terminal.send(b"\r")
             terminal.send(b"]d")
             terminal.expect_screen(b"expected")
-            terminal.send(b"/answer\r")
+            # Picker jumps deliberately leave a backwards range. Establish a
+            # fresh forward selection before checking search's cursor column.
+            terminal.send(b"gg/answer\r")
             terminal.expect_screen(b"2:39")
             terminal.send(b" k")
             terminal.expect_screen(b"fn answer()")
             terminal.send(b"gd")  # The first key dismisses hover and dispatches normally.
             terminal.expect_screen(b"other.rs")
+            terminal.send(b" D")
+            terminal.expect_screen(b"Workspace diagnostics")
+            terminal.expect_screen(b"main.rs:")
+            terminal.send(b"\x03")  # Close the picker without altering jump history.
             terminal.send(b"\x0f")  # Ctrl-o: return to the saved origin.
             terminal.expect_screen(b"main.rs")
             terminal.expect_screen(b"1E")  # Wait for the reopened workspace to finish indexing/checking.
@@ -66,7 +76,7 @@ def main():
             terminal.expect_screen(b"main.rs")
             terminal.send(b":q\r")
             terminal.finish()
-        print("PASS: real rust-analyzer diagnostics, hover, definitions, document/workspace symbols, jump back, shutdown")
+        print("PASS: real rust-analyzer diagnostics, document/workspace diagnostic pickers, hover, definitions, symbols, jump back, shutdown")
 
         # Markdown is prepared by the service and shown in a floating, scrollable box.
         markdown_docs = (

@@ -72,6 +72,7 @@ and calls that existing dispatcher.
 | `]d`, `[d`, `[D`, `]D` | Select next/previous/first/last diagnostic; stop at list ends |
 | Space-f, Space-k | Open file picker / show hover |
 | Space-s, Space-S | Open document / workspace symbol picker |
+| Space-d, Space-D | Pick cached document / workspace diagnostics with syntax previews |
 | Space-r | Rename the symbol at the primary cursor; edits remain unsaved in each affected buffer |
 | Space-a | Open the code-action menu; Enter applies, Escape cancels |
 | `=` | Format one selection using the language server |

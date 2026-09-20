@@ -733,6 +733,20 @@ commands! {
         Ok(())
     }
 
+    /// Open a searchable picker of cached diagnostics for the current document.
+    fn diagnostics_picker(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_application_action(crate::ApplicationAction::DiagnosticPicker(false));
+        Ok(())
+    }
+
+    /// Open a searchable picker of cached diagnostics across files and language sessions.
+    fn workspace_diagnostics_picker(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_application_action(crate::ApplicationAction::DiagnosticPicker(true));
+        Ok(())
+    }
+
     /// Search workspace symbols using the current document's language server.
     fn workspace_symbol_picker(ctx) {
         ctx.editor.finish_undo_group();

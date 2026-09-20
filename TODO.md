@@ -98,11 +98,14 @@ selections, and measure operations that could affect input latency.
   background preparation, one undo step, and cancellation/stale-result guards.
   Formatting captures/synchronizes only the active document. Rust uses
   `:format` by default; range formatting requires server support.
-- [ ] Document/workspace diagnostic pickers (`<space>d`/`D`) and first/last
+- [x] Document/workspace diagnostic pickers (`<space>d`/`D`) and first/last
   diagnostic jumps (`[D`/`]D`). Retain diagnostics beyond the active document.
   All four diagnostic jumps now select full ranges without wrapping, retain
   normal/select mode, and add jump-history entries. Range preparation runs on
-  the navigation worker; retained diagnostics and pickers remain.
+  the navigation worker. A bounded per-file catalog now survives session changes
+  and accepts unopened-file publications. Both pickers filter and prepare labels
+  on the worker, preview unsaved buffers with syntax, preserve last-picker state,
+  and reject stale revisions; empty publications remove old entries.
 - [ ] Scrollable hover documentation and signature help.
   Hover now has a bordered Markdown popup, cached wrapping, and Helix-style
   Ctrl-u/Ctrl-d and PageUp/PageDown scrolling. Signature help remains.

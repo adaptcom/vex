@@ -42,7 +42,7 @@ Rust, Markdown, Bash/shell, TypeScript/TSX, and JavaScript/JSX use syntax colors
 automatically, including in file previews. Use `:language NAME` to override
 detection, `:language text` for plain text, or `:language auto` to restore
 filename/shebang detection. See [syntax support and adding languages](docs/syntax.md).
-With the configured server on `PATH`, named files also get diagnostics, Space-k for
+With the configured server on `PATH`, named files also get diagnostics (Space-d for the document, Space-D across files), Space-k for
 Markdown hover (Ctrl-u/Ctrl-d scroll), `gd` / `gy` / `gi` for definitions, types, and implementations, `gr` for
 references, Space-h to select related occurrences in the document, and Space-r
 to rename a symbol across files. Space-a opens the code-action menu for the

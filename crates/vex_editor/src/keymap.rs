@@ -267,6 +267,8 @@ impl Default for Keymap {
                 (vec![Char(' '), Char('/')], "global_search"),
                 (vec![Char(' '), Char('g')], "git_status"),
                 (vec![Char(' '), Char('s')], "symbol_picker"),
+                (vec![Char(' '), Char('d')], "diagnostics_picker"),
+                (vec![Char(' '), Char('D')], "workspace_diagnostics_picker"),
                 (vec![Char(' '), Char('S')], "workspace_symbol_picker"),
                 (vec![Char(' '), Char('k')], "hover"),
                 (vec![Char(' '), Char('r')], "rename_symbol"),
@@ -1069,6 +1071,24 @@ mod tests {
             Dispatch::Executed("kill_to_line_start")
         );
         assert!(editor.take_application_action().is_none());
+    }
+
+    #[test]
+    fn diagnostic_picker_bindings_keep_normal_and_select_modes() {
+        for mode in [Mode::Normal, Mode::Select] {
+            for (keys, workspace) in [(" d", false), (" D", true)] {
+                let mut editor = Editor::new(Document::from("fn example() {}"));
+                if mode == Mode::Select {
+                    editor.execute("select_mode", 1).unwrap();
+                }
+                press(&mut KeyHandler::default(), &mut editor, keys);
+                assert_eq!(
+                    editor.take_application_action(),
+                    Some(crate::ApplicationAction::DiagnosticPicker(workspace))
+                );
+                assert_eq!(editor.mode(), mode);
+            }
+        }
     }
 
     #[test]

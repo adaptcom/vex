@@ -1110,3 +1110,40 @@ undo/redo, and the default lack of range-formatting support.
 ```sh
 cargo test -p vex_term --release --locked benchmark_formatting_submission -- --ignored --nocapture
 ```
+
+## Diagnostic catalogs and pickers
+
+Diagnostic notifications decode bounded fields on the transport reader and
+coalesce per file before reaching the service. Replaced opaque payloads and
+session cleanup queues are dropped outside the inbox lock used by UI updates.
+The shared catalog replaces one immutable file record at a time; the UI clones
+its handle and reads an atomic generation, without locking or flattening it.
+
+A picker captures open-buffer snapshots once on opening or buffer changes.
+Queries reuse that capture and the worker's cached labels. Path resolution,
+revision checks, severity ordering, and fuzzy ranking run on the picker worker;
+only the best 512 rows return to the UI. Closing/switching picker providers
+releases captured documents and label caches. Catalog, notification, and result
+limits are described in [language services](lsp.md).
+
+A local optimized build on 2026-09-20 measured 200 samples over 752 diagnostic
+files (750 unopened paths, two real files, one diagnostic per file):
+
+| Operation | Median | Sample p95 |
+|---|---:|---:|
+| Open/reopen picker and submit job | 33.125 µs | 54.125 µs |
+| Worker path resolution, labels, and initial ranking | 10.840 ms | 11.865 ms |
+| Submit another query with the cached capture | 0.084 µs | 0.209 µs |
+| Worker filtering for a nonempty query with cached labels | 0.907 ms | 0.938 ms |
+
+The opening samples include dropping prior UI result rows; their worker samples
+rebuild the catalog for each new capture. The query samples retain the same
+capture. Timings exclude protocol processing, result installation, syntax
+previews, painting, and terminal I/O, and are not end-to-end latency claims.
+Source tests cover notification bursts, bounds, stale versions and path aliases,
+filtering, cancellation, early acceptance, previews, reopening, and clearing an
+open picker. Real rust-analyzer PTY checks exercise both diagnostic pickers.
+
+```sh
+cargo test -p vex_term --release --locked benchmark_diagnostic_picker_submission_and_filtering -- --ignored --nocapture
+```

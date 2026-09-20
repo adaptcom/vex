@@ -188,6 +188,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             if let Some(job) = app.take_picker_job() {
                 runtime.submit_picker(job);
             }
+            if let Some(job) = app.take_diagnostic_job() {
+                runtime.submit_diagnostics(job);
+            }
             if let Some(job) = app.take_location_job() {
                 runtime.submit_locations(job);
             }
@@ -257,6 +260,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 }
                 AppEvent::Background(BackgroundEvent::Files(result)) => {
                     redraw |= app.handle_picker_result(result)
+                }
+                AppEvent::Background(BackgroundEvent::Diagnostics(result)) => {
+                    app.handle_diagnostic_result(result);
                 }
                 AppEvent::Background(BackgroundEvent::Locations(result)) => {
                     app.handle_location_result(result);
@@ -330,6 +336,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(job) = app.take_picker_job() {
                 runtime.submit_picker(job);
+            }
+            if let Some(job) = app.take_diagnostic_job() {
+                runtime.submit_diagnostics(job);
             }
             if let Some(job) = app.take_location_job() {
                 runtime.submit_locations(job);

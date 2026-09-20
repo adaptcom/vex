@@ -4,6 +4,7 @@
 mod actions;
 mod apply;
 pub use actions::{ActionEdit, CodeAction, CodeActions};
+pub mod diagnostics;
 mod documentation;
 mod formatting;
 pub use apply::{Applied, ApplyReply};
@@ -176,6 +177,7 @@ pub enum Answer {
 
 #[derive(Debug)]
 pub enum Event {
+    DiagnosticCatalog(diagnostics::Catalog),
     ApplyEdit {
         epoch: u64,
         request_id: u64,
@@ -218,6 +220,7 @@ struct InboxState {
     update_due: Option<Instant>,
     last_epoch: Option<u64>,
     wire: VecDeque<Value>,
+    diagnostics: diagnostics::Pending,
     failure: Option<String>,
     stopped: bool,
     waker: Option<Waker>,
@@ -294,6 +297,13 @@ impl Inbox {
         state.update = Some(update);
         Self::wake(&mut state);
     }
+    fn publish_diagnostics(&self, publication: diagnostics::Publication) {
+        let mut state = self.0.lock().unwrap();
+        let retired = state.diagnostics.push(publication);
+        Self::wake(&mut state);
+        drop(state);
+        drop(retired);
+    }
     fn wire(&self, value: Value) {
         let mut state = self.0.lock().unwrap();
         if let Some(error) = value["transportError"].as_str() {
@@ -338,12 +348,23 @@ impl Inbox {
         if let Some(value) = state.wire.pop_front() {
             return Poll::Ready(Input::Wire(value));
         }
+        if std::mem::take(&mut state.diagnostics.reset) {
+            return Poll::Ready(Input::DiagnosticsReset);
+        }
+        if let Some(publication) = state.diagnostics.pop() {
+            return Poll::Ready(Input::Diagnostics(publication));
+        }
         Poll::Pending
     }
     fn clear_wire(&self) {
         let mut state = self.0.lock().unwrap();
-        state.wire.clear();
+        let retired = (
+            std::mem::take(&mut state.wire),
+            std::mem::take(&mut state.diagnostics),
+        );
         state.failure = None;
+        drop(state);
+        drop(retired);
     }
 }
 
@@ -351,6 +372,8 @@ enum Input {
     Update(Update),
     Workspace(WorkspaceUpdate),
     Wire(Value),
+    Diagnostics(diagnostics::Publication),
+    DiagnosticsReset,
     Failed(String),
     Stop,
     Answer(Result<Value, String>),
@@ -450,6 +473,8 @@ async fn serve(
 ) {
     let mut next = None;
     let mut failed_epoch = None;
+    let diagnostics = diagnostics::Catalog::default();
+    emit(Event::DiagnosticCatalog(diagnostics.clone()));
     loop {
         let update = match next.take() {
             Some(update) => update,
@@ -478,7 +503,16 @@ async fn serve(
             message: format!("{} starting", server.command),
             failed: false,
         });
-        let result = session(&program, inbox, executor, document, update.request, emit).await;
+        let result = session(
+            &program,
+            inbox,
+            executor,
+            document,
+            update.request,
+            &diagnostics,
+            emit,
+        )
+        .await;
         match result {
             Ok(update) => next = update,
             Err(message) => {
@@ -500,6 +534,7 @@ async fn session(
     executor: &Executor,
     mut document: Document,
     mut initial_request: Option<Request>,
+    catalog: &diagnostics::Catalog,
     emit: &impl Fn(Event),
 ) -> Result<Option<Update>, String> {
     check_size(&document)?;
@@ -515,12 +550,12 @@ async fn session(
     let active_uri = uri.clone();
     let mut transport =
         transport::Transport::start(program, server.arguments, &root, move |value| {
-            // This session currently publishes diagnostics for its active file.
-            // Additional didOpen notifications must not flood the bounded inbox.
-            if value["method"] != "textDocument/publishDiagnostics"
-                || value["params"]["uri"] == active_uri
-            {
-                notifications.wire(value)
+            if value["method"] == "textDocument/publishDiagnostics" {
+                if let Some(publication) = diagnostics::Publication::decode(value, &active_uri) {
+                    notifications.publish_diagnostics(publication);
+                }
+            } else {
+                notifications.wire(value);
             }
         })
         .map_err(|e| e.to_string())?;
@@ -752,7 +787,31 @@ async fn session(
                         emit(Event::Answer { epoch, revision: document.snapshot.revision(), id: request.id, result });
                     }
                 }
-                Input::Wire(mut value) => {
+                Input::DiagnosticsReset => {
+                    catalog.reset_limited();
+                    action_diagnostics = actions::Diagnostics::default();
+                    emit(Event::Diagnostics { epoch, revision: document.snapshot.revision(), diagnostics: Vec::new() });
+                    emit(Event::DiagnosticCatalog(catalog.clone()));
+                }
+                Input::Diagnostics(mut publication) => {
+                    let active = publication.file.path == document.path;
+                    let synchronized = if active {
+                        Some((version, document.snapshot.id(), document.snapshot.revision()))
+                    } else {
+                        workspace.diagnostic_version(&publication.file.path)
+                    };
+                    if let Some((current_version, id, revision)) = synchronized {
+                        if publication.version.is_some_and(|v| v != i64::from(current_version)) { continue; }
+                        publication.file.version = Some((id, revision));
+                    }
+                    catalog.replace(publication.file);
+                    emit(Event::DiagnosticCatalog(catalog.clone()));
+                    if active {
+                        let diagnostics = action_diagnostics.update(publication.raw.take().unwrap_or(Value::Null), &document, &positions, version);
+                        emit(Event::Diagnostics { epoch, revision: document.snapshot.revision(), diagnostics });
+                    }
+                }
+                Input::Wire(value) => {
                     if transport.receive_response(&value) { continue }
                     if value["method"] == "workspace/applyEdit" {
                         let request = pending.as_ref().map_or(0, |pending| pending.request.id);
@@ -766,16 +825,7 @@ async fn session(
                         }
                         continue;
                     }
-                    if value["method"] == "textDocument/publishDiagnostics" {
-                        let params = &value["params"];
-                        if params["uri"] != uri { continue }
-                        // Reject provably stale versions. Some servers (including
-                        // TypeScript) omit versions; those diagnostics refer to
-                        // our latest synchronized snapshot on a best-effort basis.
-                        if params["version"].as_i64().is_some_and(|v| v != i64::from(version)) { continue }
-                        let diagnostics = action_diagnostics.update(value["params"]["diagnostics"].take(), &document, &positions, version);
-                        emit(Event::Diagnostics { epoch, revision: document.snapshot.revision(), diagnostics });
-                    }
+
                 }
             }
         }
@@ -1436,6 +1486,42 @@ while True:
             true
         );
         assert!(init["workspace"]["symbol"].get("resolveSupport").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn diagnostic_catalog_survives_file_sessions_with_document_revision_stamps() {
+        let directory = tempfile::tempdir().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let service = Service::with_program(mock(directory.path(), false), move |event| {
+            let _ = sender.send(event);
+        })
+        .unwrap();
+        let Event::DiagnosticCatalog(catalog) = until(&receiver, |event| {
+            matches!(event, Event::DiagnosticCatalog(_))
+        }) else {
+            unreachable!()
+        };
+        let first = TextDocument::from("fn first() {}\n");
+        let second = TextDocument::from("fn second() {}\n");
+        for (index, text) in [&first, &second].into_iter().enumerate() {
+            let mut doc = document(directory.path().join(format!("file{index}.rs")), text);
+            doc.epoch = index as u64 + 1;
+            service.update(Update {
+                document: Some(doc.clone()),
+                request: None,
+            });
+            until(
+                &receiver,
+                |event| matches!(event, Event::Diagnostics { epoch, .. } if *epoch == doc.epoch),
+            );
+            assert_eq!(catalog.snapshot().files.len(), index + 1);
+        }
+        let files = catalog.snapshot().files;
+        assert_eq!(files[0].version, Some((first.id(), first.revision())));
+        assert_eq!(files[1].version, Some((second.id(), second.revision())));
+        assert_eq!(&*files[0].entries[0].message, "initial");
+        assert_eq!(&*files[1].entries[0].message, "initial");
     }
 
     #[cfg(unix)]

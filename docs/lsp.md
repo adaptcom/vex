@@ -43,6 +43,8 @@ protocol failures, and request errors leave editing and saving available.
 | `Space-a` / `:code_action` | Choose and apply a language-server code action |
 | `=` / `:format_selections` | Format one selection through LSP range formatting |
 | `:format` / `:fmt` | Format the current file through LSP document formatting |
+| `Space-d` / `:diagnostics_picker` | Pick cached diagnostics for the current file |
+| `Space-D` / `:workspace_diagnostics_picker` | Pick cached diagnostics across files and sessions |
 | `Space-s` / `:symbol_picker` | Pick a symbol from the current document |
 | `Space-S` / `:workspace_symbol_picker` | Search symbols across the active server's workspace |
 | `Ctrl-o` / `:jump_backward` | Move backward through the current pane's jump history |
@@ -72,6 +74,29 @@ arrives. Diagnostic jumps select the complete range, retain normal/select mode,
 and record the origin in jump history. Like Helix, they stop at the first/last
 diagnostic and ignore numeric prefixes. Selection preparation uses the navigation
 worker with cancellation and stale-origin checks.
+
+Space-d and Space-D open the shared floating picker even for one result. Entries
+show severity, source, diagnostic code, location, and message, with errors first.
+Typing filters on the worker; Enter selects the diagnostic's full range with the
+cursor at its start and records the origin in jump history. Previews use unsaved
+open buffers and syntax highlighting. Space-' reopens the query and selection.
+Notifications refresh an open picker; empty publications remove the file's prior
+entries. Cached diagnostics whose captured buffer revision has changed are omitted.
+Diagnostics published for an unsynchronized file are usable while it is unopened
+or freshly loaded; they are omitted after local edits until a current publication
+can be tied to that buffer. Closed buffers with revision-stamped diagnostics are
+also omitted until republished. Picker records are last-published data; keeping
+separate server sessions alive remains future work.
+
+The catalog retains up to 4,096 files, 65,536 diagnostics, and 16 MiB of accounted
+message/metadata data, with at most 512 diagnostics per file. Messages are capped
+at 4 KiB and source/code fields at 256 bytes; limits appear in the picker. Worker
+ranking sends at most 512 results to the UI. Notifications coalesce by file before
+service processing; their queue allows 4,096 files, 65,536 entries, and 48 MiB
+including a conservative charge for the active file's opaque code-action data.
+Overflow clears the older catalog explicitly and reports a limit, so dropped clear
+notifications cannot leave obsolete entries behind. Heavy payloads are dropped
+after releasing the inbox lock. Adjacent catalog-update events also coalesce.
 
 Definition and symbol jumps open another local file in the focused pane, retaining
 the old buffer and any unsaved edits. Each pane's [jump list](windows.md#jump-history)
@@ -106,7 +131,8 @@ from the existing 8 MiB active-document LSP limit.
 Language services maintain one active document session. Switching focus between
 views of the same file keeps the session and cancels cursor-specific requests.
 Focusing a different file changes the session. Diagnostics, hover, and completion
-are shown in the focused pane. Rename synchronizes other captured buffers into
+are shown in the focused pane. The diagnostic catalog survives session changes;
+workspace pickers include diagnostics published for unopened files. Rename synchronizes other captured buffers into
 that session; retaining server sessions when switching files remains future work.
 
 Project discovery uses the nearest configured marker (`.marksman.toml`,
@@ -362,16 +388,19 @@ One server session is active at a time; changing file identity, Save As, or
 explicit restart starts a new session. Documents above 8 MiB stay editable but
 do not start language services. Frames are limited to 32 MiB, headers to 8 KiB,
 outgoing client messages to eight queued values and server-request replies to 32,
-incoming service packets and UI
-LSP events to 128 each, diagnostics to 512, and retained stderr to 8 KiB. An
+non-diagnostic service packets and UI
+LSP events to 128 each, active diagnostics to 512, and retained stderr to 8 KiB. An
 overloaded transport reports an error and can be restarted.
 
-Only diagnostics for the active file are displayed. Versioned diagnostics must
-match the current synchronized version. Some servers omit diagnostic versions.
+Gutter diagnostics are displayed for the active file. The document/workspace
+pickers retain a shared per-file catalog, including unopened files and prior
+sessions. Versioned diagnostics for synchronized buffers must match their current
+wire version. Some servers omit diagnostic versions.
 Their diagnostics are mapped to the
 latest synchronized snapshot on a best-effort basis; freshness cannot be proven
 without a version. Any subsequent edit clears them. Versioned stale results are
-still rejected, and results from old language sessions are always discarded.
+still rejected. Late replies from closed sessions are discarded; diagnostics
+already in the catalog remain available subject to picker revision checks.
 Full document sync, full line-index rebuilds, and JSON encoding still cost work
 proportional to document size on the service thread. Definition/type/implementation/
 reference destinations and workspace-edit files load on workers; some older

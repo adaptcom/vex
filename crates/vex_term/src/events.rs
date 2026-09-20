@@ -36,6 +36,7 @@ pub(crate) enum BackgroundEvent {
     Files(FileResult),
     Symbols(SymbolResult),
     Locations(crate::picker::locations::Result),
+    Diagnostics(crate::picker::diagnostics::Result),
     LocationNavigation(crate::app::LocationNavigationResult),
     WorkspaceEdit(crate::app::WorkspaceEditResult),
     Buffers(BufferResult),
@@ -87,6 +88,11 @@ impl EventQueue {
     /// backpressure never blocks editing, and closing releases blocked senders.
     fn lsp(&self, event: vex_lsp::Event) {
         let mut state = self.0.state.lock().unwrap();
+        if matches!(event, vex_lsp::Event::DiagnosticCatalog(_))
+            && matches!(state.lsp.back(), Some(vex_lsp::Event::DiagnosticCatalog(_)))
+        {
+            state.lsp.pop_back();
+        }
         while state.lsp.len() == 128 && !state.closed {
             state = self.0.space.wait(state).unwrap();
         }
@@ -117,6 +123,7 @@ impl EventQueue {
                 BackgroundEvent::Files(_)
                 | BackgroundEvent::Symbols(_)
                 | BackgroundEvent::Locations(_)
+                | BackgroundEvent::Diagnostics(_)
                 | BackgroundEvent::LocationNavigation(_)
                 | BackgroundEvent::WorkspaceEdit(_)
                 | BackgroundEvent::Buffers(_)
@@ -301,6 +308,7 @@ enum PickerJob {
     Files(FileJob),
     Symbols(SymbolJob),
     Locations(crate::picker::locations::Job),
+    Diagnostics(crate::picker::diagnostics::Job),
     LocationNavigation(crate::app::LocationNavigationJob),
     WorkspaceEdit(crate::app::WorkspaceEditJob),
     Buffers(BufferJob),
@@ -316,6 +324,7 @@ impl Job for PickerJob {
             Self::Files(job) => job.cancellation.clone(),
             Self::Symbols(job) => job.cancellation.clone(),
             Self::Locations(job) => job.cancellation.clone(),
+            Self::Diagnostics(job) => job.cancellation.clone(),
             Self::LocationNavigation(job) => job.cancellation.clone(),
             Self::WorkspaceEdit(job) => job.cancellation.clone(),
             Self::Buffers(job) => job.cancellation.clone(),
@@ -550,8 +559,15 @@ impl Runtime {
         let queue = events.clone();
         let mut file_state = FileWorker::default();
         let mut workspace_search = crate::picker::search::Worker::default();
+        let mut diagnostic_state = crate::picker::diagnostics::Worker::default();
         let files = LatestWorker::spawn("vex-picker", events.clone(), move |job| match job {
+            PickerJob::Diagnostics(job) => {
+                workspace_search = crate::picker::search::Worker::default();
+                file_state = FileWorker::default();
+                diagnostic_state.run(job).map(BackgroundEvent::Diagnostics)
+            }
             PickerJob::Files(job) => {
+                diagnostic_state = crate::picker::diagnostics::Worker::default();
                 workspace_search = crate::picker::search::Worker::default();
                 file_state.run(job, |result| {
                     queue.background(BackgroundEvent::Files(result))
@@ -559,45 +575,54 @@ impl Runtime {
                 None
             }
             PickerJob::Locations(job) => {
+                diagnostic_state = crate::picker::diagnostics::Worker::default();
                 workspace_search = crate::picker::search::Worker::default();
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::Locations)
             }
             PickerJob::WorkspaceEdit(job) => {
+                diagnostic_state = crate::picker::diagnostics::Worker::default();
                 workspace_search = crate::picker::search::Worker::default();
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::WorkspaceEdit)
             }
             PickerJob::LocationNavigation(job) => {
+                diagnostic_state = crate::picker::diagnostics::Worker::default();
                 workspace_search = crate::picker::search::Worker::default();
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::LocationNavigation)
             }
             PickerJob::Symbols(job) => {
+                diagnostic_state = crate::picker::diagnostics::Worker::default();
                 workspace_search = crate::picker::search::Worker::default();
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::Symbols)
             }
             PickerJob::Buffers(job) => {
+                diagnostic_state = crate::picker::diagnostics::Worker::default();
                 workspace_search = crate::picker::search::Worker::default();
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::Buffers)
             }
             PickerJob::Jumps(job) => {
+                diagnostic_state = crate::picker::diagnostics::Worker::default();
                 workspace_search = crate::picker::search::Worker::default();
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::Jumps)
             }
             PickerJob::JumpNavigation(job) => {
+                diagnostic_state = crate::picker::diagnostics::Worker::default();
                 workspace_search = crate::picker::search::Worker::default();
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::JumpNavigation)
             }
             PickerJob::Prompt(job) => {
+                diagnostic_state = crate::picker::diagnostics::Worker::default();
                 workspace_search = crate::picker::search::Worker::default();
                 job.run().map(BackgroundEvent::Prompt)
             }
             PickerJob::WorkspaceSearch(job) => {
+                diagnostic_state = crate::picker::diagnostics::Worker::default();
                 file_state = FileWorker::default();
                 workspace_search.run(job, |result| {
                     queue.background(BackgroundEvent::WorkspaceSearch(result))
@@ -676,6 +701,12 @@ impl Runtime {
 
     pub(crate) fn submit_picker(&self, job: FileJob) {
         self.files.as_ref().unwrap().submit(PickerJob::Files(job));
+    }
+    pub(crate) fn submit_diagnostics(&self, job: crate::picker::diagnostics::Job) {
+        self.files
+            .as_ref()
+            .unwrap()
+            .submit(PickerJob::Diagnostics(job));
     }
     pub(crate) fn submit_locations(&self, job: crate::picker::locations::Job) {
         self.files
@@ -870,6 +901,9 @@ mod tests {
             }
             AppEvent::Background(BackgroundEvent::Files(result)) => {
                 app.handle_picker_result(result);
+            }
+            AppEvent::Background(BackgroundEvent::Diagnostics(result)) => {
+                app.handle_diagnostic_result(result);
             }
             AppEvent::Background(BackgroundEvent::Locations(result)) => {
                 app.handle_location_result(result);
@@ -1169,6 +1203,37 @@ mod tests {
             deliver(&mut app, event);
         }
         assert_eq!(app.editor.document().text(), "x \n");
+    }
+
+    #[test]
+    fn diagnostic_catalog_notifications_coalesce_without_reordering_protocol_answers() {
+        let events = EventQueue::default();
+        let catalog = vex_lsp::diagnostics::Catalog::default();
+        for _ in 0..1000 {
+            events.lsp(vex_lsp::Event::DiagnosticCatalog(catalog.clone()));
+        }
+        events.lsp(vex_lsp::Event::Answer {
+            epoch: 1,
+            revision: vex_core::Document::from("").revision(),
+            id: 1,
+            result: Ok(vex_lsp::Answer::CommandExecuted),
+        });
+        for _ in 0..1000 {
+            events.lsp(vex_lsp::Event::DiagnosticCatalog(catalog.clone()));
+        }
+        assert_eq!(events.0.state.lock().unwrap().lsp.len(), 3);
+        assert!(matches!(
+            events.next(Duration::ZERO, false),
+            Some(AppEvent::Lsp(vex_lsp::Event::DiagnosticCatalog(_)))
+        ));
+        assert!(matches!(
+            events.next(Duration::ZERO, false),
+            Some(AppEvent::Lsp(vex_lsp::Event::Answer { id: 1, .. }))
+        ));
+        assert!(matches!(
+            events.next(Duration::ZERO, false),
+            Some(AppEvent::Lsp(vex_lsp::Event::DiagnosticCatalog(_)))
+        ));
     }
 
     #[test]

@@ -57,6 +57,15 @@ pub(crate) struct Workspace {
 }
 
 impl Workspace {
+    pub(crate) fn diagnostic_version(
+        &self,
+        path: &Path,
+    ) -> Option<(i32, vex_core::DocumentId, vex_core::Revision)> {
+        self.documents
+            .get(path)
+            .map(|doc| (doc.version, doc.snapshot.id(), doc.snapshot.revision()))
+    }
+
     pub(crate) fn versions(&self, active: &Document, version: i32) -> Vec<SynchronizedDocument> {
         std::iter::once(SynchronizedDocument {
             path: active.path.clone(),

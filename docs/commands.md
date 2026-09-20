@@ -53,6 +53,8 @@ Generated from command Rustdoc and the default keymap.
 | `goto_file` | Normal: `gf`, Select: `gf` | Open filenames in the selections in the current pane. Paths are relative to the current file; earlier buffers remain loaded. |
 | `git_status` | Normal: `<Space>g`, Select: `<Space>g` | Open the repository status view with expandable staged and unstaged diffs. |
 | `symbol_picker` | Normal: `<Space>s`, Select: `<Space>s` | Open a searchable picker of symbols in the current document using its language server. |
+| `diagnostics_picker` | Normal: `<Space>d`, Select: `<Space>d` | Open a searchable picker of cached diagnostics for the current document. |
+| `workspace_diagnostics_picker` | Normal: `<Space>D`, Select: `<Space>D` | Open a searchable picker of cached diagnostics across files and language sessions. |
 | `workspace_symbol_picker` | Normal: `<Space>S`, Select: `<Space>S` | Search workspace symbols using the current document's language server. |
 | `jump_backward` | Normal: `<C-o>`, Select: `<C-o>` | Move backward through this pane's jump history, preserving a forward return path. Accepts a count. |
 | `jump_forward` | Normal: `<C-i>`, Normal: `<Tab>`, Select: `<C-i>`, Select: `<Tab>` | Move forward through this pane's jump history. Accepts a count. |

@@ -609,6 +609,9 @@ impl App {
                 Ok(())
             }
             Some(ApplicationAction::Buffer(action, count)) => self.buffer_action(action, count),
+            Some(ApplicationAction::DiagnosticPicker(workspace)) => {
+                self.open_diagnostic_picker(workspace)
+            }
             Some(ApplicationAction::DocumentSymbols) => {
                 self.open_symbol_picker(false);
                 Ok(())
