@@ -980,6 +980,26 @@ mod tests {
     }
 
     #[test]
+    fn selecting_an_unterminated_final_line_does_not_add_linewise_register_state() {
+        for key in [crate::Key::Char('x'), crate::Key::Char('X')] {
+            let mut source = Editor::new(Document::from("first\nlast"));
+            select(&mut source, vec![range(7, 8)], 0);
+            let mut keys = crate::KeyHandler::default();
+            keys.handle(&mut source, key).unwrap();
+            keys.handle(&mut source, crate::Key::Char('y')).unwrap();
+            assert_eq!(source.yank_register.read()[0].as_ref(), "last");
+            for (command, expected) in [("paste_after", "alastb\n"), ("paste_before", "lastab\n")] {
+                let mut editor = destination(&source, "ab\n");
+                select(&mut editor, vec![range(0, 1)], 0);
+                editor.execute(command, 1).unwrap();
+                assert_eq!(editor.document.text(), expected);
+                editor.execute("undo", 1).unwrap();
+                assert_eq!(editor.document.text(), "ab\n");
+            }
+        }
+    }
+
+    #[test]
     fn linewise_paste_uses_outer_selected_lines_and_replace_uses_exact_ranges() {
         let source = yanked("one\n");
         for (command, expected) in [

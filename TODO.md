@@ -53,8 +53,9 @@ selections, and measure operations that could affect input latency.
   History is bounded and shared across buffers. Prompt editing/drawing visits
   nearby graphemes. Command metadata and path suggestions use the picker worker;
   Tab/BackTab cycling preserves queued input and rejects stale results.
-- [ ] Decide whether to track explicit linewise selection intent so a final line
-  without a trailing newline can paste as a whole line rather than as characters.
+- [x] Decide whether to track explicit linewise selection intent: retain Helix's
+  text-based rule. A final line without a trailing newline pastes as characters,
+  including after `x`/`X`; registers do not carry a separate linewise flag.
 
 ## Project navigation and language tools
 

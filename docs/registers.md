@@ -1,5 +1,14 @@
 # Registers
 
+Linewise paste follows the register's text: `p`/`P` use whole-line placement when
+any fragment ends in a line ending. Selecting an unterminated final line with
+`x` or `X` does not invent a newline or attach a linewise flag. For example,
+yanking `last` from that final line and pasting after `a` in `ab` produces
+`alastb`. This follows the text-based test in
+[Helix's paste implementation](https://github.com/helix-editor/helix/blob/master/helix-term/src/commands.rs).
+It also keeps named and clipboard registers consistent when only text crosses
+the clipboard boundary. `R` still replaces the exact selected ranges.
+
 In normal or select mode, `"<register>` chooses a register for the next command:
 `"ay` copies selections to `a`, `"ap` pastes them after the selections, and
 `"aR` replaces the selections. `d` and `c` also respect the chosen register.
