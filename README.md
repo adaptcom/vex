@@ -43,7 +43,7 @@ automatically, including in file previews. Use `:language NAME` to override
 detection, `:language text` for plain text, or `:language auto` to restore
 filename/shebang detection. See [syntax support and adding languages](docs/syntax.md).
 With the configured server on `PATH`, named files also get diagnostics, Space-k for
-hover, `gd` / `gy` / `gi` for definitions, types, and implementations, `gr` for
+Markdown hover (Ctrl-u/Ctrl-d scroll), `gd` / `gy` / `gi` for definitions, types, and implementations, `gr` for
 references, Space-h to select related occurrences in the document, and Space-r
 to rename a symbol across files. Rename preserves unsaved buffers and leaves
 changes unsaved, with undo in each affected buffer. Use

@@ -1124,6 +1124,7 @@ dependencies = [
  "url",
  "vex_core",
  "vex_editor",
+ "vex_syntax",
 ]
 
 [[package]]

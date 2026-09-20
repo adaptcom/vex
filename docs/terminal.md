@@ -300,7 +300,9 @@ take precedence over syntax colors. See [syntax architecture and limits](syntax.
 
 Named files start their configured server when it is installed on `PATH` (or
 selected by its executable override). Diagnostics appear in the gutter and status line; Space-k
-opens a hover panel. Definition jumps can open another file after saving pending
+opens a bordered Markdown hover popup. Ctrl-u/Ctrl-d or PageUp/PageDown scroll
+its documentation; Escape/Ctrl-c dismiss it. Other editing keys close it and
+continue through normal dispatch. Definition jumps can open another file after saving pending
 changes, and Ctrl-o returns to the origin. See [language services](lsp.md) for
 setup, active-document service limits, and failure handling.
 

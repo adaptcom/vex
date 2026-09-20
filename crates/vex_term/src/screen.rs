@@ -14,12 +14,14 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use vex_core::display;
 use vex_editor::Highlight;
+use vex_syntax::markup::Attributes;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Style {
     #[default]
     Text,
     Syntax(Highlight),
+    Markup(vex_syntax::markup::Attributes),
     Gutter,
     GitAdded,
     GitModified,
@@ -46,7 +48,7 @@ impl Style {
         matches!(
             self,
             Self::StatusLine | Self::InactiveStatus | Self::PopupTitle
-        )
+        ) || matches!(self, Self::Markup(attributes) if attributes.contains(Attributes::STRONG))
     }
 
     fn reversed(self) -> bool {
@@ -57,6 +59,17 @@ impl Style {
         use Color::*;
         match self {
             Self::Text => (Reset, Reset),
+            Self::Markup(attributes) => {
+                if attributes.contains(Attributes::CODE) {
+                    (Grey, DarkGrey)
+                } else if attributes.contains(Attributes::LINK) {
+                    (DarkCyan, Reset)
+                } else if attributes.contains(Attributes::MUTED) {
+                    (DarkGrey, Reset)
+                } else {
+                    (Reset, Reset)
+                }
+            }
             Self::Syntax(highlight) => (
                 match highlight {
                     Highlight::Keyword | Highlight::Heading => Magenta,
@@ -350,6 +363,37 @@ impl Renderer {
                             })
                         )?;
                     }
+                    let attributes = |style: Option<Style>| match style {
+                        Some(Style::Markup(attributes)) => attributes,
+                        _ => vex_syntax::markup::Attributes::default(),
+                    };
+                    let (before, after) = (attributes(last_style), attributes(Some(cell.style)));
+                    if before != after {
+                        for (flag, enabled, disabled) in [
+                            (Attributes::EMPHASIS, Attribute::Italic, Attribute::NoItalic),
+                            (
+                                Attributes::LINK,
+                                Attribute::Underlined,
+                                Attribute::NoUnderline,
+                            ),
+                            (
+                                Attributes::STRIKE,
+                                Attribute::CrossedOut,
+                                Attribute::NotCrossedOut,
+                            ),
+                        ] {
+                            if before.contains(flag) != after.contains(flag) {
+                                queue!(
+                                    self.output,
+                                    SetAttribute(if after.contains(flag) {
+                                        enabled
+                                    } else {
+                                        disabled
+                                    })
+                                )?;
+                            }
+                        }
+                    }
                     last_style = Some(cell.style);
                 }
                 queue!(self.output, Print(&cell.text))?;
@@ -393,6 +437,34 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_attributes_are_enabled_and_cleared_between_cells() {
+        assert!(
+            std::mem::size_of::<Style>() <= 2,
+            "style metadata must stay compact in the screen grids"
+        );
+        let mut renderer = Renderer::default();
+        let frame = renderer.frame(3, 1).unwrap();
+        frame.put(
+            0,
+            0,
+            "a",
+            Style::Markup(
+                Attributes::STRONG | Attributes::EMPHASIS | Attributes::LINK | Attributes::STRIKE,
+            ),
+        );
+        frame.put(1, 0, "b", Style::Text);
+        let mut output = Vec::new();
+        renderer.present(&mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        for escape in [
+            "\x1b[1m", "\x1b[3m", "\x1b[4m", "\x1b[9m", "\x1b[22m", "\x1b[23m", "\x1b[24m",
+            "\x1b[29m",
+        ] {
+            assert!(output.contains(escape), "missing {escape:?}: {output:?}");
+        }
+    }
 
     #[test]
     fn cursor_reverses_existing_colors_without_leaking_reverse_to_other_cells() {

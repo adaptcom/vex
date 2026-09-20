@@ -94,6 +94,8 @@ selections, and measure operations that could affect input latency.
 - [ ] Document/workspace diagnostic pickers (`<space>d`/`D`) and first/last
   diagnostic jumps (`[D`/`]D`). Retain diagnostics beyond the active document.
 - [ ] Scrollable hover documentation and signature help.
+  Hover now has a bordered Markdown popup, cached wrapping, and Helix-style
+  Ctrl-u/Ctrl-d and PageUp/PageDown scrolling. Signature help remains.
 - [ ] Git change navigation: `[g`/`]g`, `[G`/`]G`, and change textobjects.
 - [ ] Remap cached Git gutter markers across line insertions/deletions while
   a background diff is pending.

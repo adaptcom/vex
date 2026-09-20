@@ -183,29 +183,6 @@ pub struct Diagnostic {
     pub message: String,
 }
 
-pub(crate) fn hover_text(value: &Value) -> String {
-    fn append(value: &Value, output: &mut String) {
-        if output.len() >= 64 << 10 {
-            return;
-        }
-        if let Some(text) = value
-            .as_str()
-            .or_else(|| value.get("value").and_then(Value::as_str))
-        {
-            // Bound the displayed payload without cutting UTF-8.
-            output.extend(text.chars().take(16_384));
-            output.push('\n');
-        } else if let Some(values) = value.as_array() {
-            for value in values {
-                append(value, output);
-            }
-        }
-    }
-    let mut output = String::new();
-    append(&value["contents"], &mut output);
-    output.trim().to_owned()
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Location {
     pub path: PathBuf,

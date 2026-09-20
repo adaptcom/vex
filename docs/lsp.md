@@ -51,9 +51,16 @@ protocol failures, and request errors leave editing and saving available.
 These keys apply in normal and select modes. Each editing action is an ordinary
 documented command function in `vex_editor`, available to custom keymaps.
 
-Hover uses a plain-text panel of up to twelve lines. Any key dismisses the panel
-and continues through normal key dispatch. Diagnostic gutter markers and counts
-update asynchronously; the message at the cursor appears on the bottom line when
+Hover uses a cursor-anchored box with the same border and bold title as other
+popups. Markdown replies render headings, emphasis, links, lists, quotations,
+tables, and code blocks; plaintext replies remain literal. Code is styled but
+not parsed as a separate programming language. HTML is displayed literally,
+and links are underlined text rather than terminal hyperlinks.
+Ctrl-u/Ctrl-d and PageUp/PageDown scroll by half the visible panel. Escape/Ctrl-c
+close it; other editing keys dismiss it and continue through normal key dispatch.
+Long lines wrap within the panel, which leaves the surrounding file visible.
+Diagnostic gutter markers and counts update asynchronously; the message at the
+cursor appears on the bottom line when
 no other message or prompt is active. Errors take precedence over other markers
 on the same line. Editing clears diagnostics immediately until a current result
 arrives.
@@ -303,6 +310,15 @@ symbol-jump paths still load synchronously.
 Signature help, formatting, code actions,
 semantic tokens, multi-buffer server reuse, and configurable server settings are
 future work.
+
+Hover preparation runs on the LSP service thread using the bundled Markdown
+grammars, with no additional third-party dependencies. It accepts modern
+MarkupContent and legacy MarkedString replies, capped at 64 KiB of source and
+32 parts and 4,096 prepared lines. Parsing has a shared 25 ms budget, bounded
+nodes/depth, and cancellation; an exhausted budget falls back to literal text.
+The popup caches wrapping until
+its available width changes, and redraw visits only visible rows. Unsupported
+or unusual Markdown may remain literal rather than matching a browser renderer.
 
 The command/application backend for code actions is available through
 `App::execute_lsp_command`: advertised server commands can request validated edits

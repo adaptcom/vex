@@ -2,6 +2,7 @@
 
 pub mod app;
 mod clipboard;
+mod documentation;
 mod events;
 pub mod files;
 mod git_status;

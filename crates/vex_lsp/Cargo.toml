@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 vex_core.workspace = true
 vex_editor.workspace = true
+vex_syntax.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 url.workspace = true

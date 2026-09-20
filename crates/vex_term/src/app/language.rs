@@ -33,7 +33,7 @@ pub(super) struct State {
     workspace_generation: u64,
     diagnostics: Vec<Diagnostic>,
     diagnostic_revision: Option<(DocumentId, Revision)>,
-    popup: Option<String>,
+    popup: Option<crate::documentation::Popup>,
     status: &'static str,
     completion: Option<CompletionOptions>,
     pub(super) saved: u64,
@@ -166,6 +166,34 @@ impl App {
         self.cancel_language_request();
         self.language.popup = None;
         self.completion.clear();
+    }
+
+    pub(super) fn handle_hover_input(&mut self, event: &crossterm::event::Event) -> Option<bool> {
+        use crossterm::event::{Event, KeyEventKind};
+        use vex_editor::Key;
+        let popup = self.language.popup.as_mut()?;
+        let Event::Key(event) = event else {
+            return None;
+        };
+        if event.kind == KeyEventKind::Release {
+            return Some(false);
+        }
+        match crate::input::key(*event) {
+            Some(Key::Ctrl('u') | Key::PageUp) => {
+                popup.scroll(false);
+                Some(true)
+            }
+            Some(Key::Ctrl('d') | Key::PageDown) => {
+                popup.scroll(true);
+                Some(true)
+            }
+            Some(Key::Escape | Key::Ctrl('c')) => {
+                self.dismiss_language_help();
+                self.clear_message();
+                Some(true)
+            }
+            _ => None,
+        }
     }
 
     pub(super) fn cancel_language_request(&mut self) {
@@ -437,8 +465,8 @@ impl App {
                         self.message = "no hover information".into()
                     }
                     Ok(Answer::Hover(text)) => {
-                        self.message = "hover — any key closes".into();
-                        self.language.popup = Some(text);
+                        self.message = "hover · Ctrl-u/Ctrl-d scroll · Esc closes".into();
+                        self.language.popup = Some(crate::documentation::Popup::new(text));
                     }
                     Ok(Answer::Locations(kind, locations)) => {
                         self.receive_locations(kind, locations)
@@ -620,7 +648,7 @@ impl App {
         format!(" {label}:{} {errors}E {warnings}W", self.language.status)
     }
 
-    pub(super) fn paint_language(&self, frame: &mut Frame, body_height: u16) {
+    pub(super) fn paint_language(&mut self, frame: &mut Frame, body_height: u16) {
         if let Some(column) = crate::render::gutter(
             usize::from(frame.width()),
             self.editor.document().text().len_lines(),
@@ -650,17 +678,8 @@ impl App {
                 }
             }
         }
-        if let Some(popup) = &self.language.popup {
-            let rows: Vec<_> = popup
-                .lines()
-                .take(usize::from(body_height).min(12))
-                .collect();
-            let top = body_height.saturating_sub(rows.len() as u16);
-            for (index, line) in rows.iter().enumerate() {
-                frame.fill_row(top + index as u16, Style::Status);
-                frame.label(1, top + index as u16, line, Style::Status);
-            }
-            frame.cursor = None;
+        if let Some(popup) = &mut self.language.popup {
+            popup.paint(frame, body_height);
         }
     }
 }
@@ -761,7 +780,14 @@ mod tests {
         let mut frame = Frame::default();
         frame.reset(80, 12).unwrap();
         app.paint(&mut frame).unwrap();
-        assert!(frame.row_text(9).contains("Documentation"));
+        assert!((0..12).any(|row| frame.row_text(row).contains("Documentation")));
+        let selections = app.editor.selections().clone();
+        app.handle(TerminalEvent::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(app.language.popup.is_some());
+        assert_eq!(app.editor.selections(), &selections);
         press(&mut app, KeyCode::Esc);
         assert!(app.language.popup.is_none());
         let key = issue(&mut app, "hover");

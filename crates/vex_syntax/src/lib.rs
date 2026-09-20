@@ -5,6 +5,7 @@
 //! Highlight queries use byte ranges and return non-overlapping semantic spans.
 
 mod language;
+pub mod markup;
 pub use language::{Comments, IndentStyle, Indentation, Language, LanguageServer};
 mod pairs;
 pub use pairs::ParsedSyntax;

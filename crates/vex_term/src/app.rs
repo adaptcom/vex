@@ -286,6 +286,9 @@ impl App {
         if let Some(redraw) = self.handle_completion_input(&event) {
             return redraw;
         }
+        if let Some(redraw) = self.handle_hover_input(&event) {
+            return redraw;
+        }
         let typing = self.completion_typing(&event);
         let redraw = self.handle_document_input(event);
         if let Some(typing) = typing {

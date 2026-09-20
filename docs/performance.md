@@ -1002,3 +1002,40 @@ validation counts serialized bytes without allocating an extra JSON byte buffer.
 ```sh
 cargo test -p vex_term --release --locked benchmark_rename_submission -- --ignored --nocapture
 ```
+
+## Markdown hover
+
+Hover decoding and Markdown parsing run on the LSP service. Source is limited to
+64 KiB and 32 parts, with at most 4,096 prepared lines, 8,192 visited nodes per
+part, 64 levels of renderer nesting, and a shared 25 ms parse budget. Cancellation is
+checked while preparing parts and traversing syntax. A budget failure keeps the
+source readable as literal text. The bundled block/inline grammars are reused;
+code fences are displayed without starting another language parser.
+
+The UI measures the prepared text once, then caches wrapping by available width.
+Scrolling and ordinary redraws visit only visible rows. Layout work is proportional
+to the bounded documentation, including after a resize; it is not repeated for
+every frame. Clusters over 1,024 bytes become replacement cells before caching,
+so a single combining-character sequence cannot repeatedly emit an entire payload.
+Formatting uses a one-byte attribute mask: the screen's `Style` remains at most
+two bytes, preserving the cell-grid memory footprint for ordinary editing.
+
+A local release microbenchmark used a 64 KiB Unicode documentation source,
+a 100 × 30 frame, and 200 samples:
+
+| Operation | Median | Sample p95 |
+|---|---:|---:|
+| Recompute wrapping | 1.345 ms | 2.102 ms |
+| Paint visible rows using cached wrapping | 27.542 µs | 43.209 µs |
+
+These short warmed samples include row allocation for wrapping and cell writes
+for painting. They exclude parsing, popup construction/initial width measurement,
+frame reset, service scheduling, diff serialization, pipe writes, terminal drawing,
+and popup destruction. They measure UI wrapping and painting, not end-to-end hover
+latency. Source tests cover clipping, Unicode, attributes, limits, cancellation,
+and scrolling. The real rust-analyzer PTY test verifies Markdown content,
+the floating border, half-page scrolling, and dismissal.
+
+```sh
+cargo test -p vex_term --release --locked benchmark_documentation_layout_and_redraw -- --ignored --nocapture
+```

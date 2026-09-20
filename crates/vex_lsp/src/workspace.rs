@@ -645,7 +645,7 @@ while True:
             }),
         });
         assert!(
-            matches!(answer(&receiver,3).unwrap(),Answer::Hover(text) if text == "bar|bar|bar")
+            matches!(answer(&receiver,3).unwrap(),Answer::Hover(text) if text.plain_text() == "bar|bar|bar")
         );
     }
 }

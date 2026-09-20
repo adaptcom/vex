@@ -68,6 +68,34 @@ def main():
             terminal.finish()
         print("PASS: real rust-analyzer diagnostics, hover, definitions, document/workspace symbols, jump back, shutdown")
 
+        # Markdown is prepared by the service and shown in a floating, scrollable box.
+        markdown_docs = (
+            "/// # Hover heading\n///\n"
+            "/// **Bold** and `inline code` with a [link](https://example.com).\n///\n"
+            + "".join(f"/// Paragraph {index} in the documentation.\n///\n" for index in range(25))
+            + "/// Final hover paragraph.\n"
+            "fn documented() -> u32 { 42 }\n"
+            "fn main() { let unused = documented(); }\n"
+        )
+        main_file.write_text(markdown_docs)
+        with Terminal([binary, str(main_file)]) as terminal:
+            terminal.start()
+            terminal.resize(120, 30)
+            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"1W")
+            terminal.send(b"/documented\r")
+            terminal.send(b" k")
+            terminal.expect_screen(b"Documentation")
+            terminal.expect_screen("│ Hover heading".encode())
+            terminal.expect_screen(b"Bold and inline code with a link.")
+            terminal.send(b"\x04" * 12)
+            terminal.expect_screen("│ Final hover paragraph.".encode())
+            terminal.send(b"\x15" * 12)
+            terminal.expect_screen("│ Hover heading".encode())
+            terminal.send(b"\x03:q\r")
+            terminal.finish()
+        print("PASS: Markdown hover, floating border, wrapping, half-page scrolling and dismissal")
+
         # Navigation uses ranges and document highlights from the real server.
         navigation_source = (
             "struct Widget;\n"

@@ -2,7 +2,9 @@
 //! snapshots. The UI submits coalesced state and receives typed, ordered events.
 
 mod apply;
+mod documentation;
 pub use apply::{Applied, ApplyReply};
+pub use vex_syntax::markup::Document as Documentation;
 mod command;
 pub use command::ServerCommand;
 mod completion;
@@ -137,7 +139,7 @@ pub struct Diagnostic {
 
 #[derive(Debug)]
 pub enum Answer {
-    Hover(String),
+    Hover(Documentation),
     Locations(Navigation, Locations),
     DocumentHighlights(Option<vex_editor::PreparedSelections>),
     Symbols(Symbols),
@@ -509,7 +511,7 @@ async fn session(
             "textDocument":{
                 "synchronization":{"didSave":true},
                 "publishDiagnostics":{"versionSupport":true},
-                "hover":{"contentFormat":["plaintext"]},
+                "hover":{"contentFormat":["markdown","plaintext"]},
                 "definition":{"linkSupport":true},
                 "typeDefinition":{"linkSupport":true},
                 "implementation":{"linkSupport":true},
@@ -707,7 +709,7 @@ async fn session(
                     transport.enable_edits(false);
                     if !request.cancellation.is_cancelled() {
                         let result = result.and_then(|value| match request.kind {
-                            RequestKind::Hover => Ok(Answer::Hover(protocol::hover_text(&value))),
+                            RequestKind::Hover => documentation::hover(&value, &request.cancellation).map(Answer::Hover),
                             RequestKind::Navigation(kind) => navigation::locations(&value, &request.cancellation).map(|locations| Answer::Locations(kind, locations)),
                             RequestKind::DocumentHighlights => navigation::highlights(&value, &document.snapshot, &positions, request.position, &request.cancellation).map(Answer::DocumentHighlights),
                             RequestKind::DocumentSymbols => symbols::parse(&value, Some(&document.path)).map(Answer::Symbols),
