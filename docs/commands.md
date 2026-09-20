@@ -4,6 +4,7 @@ Generated from command Rustdoc and the default keymap.
 
 | Command | Bindings by mode | Description |
 |---|---|---|
+| `save_selection` | Normal: `<C-s>`, Select: `<C-s>` | Save the current selections as a jump checkpoint without writing the file. |
 | `toggle_comments` | Normal: `<Space>c`, Normal: `<C-c>`, Select: `<Space>c`, Select: `<C-c>` | Toggle comments on selected lines, preferring line comments and recognizing existing block comments. Uses language delimiters, skips blank lines, preserves selections and mode, and creates one undo step. |
 | `toggle_block_comments` | Normal: `<Space>C`, Select: `<Space>C` | Toggle block comments around selections, retaining their direction and selecting added delimiters. Languages with only line comments use those instead; plain text defaults to /* */. One undo step, with normal/select mode retained. |
 | `rotate_view` | Normal: `<Space>ww`, Normal: `<Space>w<C-w>`, Normal: `<C-w>w`, Normal: `<C-w><C-w>`, Select: `<Space>ww`, Select: `<Space>w<C-w>`, Select: `<C-w>w`, Select: `<C-w><C-w>` | Focus the next window in layout order. A count advances multiple windows. |
@@ -27,7 +28,7 @@ Generated from command Rustdoc and the default keymap.
 | `symbol_picker` | Normal: `<Space>s`, Select: `<Space>s` | Open a searchable picker of symbols in the current document using its language server. |
 | `workspace_symbol_picker` | Normal: `<Space>S`, Select: `<Space>S` | Search workspace symbols using the current document's language server. |
 | `jump_back` | Normal: `<C-o>`, Select: `<C-o>` | Return to the location before the last successful file, definition, or symbol jump. |
-| `hover` | Normal: `<Space>k`, Normal: `K`, Select: `<Space>k`, Select: `K` | Show language-server documentation for the symbol at the primary cursor. |
+| `hover` | Normal: `<Space>k`, Select: `<Space>k` | Show language-server documentation for the symbol at the primary cursor. |
 | `goto_definition` | Normal: `gd`, Select: `gd` | Jump to the definition of the symbol at the primary cursor. |
 | `goto_next_diagnostic` | Normal: `]d`, Select: `]d` | Move to the next diagnostic, wrapping and honoring the repeat count. |
 | `goto_previous_diagnostic` | Normal: `[d`, Select: `[d` | Move to the previous diagnostic, wrapping and honoring the repeat count. |
@@ -57,8 +58,8 @@ Generated from command Rustdoc and the default keymap.
 | `goto_first_nonwhitespace` | Normal: `gs`, Select: `gs` | Move to the first non-whitespace grapheme of each cursor's line. Whitespace-only lines keep their selections unchanged. |
 | `goto_column` | Normal: `g\|`, Select: `g\|` | Move to the counted one-based grapheme column (default 1), clamped to each cursor's logical line. Tabs and wide graphemes each count as one column. |
 | `goto_line` | Normal: `G`, Select: `G` | Move to the explicitly counted one-based line, clamping to the last content line. With no count, do nothing; select mode extends to the destination. |
-| `goto_line_start` | Normal: `0`, Normal: `gh`, Normal: `<Home>`, Select: `0`, Select: `gh`, Select: `<Home>`, Insert: `<Home>` | Move to the beginning of the current logical line. |
-| `goto_line_end` | Normal: `$`, Normal: `gl`, Normal: `<End>`, Select: `$`, Select: `gl`, Select: `<End>`, Insert: `<End>` | Move to the last grapheme of the line, or its end boundary in insert mode. |
+| `goto_line_start` | Normal: `gh`, Normal: `<Home>`, Select: `gh`, Select: `<Home>`, Insert: `<Home>` | Move to the beginning of the current logical line. |
+| `goto_line_end` | Normal: `gl`, Normal: `<End>`, Select: `gl`, Select: `<End>`, Insert: `<End>` | Move to the last grapheme of the line, or its end boundary in insert mode. |
 | `goto_file_start` | Normal: `gg`, Select: `gg` | Move to the start of the document, or to the counted one-based line, clamped to the last content line. Select mode extends to the destination. |
 | `goto_file_end` | Normal: `ge`, Select: `ge` | Move to the end-of-file boundary. |
 | `select_line` | Normal: `x`, Select: `x` | Expand each selection to whole logical lines, including line endings, facing forward. If already line-aligned, extend below by the count; otherwise alignment counts as the first step.  Repeated x keeps earlier lines selected. Counts clamp at EOF and overlapping ranges merge while retaining the primary selection. |
@@ -81,8 +82,12 @@ Generated from command Rustdoc and the default keymap.
 | `add_newline_below` | Normal: `]<Space>`, Select: `]<Space>` | Add a counted number of empty lines below each selection without entering insert mode. Shared insertion points are handled once; uses the buffer's line ending and retains selections on the original text in one undo step. |
 | `open_below` | Normal: `o`, Select: `o` | Open lines below each selection and enter insert mode, copying indentation. A count creates that many lines and carets; opening and subsequent typing share one undo step.  Uses the loaded line ending; multiple selections ending on the same line share the new lines. |
 | `open_above` | Normal: `O`, Select: `O` | Open lines above each selection and enter insert mode, copying indentation. A count creates that many lines and carets; opening and subsequent typing share one undo step.  Uses the loaded line ending; multiple selections starting on the same line share the new lines. |
-| `insert_newline` | Insert: `<Enter>` | Insert a newline at every insert caret, copying leading tabs and spaces before that caret. Uses the loaded line ending and continues the typing undo group; requires insert mode.  Indentation is copied literally, without language-specific increases or decreases. Pasted and directly inserted text remains unchanged. |
+| `insert_newline` | Insert: `<C-j>`, Insert: `<Enter>` | Insert a newline at every insert caret, copying leading tabs and spaces before that caret. Uses the loaded line ending and continues the typing undo group; requires insert mode.  Indentation is copied literally, without language-specific increases or decreases. Pasted and directly inserted text remains unchanged. |
 | `insert_text` | Insert: unbound printable characters, Tab; direct text events | Insert the context's text at all carets, continuing the typing undo group; requires insert mode. |
+| `commit_undo_checkpoint` | Insert: `<C-s>` | Start a new undo checkpoint without saving or leaving insert mode. Subsequent typing and deletion form a new undo group. |
+| `delete_word_backward` | Insert: `<C-w>` | Delete backward to the previous word start at every insert caret, including intervening whitespace. Counts repeat the word motion; leaves registers unchanged and continues the typing undo group. |
+| `kill_to_line_start` | Insert: `<C-u>` | Delete from each insert caret back to the first non-whitespace character, or the line start when within indentation. At line start, remove the preceding line ending. Continues the typing undo group and leaves registers unchanged. |
+| `kill_to_line_end` | Insert: `<C-k>` | Delete from every insert caret to the line end; at the line ending, delete that entire ending instead. Continues the typing undo group and leaves registers unchanged. |
 | `insert_paste` | Insert: bracketed paste; direct paste events | Insert the context's pasted text at all carets as a separate undo step; requires insert mode. |
 | `yank` | Normal: `y`, Select: `y` | Copy selections to the shared internal register, retaining their order and leaving select mode. Does not edit text or undo history. |
 | `paste_after` | Normal: `p`, Select: `p` | Paste the internal register after selections, selecting the inserted text in normal mode. Newline-terminated yanks paste below the selected lines; counts repeat each fragment in one undo step.  Fragments pair with selections in document order; extra destinations repeat the last fragment. Uses the destination's line endings without changing the register. |
@@ -91,7 +96,7 @@ Generated from command Rustdoc and the default keymap.
 | `delete_selection` | Normal: `d`, Select: `d` | Cut selections into the shared internal register and delete them atomically, leaving normal-mode cursors at the edit locations. |
 | `delete_selection_without_yank` |  | Delete selections without changing the yank register. Used for internal buffer cleanup; leaves normal-mode cursors at the edit locations. |
 | `change_selection` | Normal: `c`, Select: `c` | Cut selections into the shared internal register and enter insert mode; the deletion and subsequent typing share one undo step. |
-| `delete_backward` | Insert: `<C-h>`, Insert: `<Backspace>` | Delete preceding graphemes at all insert carets as a separate undo step; accepts a count. |
-| `delete_forward` | Insert: `<Delete>` | Delete following graphemes at all insert carets as a separate undo step; accepts a count. |
+| `delete_backward` | Insert: `<C-h>`, Insert: `<Backspace>` | Delete preceding graphemes at all insert carets, continuing the typing undo group; accepts a count. |
+| `delete_forward` | Insert: `<C-d>`, Insert: `<Delete>` | Delete following graphemes at all insert carets, continuing the typing undo group; accepts a count. |
 | `undo` | Normal: `u`, Select: `u` | Undo edit groups and restore their selections; accepts a count of groups. |
-| `redo` | Normal: `U`, Normal: `<C-r>`, Select: `U`, Select: `<C-r>` | Redo edit groups and restore their selections; accepts a count of groups. |
+| `redo` | Normal: `U`, Select: `U` | Redo edit groups and restore their selections; accepts a count of groups. |

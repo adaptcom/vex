@@ -37,7 +37,7 @@ Rust, Markdown, Bash/shell, TypeScript/TSX, and JavaScript/JSX use syntax colors
 automatically, including in file previews. Use `:language NAME` to override
 detection, `:language text` for plain text, or `:language auto` to restore
 filename/shebang detection. See [syntax support and adding languages](docs/syntax.md).
-With the configured server on `PATH`, named files also get diagnostics, `K` for
+With the configured server on `PATH`, named files also get diagnostics, Space-k for
 hover, `gd` for definitions, `Ctrl-o` to jump back, and `]d` / `[d` to navigate
 diagnostics. See [language services and setup](docs/lsp.md).
 Tracked files show live Git gutter markers, including unsaved changes, with

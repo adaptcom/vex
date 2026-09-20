@@ -33,7 +33,7 @@ protocol failures, and request errors leave editing and saving available.
 
 | Key / command | Behavior |
 |---|---|
-| `K` / `:hover` | Show documentation at the primary cursor |
+| Space-k / `:hover` | Show documentation at the primary cursor |
 | `gd` / `:goto_definition` | Jump to the first definition returned by the server |
 | `Space-s` / `:symbol_picker` | Pick a symbol from the current document |
 | `Space-S` / `:workspace_symbol_picker` | Search symbols across the active server's workspace |

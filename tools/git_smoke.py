@@ -41,7 +41,8 @@ def main():
             terminal.expect_screen(" 2 ▍ B".encode())
             terminal.expect_screen(" 4 ▍ added".encode())
             terminal.expect_screen(" 6 ▔ ".encode())
-            mark = terminal.send(b"iunsaved\r\x03")
+            mark = terminal.send(b"iunsaved\r")
+            terminal.leave_insert()
             terminal.expect("▍".encode(), mark)
             terminal.expect_screen(" 1 ▍ unsaved".encode())
             assert path.read_text() == "a\nB\nc\nadded\nd\n"

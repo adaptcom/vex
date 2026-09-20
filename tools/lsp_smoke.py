@@ -39,7 +39,7 @@ def main():
             terminal.expect_screen(b"expected")
             terminal.send(b"/answer\r")
             terminal.expect_screen(b"2:39")
-            terminal.send(b"K")
+            terminal.send(b" k")
             terminal.expect_screen(b"fn answer()")
             terminal.send(b"gd")  # The first key dismisses hover and dispatches normally.
             terminal.expect_screen(b"other.rs")
@@ -89,13 +89,14 @@ def main():
             terminal.expect_screen(b"Returns the completion probe")
             terminal.send(b"\x03")  # Reject completion and stay in insert mode.
             terminal.expect_screen(b"INS")
-            terminal.send(b"\x18\t\r\x13")  # Early selection/accept/save await both replies.
-            terminal.expect_screen(b"wrote")
+            terminal.send(b"\x18\t\r")  # Early selection/accept await both replies.
+            terminal.expect_screen(b"fn main() { vex_completion_target")
+            terminal.save_from_insert()
             completed = main_file.read_text()
             assert completed.startswith(source.rsplit("vex_com", 1)[0])
             assert "vex_completion_target" in completed.split("fn main()", 1)[1]
             assert "$0" not in completed and "${" not in completed
-            terminal.send(b"\x03u\x13")
+            terminal.send(b"u:w\r")
             terminal.expect_screen(b"fn main() { vex_com ")
             terminal.expect_screen(b"wrote")
             assert main_file.read_text() == source, main_file.read_text()
@@ -125,10 +126,11 @@ def main():
                     if attempt == 2:
                         raise
                     terminal.send(b"\x7f")
-            terminal.send(b"\t\r\x13")
-            terminal.expect_screen(b"wrote")
+            terminal.send(b"\t\r")
+            terminal.expect_screen(b"let _ = vex_completion_target")
+            terminal.save_from_insert()
             assert "vex_completion_target" in main_file.read_text().split("fn main()", 1)[1]
-            terminal.send(b'\x03/"hello"\ra')
+            terminal.send(b'/"hello"\ra')
             for attempt in range(3):
                 mark = terminal.send(b".")
                 try:
@@ -142,7 +144,9 @@ def main():
             # Narrow the menu and verify it refreshes after further typing.
             terminal.send(b"le")
             terminal.expect_screen(b" len ")
-            terminal.send(b"\x03\x03:q!\r")
+            terminal.send(b"\x03")  # Reject completion.
+            terminal.leave_insert()
+            terminal.send(b":q!\r")
             terminal.finish()
         print("PASS: automatic completion after idle, acceptance, and server-triggered member completion")
 
@@ -152,8 +156,8 @@ def main():
             with Terminal([binary, str(main_file)]) as terminal:
                 terminal.start()
                 terminal.expect_screen(b"RA:unavailable")
-                terminal.send(b"i// editing works\x03")
-                terminal.expect_screen(b"NOR")
+                terminal.send(b"i// editing works")
+                terminal.leave_insert()
                 terminal.expect_screen(b"main.rs [+]")
                 terminal.send(b":q!\r")
                 terminal.finish()

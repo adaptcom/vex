@@ -256,18 +256,6 @@ impl App {
                                 kind: PromptKind::Command,
                             });
                         }
-                        Key::Ctrl('s') if self.keys.pending_keys().is_empty() => {
-                            self.keys.cancel();
-                            if let Err(error) = write_file(self, "", false) {
-                                self.fail(error);
-                            }
-                        }
-                        Key::Ctrl('q') if self.keys.pending_keys().is_empty() => {
-                            self.keys.cancel();
-                            if let Err(error) = quit(self, "", false) {
-                                self.fail(error);
-                            }
-                        }
                         _ => {
                             if let Err(error) = self.keys.handle(&mut self.editor, key) {
                                 self.fail(error);
@@ -443,6 +431,11 @@ impl App {
 
     fn apply_application_action(&mut self) {
         let result = match self.editor.take_application_action() {
+            Some(ApplicationAction::SaveSelection) => {
+                self.record_jump();
+                self.message = "jump checkpoint saved".into();
+                Ok(())
+            }
             Some(ApplicationAction::GitStatus) => self.open_git_status(),
             Some(ApplicationAction::FilePicker) => {
                 self.open_file_picker();
@@ -1195,10 +1188,7 @@ mod tests {
         std::fs::write(&path, "").unwrap();
         let mut app = App::open(Some(&path), (80, 24)).unwrap();
         press(&mut app, "ihello");
-        app.handle(Event::Key(KeyEvent::new(
-            KeyCode::Char('s'),
-            KeyModifiers::CONTROL,
-        )));
+        app.execute("w").unwrap();
         assert!(!app.is_dirty());
         assert_eq!(app.editor.mode(), Mode::Insert);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
@@ -1221,6 +1211,37 @@ mod tests {
         assert!(!app.is_dirty());
         app.execute("q").unwrap();
         assert!(app.should_quit());
+    }
+
+    #[test]
+    fn control_s_creates_undo_and_jump_checkpoints_without_saving() {
+        let mut app = App::from_document(Document::from("abc def"), (80, 24));
+        let control_s = || Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        let selection = vex_core::SelectionSet::new(
+            vec![
+                vex_core::Selection::new(vex_core::CharOffset(0), vex_core::CharOffset(2)),
+                vex_core::Selection::new(vex_core::CharOffset(7), vex_core::CharOffset(4)),
+            ],
+            1,
+        )
+        .unwrap();
+        app.editor.set_selections(selection.clone()).unwrap();
+        app.handle(control_s());
+        assert!(!app.error, "{}", app.message);
+        press(&mut app, ",gg");
+        app.execute("jump_back").unwrap();
+        app.take_lsp_update(); // Navigation works with language services disabled.
+        assert_eq!(app.editor.selections(), &selection);
+        press(&mut app, ",ihello");
+        app.handle(control_s());
+        assert!(app.is_dirty());
+        assert_eq!(app.editor.mode(), Mode::Insert);
+        assert!(!app.error, "{}", app.message);
+        press(&mut app, " world");
+        app.editor.execute("undo", 1).unwrap();
+        assert_eq!(app.editor.document().text(), "abc hellodef");
+        app.editor.execute("undo", 1).unwrap();
+        assert_eq!(app.editor.document().text(), "abc def");
     }
 
     #[test]

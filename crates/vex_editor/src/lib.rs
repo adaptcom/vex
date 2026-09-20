@@ -62,6 +62,7 @@ pub enum LanguageAction {
 /// Application UI requested by documented commands without performing file I/O.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApplicationAction {
+    SaveSelection,
     GitStatus,
     FilePicker,
     DocumentSymbols,
@@ -493,6 +494,7 @@ mod tests {
             editor.selections().primary(),
             Selection::cursor(CharOffset(3))
         );
+        editor.execute("commit_undo_checkpoint", 1).unwrap();
         editor.execute("delete_backward", 1).unwrap();
         assert_eq!(editor.document().text(), "");
         editor.execute("undo", 1).unwrap();

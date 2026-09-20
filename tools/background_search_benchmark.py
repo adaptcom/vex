@@ -41,7 +41,7 @@ def main():
                 terminal.expect(b"\x1b[2 q", mark)
                 cancel = (time.perf_counter() - start) * 1000
                 samples.append({"resize_ms": resize, "cancel_ms": cancel})
-            terminal.send(b"\x11")  # Clean quit also joins both producer threads.
+            terminal.send(b":q\r")  # Clean quit also joins both producer threads.
             terminal.finish()
     print(json.dumps({
         "mib": args.mib,

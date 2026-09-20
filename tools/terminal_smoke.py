@@ -77,7 +77,10 @@ class Terminal:
     def __exit__(self, *_):
         if self.status is None:
             # Let the editor stop its workers and language server on test failure.
-            self.send(b"\x03:qa!\r")
+            for _ in range(3):
+                self.send(b"\x1b")
+                self.drain(0.05)
+            self.send(b":qa!\r")
             deadline = time.monotonic() + 2
             while self.poll() is None and time.monotonic() < deadline:
                 self.drain()
@@ -127,6 +130,18 @@ class Terminal:
         mark = len(self.output)
         os.write(self.master, data)
         return mark
+
+    def leave_insert(self):
+        # Keep Escape separate from the next printable key: adjacent bytes can
+        # be decoded as an Alt chord by the terminal input parser.
+        self.expect_screen(b"INS")
+        mark = self.send(b"\x1b")
+        self.expect(b"NOR", mark)
+
+    def save_from_insert(self):
+        self.leave_insert()
+        mark = self.send(b":w\r")
+        self.expect(b"wrote", mark)
 
     def expect_screen(self, needle):
         # A worker may complete after the first focus redraw. Ask for complete
@@ -209,10 +224,10 @@ def main():
             # ordinary diffs may skip letters already present in the old one.
             mark = terminal.send(b"\x1b[200~:q!\r\n\x1b[201~\x1b[I")
             terminal.expect(b"enter insert mode to paste", mark)
-            mark = terminal.send(b"\x13")  # Ctrl-s
+            mark = terminal.send(b":w\r")
             terminal.expect(b"wrote", mark)
             assert path.read_bytes() == "界e\u0301🦀\r\nhello\r\n".encode()
-            terminal.send(b"\x11")  # Ctrl-q
+            terminal.send(b":q\r")
             terminal.finish()
         print("PASS: Unicode paste, CRLF, undo/redo, dirty quit, resize, save, clean quit")
 
@@ -223,9 +238,11 @@ def main():
             # Exercise both common Backspace bytes through Crossterm, too.
             terminal.send(b"obeloX\x7fwY\x08")
             terminal.expect_screen(b"below")
-            terminal.send(b"\x03Oabove")
+            terminal.leave_insert()
+            terminal.send(b"Oabove")
             terminal.expect_screen(b"above")
-            terminal.send(b"\x03u:wq\r")
+            terminal.leave_insert()
+            terminal.send(b"u:wq\r")
             terminal.finish()
             assert opened_lines.read_bytes() == b"\tfirst\r\n\tbelow\r\nlast"
         print("PASS: o/O, indentation, CRLF, grouped undo, both Backspace encodings")
@@ -236,7 +253,8 @@ def main():
             terminal.start()
             terminal.send(b"gla\rsecond")
             terminal.expect_screen(b"second")
-            terminal.send(b"\x03u")
+            terminal.leave_insert()
+            terminal.send(b"u")
             terminal.expect_screen(b"first")
             # Redo must restore the newline, mixed indentation, and typed text.
             terminal.send(b"U:wq\r")
@@ -248,15 +266,15 @@ def main():
         saved_group.write_text("")
         with Terminal([binary, str(saved_group)]) as terminal:
             terminal.start()
-            mark = terminal.send(b"ihello\x13")  # Save while still in insert mode.
-            terminal.expect(b"wrote", mark)
-            assert saved_group.read_text() == "hello"
-            mark = terminal.send(b" world\x1b")
-            terminal.expect(b"NOR", mark)
-            terminal.send(b"u\x11")  # One undo reaches the savepoint; quit must succeed.
+            terminal.send(b"ihello\x13")  # Explicit undo checkpoint, without I/O.
+            terminal.expect_screen(b"hello")
+            assert saved_group.read_text() == ""
+            terminal.send(b" world")
+            terminal.leave_insert()
+            terminal.send(b"u:wq\r")
             terminal.finish()
             assert saved_group.read_text() == "hello"
-        print("PASS: grouped typing and undo to an insert-mode savepoint")
+        print("PASS: Ctrl-s splits typing undo groups without saving")
 
         pages = Path(directory) / "pages.txt"
         page_source = "".join(f"row {line:03}\n" for line in range(100))
@@ -286,9 +304,11 @@ def main():
             terminal.start()
             terminal.send(b"\x17v")  # Ctrl-w v
             terminal.expect_screen("│".encode())
-            terminal.send(b"iX\x03 whu")  # Shared edit, focus left, shared undo.
+            terminal.send(b"iX")
+            terminal.leave_insert()
+            terminal.send(b" whu")  # Focus left, shared undo.
             terminal.expect_screen(b"alpha")
-            terminal.send(b"U\x13")
+            terminal.send(b"U:w\r")
             terminal.expect_screen(b"wrote")
             assert split_path.read_text() == "Xalpha\nsecond\n"
             terminal.send(b" wl\x17\x13")  # Ctrl-w Ctrl-s must split, not save.
@@ -299,7 +319,9 @@ def main():
             terminal.send(b" wo:vsplit " + os.fsencode(other_path) + b"\r")
             terminal.expect_screen(b"beta")
             terminal.expect_screen(b"Xalpha")
-            terminal.send(b"iY\x03:q\r")
+            terminal.send(b"iY")
+            terminal.leave_insert()
+            terminal.send(b":q\r")
             terminal.expect_screen(b"unsaved changes")
             terminal.send(b":w\r")
             terminal.expect_screen(b"wrote")
@@ -332,7 +354,7 @@ def main():
             terminal.expect(b"\x1b[38;5;8m", mark)  # Entire line becomes a comment.
             mark = terminal.send(b"u")
             terminal.expect(b"\x1b[38;5;13m", mark)  # Undo produces fresh keywords.
-            terminal.send(b"\x11")
+            terminal.send(b":q\r")
             terminal.finish()
             assert rust_path.read_text() == 'fn main() { let message = "界"; }\n'
         print("PASS: idle background syntax completion, comment edit, undo, and clean quit")
@@ -355,10 +377,10 @@ def main():
             terminal.expect_screen(b"3:7")
             mark = terminal.send(b"?cat\rn\x1b[I")
             terminal.expect_screen(b"2:5")
-            mark = terminal.send(b"d\x13")
+            mark = terminal.send(b"d:w\r")
             terminal.expect(b"wrote", mark)
             assert search_path.read_text() == "start cat one\nmid  two\nend cat three\n"
-            terminal.send(b"\x11")
+            terminal.send(b":q\r")
             terminal.finish()
         print("PASS: search preview, accept, cancel, forward/backward repeats, and edit match")
 
@@ -368,10 +390,10 @@ def main():
             terminal.start()
             # Enter and edit keys arrive before either search result. Both the
             # preview and the n repeat must resolve before d and save execute.
-            mark = terminal.send(b"/cat\rnd\x13")
+            mark = terminal.send(b"/cat\rnd:w\r")
             terminal.expect(b"wrote", mark)
             assert ordered_path.read_text() == "x cat "
-            terminal.send(b"\x11")
+            terminal.send(b":q\r")
             terminal.finish()
         print("PASS: early search acceptance and queued repeat/edit/save preserve key order")
 
@@ -384,10 +406,9 @@ def main():
             terminal.expect(b"INS", mark)
             # This spans many bounded input batches; no key may be consumed
             # past the batch limit and then lost before the next iteration.
-            mark = terminal.send(b"\x13")
-            terminal.expect(b"wrote", mark)
+            terminal.save_from_insert()
             assert burst_path.read_text() == "abcdef" * 150
-            terminal.send(b"\x11")
+            terminal.send(b":q\r")
             terminal.finish()
         print("PASS: bounded event batches preserve all 900 queued text keys")
 

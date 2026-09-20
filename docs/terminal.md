@@ -44,8 +44,11 @@ and calls that existing dispatcher.
 | Space-C | Toggle block comments; use line comments for languages that only support those |
 | `[Space`, `]Space` | Add empty lines above/below selections, retaining normal/select mode |
 | `o`, `O` | Open lines below/above selections and enter insert mode |
-| Enter in insert mode | Split the line and copy indentation before the caret |
+| Enter, Ctrl-j in insert mode | Split the line and copy indentation before the caret |
 | Backspace, Ctrl-h in insert mode | Delete the preceding grapheme |
+| Delete, Ctrl-d in insert mode | Delete the next grapheme |
+| Ctrl-w in insert mode | Delete the preceding word |
+| Ctrl-u, Ctrl-k in insert mode | Delete toward the start/end of the line |
 | Ctrl-x in insert mode | Request completion immediately; automatic completion also opens after typing |
 | `v` | Enter select mode |
 | `y` | Yank selections to the internal register shared across files and panes |
@@ -59,7 +62,7 @@ and calls that existing dispatcher.
 | `X` | Expand to line boundaries, preserving direction |
 | `_` | Trim whitespace from selection edges |
 | `u`, `U` | Undo/redo |
-| `K`, `gd`, Ctrl-o | Hover, go to definition, return from a definition jump |
+| `gd`, Ctrl-o | Go to definition / return to the previous jump checkpoint |
 | `]d`, `[d` | Next/previous diagnostic, with counts and wrapping |
 | Space-f, Space-k | Open file picker / show hover |
 | Space-s, Space-S | Open document / workspace symbol picker |
@@ -67,7 +70,7 @@ and calls that existing dispatcher.
 | Ctrl-w, Space-w | Enter [window mode](windows.md) to split, focus, swap, and close panes |
 | Escape | Cancel a prefix/picker/prompt; otherwise enter normal mode |
 | `:` in normal/select mode | Open the command prompt |
-| Ctrl-s, Ctrl-q | Save / close the current pane with an unsaved-change check |
+| Ctrl-s | Save a selection checkpoint in normal/select mode; split the typing undo group in insert mode |
 | Ctrl-c | Cancel prompts, completion, or pending key sequences; toggle comments in normal/select mode |
 
 See the [editing command reference](commands.md) for exact movement semantics.
@@ -169,17 +172,25 @@ Bracketed paste in insert mode is a separate undo step, preserving the pasted
 bytes. Pasting in normal/select mode shows a message to enter insert mode. Pasting
 into the prompt removes control characters and never submits a command.
 
-Consecutive typing (including Enter and Tab) shares one undo group. Movement,
+Consecutive typing (including Enter, Tab, and insert-mode deletion) shares one undo group. Movement,
 mode/selection changes, and save attempts end it. `c` and its following replacement
-text share a group, as do `o`/`O` and their following typing; `d`, Backspace,
-Delete, and each paste get their own steps.
-Typing after those actions starts a new group. For example, `ihello<Esc>u` removes
+text share a group, as do `o`/`O` and their following typing; `d` and each paste
+get their own steps. Typing after those actions starts a new group.
+For example, `ihello<Esc>u` removes
 the whole word, and `2u` undoes two groups. Undo/redo restores every selection,
 adjusted to the current mode; it does not switch modes.
 
-Saving with Ctrl-s while still inserting closes the group. Typing more and undoing
-once returns to the saved state and clears the modified indicator. A failed save
-also separates typing but does not change the savepoint.
+Ctrl-s in insert mode ends the current undo group without saving or leaving insert
+mode. Typing more and undoing once returns to that checkpoint. In normal/select
+mode, Ctrl-s records all selections for Ctrl-o to return to, including in scratch
+buffers. Save with `:w`; a failed save separates typing but leaves the savepoint
+unchanged.
+
+Ctrl-w deletes back by words. Ctrl-u deletes to the first non-whitespace character,
+then to the line start on another press, then joins with the preceding line.
+Ctrl-k deletes to the line end, then removes the line ending on another press.
+These commands handle CRLF as one unit, merge overlapping deletions, and leave
+the yank register unchanged.
 
 ## Command prompt
 
@@ -221,7 +232,7 @@ choice persists across saves until `:language auto`. Selections and cursor style
 take precedence over syntax colors. See [syntax architecture and limits](syntax.md).
 
 Named files start their configured server when it is installed on `PATH` (or
-selected by its executable override). Diagnostics appear in the gutter and status line; `K`
+selected by its executable override). Diagnostics appear in the gutter and status line; Space-k
 opens a hover panel. Definition jumps can open another file after saving pending
 changes, and Ctrl-o returns to the origin. See [language services](lsp.md) for
 setup, active-document service limits, and failure handling.

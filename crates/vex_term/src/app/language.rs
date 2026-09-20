@@ -16,6 +16,13 @@ struct Pending {
     cancellation: Cancellation,
 }
 
+#[derive(Clone)]
+struct Jump {
+    document: DocumentId,
+    path: Option<PathBuf>,
+    selections: SelectionSet,
+}
+
 #[derive(Default)]
 pub(super) struct State {
     enabled: bool,
@@ -29,7 +36,7 @@ pub(super) struct State {
     popup: Option<String>,
     status: &'static str,
     completion: Option<CompletionOptions>,
-    jumps: VecDeque<(PathBuf, CharOffset)>,
+    jumps: VecDeque<Jump>,
     pub(super) saved: u64,
     pub(super) saved_snapshot: Option<vex_core::Snapshot>,
 }
@@ -50,14 +57,28 @@ impl Drop for State {
 }
 
 impl App {
-    pub(super) fn record_jump(&mut self) {
-        if let Some(path) = self.files.target() {
-            let origin = (path.to_path_buf(), self.language_cursor());
-            if self.language.jumps.len() == 32 {
-                self.language.jumps.pop_front();
-            }
-            self.language.jumps.push_back(origin);
+    fn current_jump(&self) -> Jump {
+        Jump {
+            document: self.editor.document().id(),
+            path: self.files.target().map(PathBuf::from),
+            selections: self.editor.selections().clone(),
         }
+    }
+
+    fn push_jump(&mut self, jump: Jump) {
+        if self.language.jumps.back().is_some_and(|last| {
+            last.document == jump.document && last.selections == jump.selections
+        }) {
+            return;
+        }
+        if self.language.jumps.len() == 32 {
+            self.language.jumps.pop_front();
+        }
+        self.language.jumps.push_back(jump);
+    }
+
+    pub(super) fn record_jump(&mut self) {
+        self.push_jump(self.current_jump());
     }
     pub fn enable_lsp(&mut self) {
         self.language.enabled = true;
@@ -90,6 +111,13 @@ impl App {
         self.invalidate_symbol_picker();
         self.poll_completion(Instant::now());
         let action = self.editor.take_language_action();
+        if action == Some(LanguageAction::JumpBack) {
+            if let Err(error) = self.jump_back() {
+                self.fail(error);
+            }
+            self.language.force = true;
+            return self.take_lsp_update();
+        }
         if !self.language.enabled {
             self.fail_symbol_picker("language services are not enabled in this frontend");
             if action.is_some() {
@@ -212,13 +240,6 @@ impl App {
             Some(LanguageAction::NextDiagnostic(count)) => self.navigate_diagnostic(false, count),
             Some(LanguageAction::PreviousDiagnostic(count)) => {
                 self.navigate_diagnostic(true, count)
-            }
-            Some(LanguageAction::JumpBack) => {
-                if let Err(error) = self.jump_back() {
-                    self.fail(error);
-                }
-                self.language.force = true;
-                return self.take_lsp_update();
             }
             _ => {}
         }
@@ -370,10 +391,7 @@ impl App {
     }
 
     pub(super) fn open_location(&mut self, location: vex_lsp::Location) -> io::Result<()> {
-        let origin = self
-            .files
-            .target()
-            .map(|path| (path.to_path_buf(), self.language_cursor()));
+        let origin = self.current_jump();
         if self.files.target() == Some(location.path.as_path()) {
             let offset = vex_lsp::offset(self.editor.document().text(), location.position)
                 .ok_or_else(|| io::Error::other("invalid symbol position"))?;
@@ -387,29 +405,45 @@ impl App {
             let offset = self.open_window_definition(&location)?;
             self.move_to(offset)?;
         }
-        if let Some(origin) = origin {
-            if self.language.jumps.len() == 32 {
-                self.language.jumps.pop_front();
-            }
-            self.language.jumps.push_back(origin);
-        }
+        self.push_jump(origin);
         self.clear_message();
         Ok(())
     }
 
     fn jump_back(&mut self) -> io::Result<()> {
-        let (path, position) = self
+        let jump = self
             .language
             .jumps
             .back()
             .cloned()
             .ok_or_else(|| io::Error::other("no previous jump"))?;
-        if self.files.target() != Some(path.as_path()) {
-            self.open_window_file(&path)?;
+        if self.editor.document().id() != jump.document {
+            let path = jump
+                .path
+                .as_ref()
+                .ok_or_else(|| io::Error::other("jump buffer is no longer open"))?;
+            self.open_window_file(path)?;
         }
-        self.move_to(CharOffset(
-            position.0.min(self.editor.document().text().len_chars()),
-        ))?;
+        self.editor
+            .execute("normal_mode", 1)
+            .map_err(io::Error::other)?;
+        let len = self.editor.document().text().len_chars();
+        let ranges = jump
+            .selections
+            .ranges()
+            .iter()
+            .map(|selection| {
+                vex_core::Selection::new(
+                    CharOffset(selection.anchor.0.min(len)),
+                    CharOffset(selection.head.0.min(len)),
+                )
+            })
+            .collect();
+        let selections =
+            SelectionSet::new(ranges, jump.selections.primary_index()).map_err(io::Error::other)?;
+        self.editor
+            .set_selections(selections)
+            .map_err(io::Error::other)?;
         self.language.jumps.pop_back();
         self.clear_message();
         Ok(())

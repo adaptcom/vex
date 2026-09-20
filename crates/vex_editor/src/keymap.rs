@@ -198,7 +198,6 @@ impl Default for Keymap {
                 (vec![Char('?')], "search_backward"),
                 (vec![Char('n')], "search_next"),
                 (vec![Char('N')], "search_previous"),
-                (vec![Char('K')], "hover"),
                 (vec![Char(' '), Char('f')], "file_picker"),
                 (vec![Char(' '), Char('g')], "git_status"),
                 (vec![Char(' '), Char('s')], "symbol_picker"),
@@ -208,10 +207,10 @@ impl Default for Keymap {
                 (vec![Char(' '), Char('C')], "toggle_block_comments"),
                 (vec![Ctrl('c')], "toggle_comments"),
                 (vec![Ctrl('o')], "jump_back"),
+                (vec![Ctrl('s')], "save_selection"),
                 (vec![Char('g'), Char('d')], "goto_definition"),
                 (vec![Char(']'), Char('d')], "goto_next_diagnostic"),
                 (vec![Char('['), Char('d')], "goto_previous_diagnostic"),
-                (vec![Ctrl('r')], "redo"),
                 (vec![Char('g'), Char('g')], "goto_file_start"),
                 (vec![Char('G')], "goto_line"),
                 (vec![Char('g'), Char('|')], "goto_column"),
@@ -219,8 +218,6 @@ impl Default for Keymap {
                 (vec![Char('g'), Char('e')], "goto_file_end"),
                 (vec![Char('g'), Char('h')], "goto_line_start"),
                 (vec![Char('g'), Char('l')], "goto_line_end"),
-                (vec![Char('0')], "goto_line_start"),
-                (vec![Char('$')], "goto_line_end"),
             ] {
                 keymap
                     .bind(mode, keys, command)
@@ -302,6 +299,16 @@ impl Default for Keymap {
         keymap
             .bind(Mode::Insert, vec![Ctrl('x')], "completion")
             .unwrap();
+        for (key, command) in [
+            (Ctrl('w'), "delete_word_backward"),
+            (Ctrl('u'), "kill_to_line_start"),
+            (Ctrl('k'), "kill_to_line_end"),
+            (Ctrl('d'), "delete_forward"),
+            (Ctrl('j'), "insert_newline"),
+            (Ctrl('s'), "commit_undo_checkpoint"),
+        ] {
+            keymap.bind(Mode::Insert, vec![key], command).unwrap();
+        }
         keymap
     }
 }
@@ -766,11 +773,11 @@ mod tests {
         let mut keys = KeyHandler::default();
         assert_eq!(
             keys.handle(&mut editor, Key::Ctrl('d')).unwrap(),
-            Dispatch::Ignored
+            Dispatch::Executed("delete_forward")
         );
         assert_eq!(
             keys.handle(&mut editor, Key::Ctrl('u')).unwrap(),
-            Dispatch::Ignored
+            Dispatch::Executed("kill_to_line_start")
         );
         assert!(editor.take_application_action().is_none());
     }

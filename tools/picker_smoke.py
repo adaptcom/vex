@@ -53,15 +53,17 @@ def main():
             terminal.expect_screen(b"original document")
             # Paste and early Enter in one burst, followed by edit/save. The
             # query's completion must resolve before editing keys are dispatched.
-            terminal.send(b" f\x1b[200~" + "界 target".encode() + b"\x1b[201~\riX\x13")
-            terminal.expect_screen(b"wrote")
+            terminal.send(b" f\x1b[200~" + "界 target".encode() + b"\x1b[201~\riX")
+            terminal.expect_screen(b"INS")
+            terminal.save_from_insert()
             assert target.read_text() == "Xunique preview contents\n"
             assert origin.read_text() == "original document\n"
-            terminal.send(b"\x03\x0f")
+            terminal.send(b"\x0f")
             terminal.expect_screen(b"original document")
-            terminal.send(b"iDIRTY\x03")
+            terminal.send(b"iDIRTY")
+            terminal.leave_insert()
             terminal.send(b" ftarget\r")
-            terminal.expect_screen(b"Save this buffer")
+            terminal.expect_screen(b"save this buffer")
             terminal.send(b"\x03:q!\r")
             terminal.finish()
         print("PASS: group hints, floating borders, visible original buffer, syntax preview, Unicode fuzzy query, resize, cancellation, early Enter/edit/save, jump back, dirty-buffer protection, terminal cleanup")

@@ -78,6 +78,43 @@ columns, and scanning short target-line prefixes. It does not measure vertical
 movement at deep columns in exceptionally long lines. These original measurements
 predate the layout cache; see the long-line measurements below.
 
+## Comments and insert checkpoint follow-up
+
+Measured on the same machine and release profile on 2026-09-19. Comment toggles
+at `77db754` use unique selected lines and one transaction, without flattening
+the document:
+
+```sh
+cargo bench -p vex_editor --bench commands --locked -- comment_selected_lines_and_undo --noplot
+```
+
+| Source size | One selected line, toggle then undo | 1,000 selected lines, toggle then undo |
+|---|---:|---:|
+| 1 MiB | 3.74 µs | 2.92 ms |
+| 100 MiB | 3.47 µs | 3.99 ms |
+
+The fixture, selections, and language setup are outside the timed loop; these
+are Criterion central estimates using the command suite's settings. Sparse
+selections span the buffer. They do not measure commenting a whole large file,
+rendering, or terminal latency. Insert deletion similarly builds one transaction
+over merged affected ranges and continues the typing undo group. Ctrl-s closes
+that group without file I/O.
+
+After the Unicode chunk-boundary fix and insert bindings, the same movement
+fixtures measured 0.728 µs for a right/left pair with one cursor in 10 MiB of
+Unicode, 1.20 ms for 1,000 cursors, and 2.43 µs for the tab/CJK down/up pair.
+The earlier table predates several editor changes; it is not an isolated
+before/after comparison of the Unicode fix. Reproduce these measurements with:
+
+```sh
+cargo bench -p vex_editor --bench commands --locked -- 'move_right_left/unicode_10MiB|move_down_up_tabs_unicode' --noplot
+```
+
+The chunk-boundary workaround preserves the segmentation cursor's running
+state, uses an eight-byte stack buffer only when a scan crosses chunks, and
+keeps complete-chunk queries on a short path. It neither flattens the rope nor
+restarts a prefix scan for every cluster in a long regional-indicator run.
+
 ## Terminal viewport baseline
 
 Recorded on the same development machine on 2026-09-19, with 30 samples, a

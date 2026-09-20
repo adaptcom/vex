@@ -73,7 +73,7 @@ fn replace_ranges(editor: &mut Editor, ranges: &SelectionSet, text: &str) -> Res
     let transaction = editor.document.replace_selections(ranges, text)?;
     let after = transaction.map_selections(&editor.selections, Affinity::After)?;
     let transaction = transaction.with_selections(after)?;
-    editor.apply(transaction, false)?;
+    editor.apply(transaction, true)?;
     editor.preferred_columns = None;
     Ok(())
 }
@@ -403,6 +403,29 @@ fn erase(ctx: &mut CommandContext<'_>, backward: bool) -> Result<(), Error> {
     normalize(editor)
 }
 
+fn erase_insert_range(
+    ctx: &mut CommandContext<'_>,
+    edge: impl Fn(&vex_core::Rope, CharOffset, usize) -> Result<CharOffset, vex_core::Error>,
+) -> Result<(), Error> {
+    let editor = &mut *ctx.editor;
+    require_insert(editor)?;
+    let text = editor.document.text();
+    let ranges = editor
+        .selections
+        .ranges()
+        .iter()
+        .map(|selection| {
+            Ok(Selection::new(
+                selection.head,
+                edge(text, selection.head, ctx.count.get())?,
+            ))
+        })
+        .collect::<Result<Vec<_>, vex_core::Error>>()?;
+    let ranges = SelectionSet::new(ranges, editor.selections.primary_index())?;
+    replace_ranges(editor, &ranges, "")?;
+    normalize(editor)
+}
+
 fn require_insert(editor: &Editor) -> Result<(), Error> {
     if editor.mode != Mode::Insert {
         return Err(Error::WrongMode {
@@ -425,6 +448,13 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
 }
 
 commands! {
+    /// Save the current selections as a jump checkpoint without writing the file.
+    fn save_selection(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.application_action = Some(crate::ApplicationAction::SaveSelection);
+        Ok(())
+    }
+
     /// Toggle comments on selected lines, preferring line comments and recognizing existing block comments. Uses language delimiters, skips blank lines, preserves selections and mode, and creates one undo step.
     fn toggle_comments(ctx) { crate::comments::toggle(ctx.editor, false) }
 
@@ -881,6 +911,38 @@ commands! {
     /// Insert the context's text at all carets, continuing the typing undo group; requires insert mode.
     fn insert_text(ctx) { insert(ctx, true) }
 
+    /// Start a new undo checkpoint without saving or leaving insert mode. Subsequent typing and deletion form a new undo group.
+    fn commit_undo_checkpoint(ctx) {
+        require_insert(ctx.editor)?;
+        ctx.editor.finish_undo_group();
+        Ok(())
+    }
+
+    /// Delete backward to the previous word start at every insert caret, including intervening whitespace. Counts repeat the word motion; leaves registers unchanged and continues the typing undo group.
+    fn delete_word_backward(ctx) {
+        erase_insert_range(ctx, |text, head, count| Ok(motion::word_backward(text, Selection::cursor(head), count)?.head))
+    }
+
+    /// Delete from each insert caret back to the first non-whitespace character, or the line start when within indentation. At line start, remove the preceding line ending. Continues the typing undo group and leaves registers unchanged.
+    fn kill_to_line_start(ctx) {
+        erase_insert_range(ctx, |text, head, _| {
+            let start = motion::line_start(text, head)?;
+            if head == start && head.0 > 0 {
+                grapheme::previous(text, head, 1)
+            } else {
+                Ok(motion::first_nonwhitespace(text, head)?.filter(|first| *first < head).unwrap_or(start))
+            }
+        })
+    }
+
+    /// Delete from every insert caret to the line end; at the line ending, delete that entire ending instead. Continues the typing undo group and leaves registers unchanged.
+    fn kill_to_line_end(ctx) {
+        erase_insert_range(ctx, |text, head, _| {
+            let end = motion::line_end(text, head)?;
+            if head == end { grapheme::next(text, head, 1) } else { Ok(end) }
+        })
+    }
+
     /// Insert the context's pasted text at all carets as a separate undo step; requires insert mode.
     fn insert_paste(ctx) { insert(ctx, false) }
 
@@ -934,10 +996,10 @@ commands! {
         normalize(editor)
     }
 
-    /// Delete preceding graphemes at all insert carets as a separate undo step; accepts a count.
+    /// Delete preceding graphemes at all insert carets, continuing the typing undo group; accepts a count.
     fn delete_backward(ctx) { erase(ctx, true) }
 
-    /// Delete following graphemes at all insert carets as a separate undo step; accepts a count.
+    /// Delete following graphemes at all insert carets, continuing the typing undo group; accepts a count.
     fn delete_forward(ctx) { erase(ctx, false) }
 
     /// Undo edit groups and restore their selections; accepts a count of groups.
@@ -965,6 +1027,100 @@ commands! {
 mod tests {
     use super::*;
     use vex_core::Document;
+
+    #[test]
+    fn insert_line_kills_preserve_indent_then_remove_it_and_whole_line_endings() {
+        let mut editor = Editor::new(Document::from("prev\r\n  hello tail"));
+        editor.execute("insert_mode", 1).unwrap();
+        editor
+            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(13))))
+            .unwrap();
+        editor.execute("kill_to_line_start", 1).unwrap();
+        assert_eq!(editor.document().text(), "prev\r\n   tail");
+        assert_eq!(editor.selections().primary().head, CharOffset(8));
+        editor.execute("kill_to_line_start", 1).unwrap();
+        assert_eq!(editor.document().text(), "prev\r\n tail");
+        editor.execute("kill_to_line_start", 1).unwrap();
+        assert_eq!(editor.document().text(), "prev tail");
+        assert_eq!(editor.document().undo_depth(), 1);
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "prev\r\n  hello tail");
+        editor.execute("kill_to_line_end", 1).unwrap();
+        assert_eq!(editor.document().text(), "prev\r\n  hello");
+        editor.execute("undo", 1).unwrap();
+        editor
+            .set_selections(SelectionSet::single(Selection::cursor(CharOffset(4))))
+            .unwrap();
+        editor.execute("kill_to_line_end", 1).unwrap();
+        assert_eq!(editor.document().text(), "prev  hello tail");
+    }
+
+    #[test]
+    fn insert_word_deletion_handles_counts_unicode_and_overlapping_carets() {
+        let mut editor = Editor::new(Document::from("one e\u{301}界"));
+        editor.execute("insert_at_line_end", 1).unwrap();
+        editor.execute("delete_word_backward", 1).unwrap();
+        assert_eq!(editor.document().text(), "one ");
+        editor.execute("delete_word_backward", 1).unwrap();
+        assert_eq!(editor.document().text(), "");
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "one e\u{301}界");
+        editor.execute("delete_word_backward", 2).unwrap();
+        assert_eq!(editor.document().text(), "");
+        editor.execute("undo", 1).unwrap();
+        editor
+            .set_selections(
+                SelectionSet::new(
+                    vec![
+                        Selection::cursor(CharOffset(5)),
+                        Selection::cursor(CharOffset(7)),
+                    ],
+                    1,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        editor.execute("kill_to_line_start", 1).unwrap();
+        assert_eq!(editor.document().text(), "");
+        assert_eq!(
+            editor.selections().ranges(),
+            &[Selection::cursor(CharOffset(0))]
+        );
+        assert_eq!(editor.selections().primary_index(), 0);
+    }
+
+    #[test]
+    fn insert_kills_require_insert_mode_and_checkpoints_split_undo_without_edits() {
+        for command in [
+            "delete_word_backward",
+            "kill_to_line_start",
+            "kill_to_line_end",
+            "commit_undo_checkpoint",
+        ] {
+            let mut editor = Editor::new(Document::default());
+            assert!(matches!(
+                editor.execute(command, 1),
+                Err(Error::WrongMode { .. })
+            ));
+            editor.execute("insert_mode", 1).unwrap();
+            editor.execute(command, 1).unwrap();
+            assert_eq!(editor.document().undo_depth(), 0);
+        }
+        let mut editor = Editor::new(Document::default());
+        editor.execute("insert_mode", 1).unwrap();
+        editor.insert_text("first").unwrap();
+        let revision = editor.document().revision();
+        editor.execute("commit_undo_checkpoint", 1).unwrap();
+        assert_eq!(editor.document().revision(), revision);
+        editor.insert_text(" second").unwrap();
+        editor.execute("delete_word_backward", 1).unwrap();
+        editor.insert_text("third").unwrap();
+        assert_eq!(editor.document().undo_depth(), 2);
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "first");
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "");
+    }
 
     #[test]
     fn find_commands_are_callable_with_character_context_and_preserve_unmatched_selections() {
@@ -1684,21 +1840,16 @@ mod tests {
     }
 
     #[test]
-    fn backspace_and_delete_are_separate_from_typing_on_both_sides() {
+    fn backspace_and_delete_remain_in_the_typing_undo_group() {
         for command in [delete_backward, delete_forward] {
             let mut editor = Editor::new(Document::from("xyz"));
             insert_mode(&mut CommandContext::new(&mut editor)).unwrap();
             editor.insert_text("a").unwrap();
             editor.insert_text("b").unwrap();
             command(&mut CommandContext::new(&mut editor)).unwrap();
-            let deleted = editor.document().snapshot();
             editor.insert_text("c").unwrap();
             editor.insert_text("d").unwrap();
-            assert_eq!(editor.document().undo_depth(), 3);
-            editor.execute("undo", 1).unwrap();
-            assert!(editor.document().text().is_instance(deleted.text()));
-            editor.execute("undo", 1).unwrap();
-            assert_eq!(editor.document().text(), "abxyz");
+            assert_eq!(editor.document().undo_depth(), 1);
             editor.execute("undo", 1).unwrap();
             assert_eq!(editor.document().text(), "xyz");
         }

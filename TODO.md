@@ -20,8 +20,8 @@ selections, and measure operations that could affect input latency.
 4. [x] Comments: `<space>c`, `<space>C`, and normal/select-mode Ctrl-c, with
    language-specific line/block delimiters. Pending commands retain cancellation.
 5. [ ] Multiple selections and search: `s`, `S`, `C`, `K`, `*`, regex `/`/`?`,
-   and accumulating matches with `n`/`N` in select mode. Move the current `K`
-   hover alias if it is needed for selection filtering; `<space>k` already works.
+   and accumulating matches with `n`/`N` in select mode. `K` is reserved for
+   selection filtering; hover uses `<space>k`.
 6. [ ] Buffer switching: retain ordinary buffers without visible panes, then add
    `<space>b`, `ga`, `gn`/`gp`, and `gm`. Add `gf` to open selected paths in the
    current pane. Preserve unsaved text, undo history, and per-view selections
@@ -37,7 +37,7 @@ selections, and measure operations that could affect input latency.
   Keep platform/terminal clipboard I/O outside editor commands.
 - [ ] Named registers with `"<register>` and insert/prompt Ctrl-r. Preserve
   fragment boundaries when copying between editor selections.
-- [ ] Insert-mode word deletion and line kills: Ctrl-w, Ctrl-u, Ctrl-k, plus
+- [x] Insert-mode word deletion and line kills: Ctrl-w, Ctrl-u, Ctrl-k, plus
   Ctrl-d/Ctrl-j aliases for Delete/Enter.
 - [ ] Prompt history, command/path completion, word movement, and line kills.
 - [ ] Decide whether to track explicit linewise selection intent so a final line
@@ -47,9 +47,9 @@ selections, and measure operations that could affect input latency.
 
 - [ ] Workspace text search with `<space>/`, then `<space>'` to reopen the last
   picker with its query and selection intact.
-- [ ] Bidirectional jump history: Ctrl-i, `<space>j`, explicit jump checkpoints,
-  and `g.` to return to the last modification. Resolve Ctrl-s's existing save
-  binding before adopting Helix's normal-mode jump checkpoint binding.
+- [ ] Bidirectional jump history: Ctrl-i, `<space>j`, and `g.` to return to the
+  last modification. Ctrl-s now records full selection checkpoints in normal/select
+  mode, and Ctrl-o restores them, including in scratch buffers.
 - [ ] LSP references (`gr`), type definition (`gy`), implementation (`gi`), and
   reference selections (`<space>h`). Reuse pickers for multiple destinations.
 - [ ] LSP rename (`<space>r`), code actions (`<space>a`), and formatting (`=`).
@@ -90,10 +90,10 @@ selections, and measure operations that could affect input latency.
 - [ ] Command palette (`<space>?`) backed by the existing documented registry.
 - [ ] Case conversion, Ctrl-a/Ctrl-x number changes, selection alignment (`&`),
   and primary-selection rotation (`(`/`)`).
-- [ ] Shell selection filters and output insertion (`|`, `!`, `$`). Resolve the
-  existing `$` line-end binding and use the event queue for subprocess results.
-- [ ] Macro recording/replay (`Q`/`q`), undo-tree history navigation, and explicit
-  insert undo checkpoints. Ctrl-s currently saves in insert mode.
+- [ ] Shell selection filters and output insertion (`|`, `!`, `$`). Use the
+  event queue for subprocess results.
+- [ ] Macro recording/replay (`Q`/`q`) and undo-tree history navigation.
+- [x] Explicit insert undo checkpoints with Ctrl-s, without saving.
 - [ ] Label-based word navigation (`gw`); debugger integration is a separate,
   lower-priority project.
 - [ ] Alt support: represent modifiers in the key model and terminal

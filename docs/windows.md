@@ -18,8 +18,9 @@ and file operations handled by the terminal frontend.
 | `f`, `F` | Open selected filenames in horizontal/vertical splits |
 
 Counts before the prefix repeat focus, rotation, and swap operations. Split and
-close commands operate once. Ctrl-s and Ctrl-q outside this prefix keep their
-save/close behavior.
+close commands operate once. Outside this prefix, Ctrl-s records a jump checkpoint
+in normal/select mode or an undo checkpoint in insert mode. Use `:w` to save and
+`:q` to close a pane.
 
 Each pane has independent selections, editing mode, preferred columns, and scroll
 position. Views of the same file share text, undo history, language settings,
