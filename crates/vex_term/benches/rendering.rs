@@ -331,6 +331,48 @@ fn clipboard(c: &mut Criterion) {
     group.finish();
 }
 
+fn workspace_search(c: &mut Criterion) {
+    let mut group = c.benchmark_group("workspace_search_input");
+    for mib in [1usize, 100] {
+        for buffers in [1usize, 32] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("large.txt");
+            std::fs::write(&path, "source\n".repeat((mib << 20).div_ceil(7))).unwrap();
+            let mut app = App::open(Some(&path), (120, 40)).unwrap();
+            for n in 1..buffers {
+                let path = root.path().join(format!("{n}.txt"));
+                std::fs::write(&path, "another buffer\n").unwrap();
+                app.execute(&format!("open {}", path.display())).unwrap();
+            }
+            let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+            let label = format!("{mib}MiB_{buffers}_buffers");
+            // Includes capturing the named, possibly hidden, large buffer's
+            // shared snapshot. Disk reads and buffer construction are outside
+            // measurement. No background worker or renderer runs here.
+            group.bench_function(BenchmarkId::new("open_query_cancel", &label), |b| {
+                b.iter(|| {
+                    app.handle(key(KeyCode::Char(' ')));
+                    app.handle(key(KeyCode::Char('/')));
+                    app.handle(Event::Paste("needle".into()));
+                    app.handle(key(KeyCode::Esc));
+                    black_box(app.editor.document().revision());
+                });
+            });
+            app.handle(key(KeyCode::Char(' ')));
+            app.handle(key(KeyCode::Char('/')));
+            app.handle(Event::Paste("needle".into()));
+            group.bench_function(BenchmarkId::new("type_backspace", &label), |b| {
+                b.iter(|| {
+                    app.handle(key(KeyCode::Char('x')));
+                    app.handle(key(KeyCode::Backspace));
+                    black_box(app.editor.document().revision());
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
 fn prompt_input(c: &mut Criterion) {
     let mut group = c.benchmark_group("prompt_input");
     for bytes in [1usize << 20, 100 << 20] {
@@ -385,6 +427,6 @@ criterion_group! {
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = rendering, long_lines, rust_syntax, background_syntax, buffers, clipboard, prompt_input
+    targets = rendering, long_lines, rust_syntax, background_syntax, buffers, clipboard, prompt_input, workspace_search
 }
 criterion_main!(benches);

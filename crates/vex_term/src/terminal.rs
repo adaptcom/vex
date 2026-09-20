@@ -192,12 +192,18 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             redraw = false;
         }
+        // Search debounce must expire even without an input event or repaint.
+        // File-picker cleanup is submitted first, so it cannot replace this job.
+        if let Some(job) = app.take_workspace_search_job(Instant::now()) {
+            runtime.submit_workspace_search(job);
+        }
         let timeout = if app.editor.repeat_ready() {
             Duration::ZERO
         } else {
             app.completion_deadline()
                 .into_iter()
                 .chain(app.symbol_deadline())
+                .chain(app.workspace_search_deadline())
                 .chain(app.git_deadline())
                 .chain(app.status_deadline())
                 .chain(app.file_poll_deadline())
@@ -238,6 +244,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 }
                 AppEvent::Background(BackgroundEvent::Prompt(result)) => {
                     redraw |= app.handle_prompt_completion(result);
+                }
+                AppEvent::Background(BackgroundEvent::WorkspaceSearch(result)) => {
+                    redraw |= app.handle_workspace_search_result(result);
                 }
                 AppEvent::Background(BackgroundEvent::Preview(result)) => {
                     redraw |= app.handle_preview_result(result)
@@ -287,6 +296,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(job) = app.take_buffer_job() {
                 runtime.submit_buffers(job);
+            }
+            if let Some(job) = app.take_workspace_search_job(Instant::now()) {
+                runtime.submit_workspace_search(job);
             }
             if let Some(job) = app.take_preview_job() {
                 runtime.submit_preview(job);

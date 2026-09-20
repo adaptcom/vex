@@ -37,6 +37,7 @@ pub(crate) enum BackgroundEvent {
     Symbols(SymbolResult),
     Buffers(BufferResult),
     Prompt(crate::prompt::Result),
+    WorkspaceSearch(crate::picker::search::Result),
     Preview(PreviewResult),
     Git(vex_git::Result),
     GitStatus(vex_git::status::Result),
@@ -111,7 +112,8 @@ impl EventQueue {
                 BackgroundEvent::Files(_)
                 | BackgroundEvent::Symbols(_)
                 | BackgroundEvent::Buffers(_)
-                | BackgroundEvent::Prompt(_) => 2,
+                | BackgroundEvent::Prompt(_)
+                | BackgroundEvent::WorkspaceSearch(_) => 2,
                 BackgroundEvent::Preview(_) => 3,
                 BackgroundEvent::Git(_) => 4,
                 BackgroundEvent::GitStatus(_) => 5,
@@ -290,6 +292,7 @@ enum PickerJob {
     Symbols(SymbolJob),
     Buffers(BufferJob),
     Prompt(crate::prompt::Job),
+    WorkspaceSearch(crate::picker::search::Job),
 }
 
 impl Job for PickerJob {
@@ -299,6 +302,7 @@ impl Job for PickerJob {
             Self::Symbols(job) => job.cancellation.clone(),
             Self::Buffers(job) => job.cancellation.clone(),
             Self::Prompt(job) => job.cancellation.clone(),
+            Self::WorkspaceSearch(job) => job.cancellation.clone(),
         }
     }
 }
@@ -525,22 +529,36 @@ impl Runtime {
         let lsp = vex_lsp::Service::start(move |event| queue.lsp(event))?;
         let queue = events.clone();
         let mut file_state = FileWorker::default();
+        let mut workspace_search = crate::picker::search::Worker::default();
         let files = LatestWorker::spawn("vex-picker", events.clone(), move |job| match job {
             PickerJob::Files(job) => {
+                workspace_search = crate::picker::search::Worker::default();
                 file_state.run(job, |result| {
                     queue.background(BackgroundEvent::Files(result))
                 });
                 None
             }
             PickerJob::Symbols(job) => {
+                workspace_search = crate::picker::search::Worker::default();
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::Symbols)
             }
             PickerJob::Buffers(job) => {
+                workspace_search = crate::picker::search::Worker::default();
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::Buffers)
             }
-            PickerJob::Prompt(job) => job.run().map(BackgroundEvent::Prompt),
+            PickerJob::Prompt(job) => {
+                workspace_search = crate::picker::search::Worker::default();
+                job.run().map(BackgroundEvent::Prompt)
+            }
+            PickerJob::WorkspaceSearch(job) => {
+                file_state = FileWorker::default();
+                workspace_search.run(job, |result| {
+                    queue.background(BackgroundEvent::WorkspaceSearch(result))
+                });
+                None
+            }
         })?;
         let preview = LatestWorker::spawn("vex-preview", events.clone(), |job: PreviewJob| {
             job.run().map(BackgroundEvent::Preview)
@@ -619,6 +637,12 @@ impl Runtime {
     }
     pub(crate) fn submit_prompt(&self, job: crate::prompt::Job) {
         self.files.as_ref().unwrap().submit(PickerJob::Prompt(job));
+    }
+    pub(crate) fn submit_workspace_search(&self, job: crate::picker::search::Job) {
+        self.files
+            .as_ref()
+            .unwrap()
+            .submit(PickerJob::WorkspaceSearch(job));
     }
     pub(crate) fn submit_preview(&self, job: PreviewJob) {
         self.preview.as_ref().unwrap().submit(job);
@@ -780,6 +804,9 @@ mod tests {
             }
             AppEvent::Background(BackgroundEvent::Prompt(result)) => {
                 app.handle_prompt_completion(result);
+            }
+            AppEvent::Background(BackgroundEvent::WorkspaceSearch(result)) => {
+                app.handle_workspace_search_result(result);
             }
             AppEvent::Background(BackgroundEvent::Preview(result)) => {
                 app.handle_preview_result(result);
@@ -1082,6 +1109,38 @@ mod tests {
         drop(state);
         release.send(()).unwrap();
         joining.join().unwrap();
+    }
+
+    #[test]
+    fn early_workspace_acceptance_selects_matching_lines_before_queued_edits() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("result.txt"), "needle\nrest\n").unwrap();
+        let mut app = App::from_document(Document::from("origin"), (80, 24));
+        press(&mut app, " /needle");
+        app.handle(key(KeyCode::Enter));
+        let mut job = app
+            .take_workspace_search_job(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        job.root = root.path().into();
+        let events = EventQueue::default();
+        for code in [
+            KeyCode::Char('d'),
+            KeyCode::Char('i'),
+            KeyCode::Char('X'),
+            KeyCode::Esc,
+        ] {
+            events.terminal(key(code));
+        }
+        assert!(events.next(Duration::ZERO, app.input_waiting()).is_none());
+        let mut worker = crate::picker::search::Worker::default();
+        worker.run(job, |result| {
+            events.background(BackgroundEvent::WorkspaceSearch(result))
+        });
+        while let Some(event) = events.next(Duration::ZERO, app.input_waiting()) {
+            deliver(&mut app, event);
+        }
+        assert_eq!(app.editor.document().text().to_string(), "Xrest\n");
+        assert!(!app.input_waiting());
     }
 
     #[test]

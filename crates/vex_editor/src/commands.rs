@@ -670,6 +670,15 @@ commands! {
         Ok(())
     }
 
+    /// Search file contents below the working directory with a regular expression, including unsaved buffers. Accepted queries use the chosen search register (default /).
+    fn global_search(ctx) {
+        let register = ctx.register.unwrap_or('/');
+        crate::search::writable_query(register)?;
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_application_action(crate::ApplicationAction::GlobalSearch(register));
+        Ok(())
+    }
+
     /// Switch to the last buffer accessed in this pane, restoring its view.
     fn goto_last_accessed_file(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::LastAccessed, 1));

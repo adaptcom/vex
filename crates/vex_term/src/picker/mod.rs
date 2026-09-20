@@ -6,6 +6,7 @@ pub(crate) mod files;
 mod fuzzy;
 mod ignore;
 mod preview;
+pub(crate) mod search;
 pub(crate) mod symbols;
 
 pub(crate) use preview::Preview;

@@ -735,6 +735,66 @@ impl App {
             .collect()
     }
 
+    pub(super) fn workspace_documents(
+        &self,
+    ) -> std::sync::Arc<[crate::picker::search::OpenDocument]> {
+        std::iter::once((&self.editor, &self.files))
+            .chain(
+                self.windows
+                    .buffers
+                    .values()
+                    .map(|buffer| (&buffer.editor, &buffer.files)),
+            )
+            .filter_map(|(editor, files)| {
+                files
+                    .target()
+                    .map(|path| crate::picker::search::OpenDocument {
+                        path: path.into(),
+                        snapshot: editor.document().snapshot(),
+                    })
+            })
+            .collect()
+    }
+
+    pub(super) fn open_workspace_hit(
+        &mut self,
+        hit: &crate::picker::search::Hit,
+    ) -> io::Result<()> {
+        if self.snapshot_for_path(&hit.path).is_none() && !std::fs::metadata(&hit.path)?.is_file() {
+            return Err(io::Error::other("search result is not a regular file"));
+        }
+        let prepared = self.prepare_file(&hit.path)?;
+        let editor = match &prepared {
+            Prepared::Existing(id) if *id == self.editor.document().id() => &self.editor,
+            Prepared::Existing(id) => &self.windows.buffers[id].editor,
+            Prepared::New(buffer) => &buffer.editor,
+        };
+        if hit.version.is_some_and(|(id, revision)| {
+            id != editor.document().id() || revision != editor.document().revision()
+        }) {
+            return Err(io::Error::other(
+                "buffer changed since this search; edit the query to refresh",
+            ));
+        }
+        let text = editor.document().text();
+        if hit.lines.start >= text.len_lines() {
+            return Err(io::Error::other("matching line no longer exists"));
+        }
+        let selection = vex_core::Selection::new(
+            vex_core::CharOffset(text.line_to_char(hit.lines.start)),
+            vex_core::CharOffset(text.line_to_char(hit.lines.end.min(text.len_lines()))),
+        );
+        self.record_jump();
+        self.replace_window_buffer(prepared)?;
+        self.editor
+            .execute("normal_mode", 1)
+            .map_err(io::Error::other)?;
+        self.editor
+            .set_selections(vex_core::SelectionSet::single(selection))
+            .map_err(io::Error::other)?;
+        Ok(())
+    }
+
     pub(super) fn buffer_preview(
         &self,
         id: DocumentId,

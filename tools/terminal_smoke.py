@@ -23,7 +23,7 @@ import time
 
 
 class Terminal:
-    def __init__(self, arguments, env=None):
+    def __init__(self, arguments, env=None, cwd=None):
         self.master, self.slave = os.openpty()
         self.original = termios.tcgetattr(self.slave)
         self.output = bytearray()
@@ -49,6 +49,8 @@ class Terminal:
                 os.environ.pop("NO_COLOR", None)
                 child = os.fork()
                 if child == 0:
+                    if cwd is not None:
+                        os.chdir(cwd)
                     os.execv(arguments[0], arguments)
                 # Keep the controlling session alive until after termios is
                 # checked. On macOS the slave stops accepting ioctls once its

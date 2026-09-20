@@ -59,10 +59,12 @@ selections, and measure operations that could affect input latency.
 
 ## Project navigation and language tools
 
-- [ ] Workspace text search with `<space>/`, then `<space>'` to reopen the last
+- [x] Workspace text search with `<space>/`, then `<space>'` to reopen the last
   picker with its query and selection intact.
-  `<space>'` now retains file/buffer/symbol queries, selected results, and scroll
-  positions across acceptance/cancellation; workspace text search remains.
+  Regex search uses cancellable background reads and shared unsaved buffers,
+  with debounced queries, bounded results, previews, and queued-input ordering.
+  `<space>'` retains file/buffer/symbol/search queries, selected results, and scroll
+  positions across acceptance/cancellation.
 - [ ] Bidirectional jump history: Ctrl-i, `<space>j`, and `g.` to return to the
   last modification. Ctrl-s now records full selection checkpoints in normal/select
   mode, and Ctrl-o restores them, including in scratch buffers.

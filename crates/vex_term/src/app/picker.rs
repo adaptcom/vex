@@ -15,6 +15,7 @@ use crossterm::event::{Event, KeyEventKind};
 use std::{io, path::PathBuf, sync::Arc};
 use vex_editor::background::Cancellation;
 
+mod search;
 mod symbols;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,12 +23,14 @@ enum Target {
     File(PathBuf),
     Symbol(vex_lsp::Location),
     Buffer(vex_core::DocumentId),
+    Search(crate::picker::search::Hit),
 }
 
 enum Source {
     Files(Option<PathBuf>, PathBuf),
     Symbols(symbols::Source),
     Buffers(Arc<[CatalogEntry]>),
+    Search(search::Source),
 }
 
 struct Active {
@@ -58,6 +61,7 @@ pub(super) struct State {
     preview_job: Option<PreviewJob>,
     symbol_job: Option<SymbolJob>,
     buffer_job: Option<BufferJob>,
+    search_job: Option<crate::picker::search::Job>,
 }
 
 impl App {
@@ -130,6 +134,10 @@ impl App {
     }
 
     fn submit_picker_query(&mut self) {
+        if self.workspace_search_active() {
+            self.submit_workspace_query();
+            return;
+        }
         if self.symbol_picker_active() {
             self.submit_symbol_query();
             return;
@@ -195,6 +203,13 @@ impl App {
                 }
                 Target::File(path) => (path, None),
                 Target::Symbol(location) => (location.path, Some(location.position)),
+                Target::Search(hit) => (
+                    hit.path,
+                    Some(vex_lsp::Position {
+                        line: hit.lines.start as u32,
+                        character: 0,
+                    }),
+                ),
             };
             Some(PreviewJob {
                 session,
@@ -209,6 +224,10 @@ impl App {
     }
 
     pub(super) fn refresh_picker_buffer(&mut self, document: vex_core::DocumentId) {
+        if self.workspace_search_active() {
+            self.refresh_workspace_search();
+            return;
+        }
         let target = self
             .picker
             .active
@@ -219,7 +238,7 @@ impl App {
             Some(Target::File(path)) | Some(Target::Symbol(vex_lsp::Location { path, .. })) => self
                 .snapshot_for_path(path)
                 .is_some_and(|snapshot| snapshot.id() == document),
-            None => false,
+            Some(Target::Search(_)) | None => false,
         };
         if changed {
             self.picker.active.as_mut().unwrap().preview_target = None;
@@ -232,6 +251,9 @@ impl App {
             active.cancellation.cancel();
             active.preview_cancel.cancel();
             active.accept_pending = false;
+            if let Source::Search(source) = &mut active.source {
+                source.documents = Arc::from([]);
+            }
             if matches!(active.source, Source::Symbols(_)) {
                 self.cancel_language_request();
             } else {
@@ -248,6 +270,7 @@ impl App {
         self.picker.preview_job = None;
         self.picker.symbol_job = None;
         self.picker.buffer_job = None;
+        self.picker.search_job = None;
     }
 
     pub(super) fn reopen_last_picker(&mut self) -> io::Result<()> {
@@ -272,6 +295,9 @@ impl App {
         active.view.resume();
         if matches!(active.source, Source::Buffers(_)) {
             active.source = Source::Buffers(self.buffer_catalog());
+        }
+        if let Source::Search(source) = &mut active.source {
+            source.documents = self.workspace_documents();
         }
         self.picker.active = Some(active);
         if self.symbol_picker_active() {
@@ -475,6 +501,7 @@ impl App {
         let result = match target {
             Target::File(path) => self.open_picked_file(path),
             Target::Symbol(location) => self.open_location(location),
+            Target::Search(hit) => self.accept_workspace_hit(hit),
             Target::Buffer(id) => {
                 if id != self.editor.document().id() {
                     self.record_jump();
@@ -486,6 +513,7 @@ impl App {
             Ok(()) => {
                 self.close_picker();
                 self.clear_message();
+                self.apply_application_action();
             }
             Err(error) => self.picker.active.as_mut().unwrap().view.notice = error.to_string(),
         }

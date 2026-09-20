@@ -806,7 +806,7 @@ pub(crate) fn repeat(ctx: &mut CommandContext<'_>, reverse: bool) -> Result<(), 
     schedule(editor, pattern, operation, ctx.count.get(), Kind::Repeat)
 }
 
-fn writable_query(name: char) -> Result<(), Error> {
+pub(crate) fn writable_query(name: char) -> Result<(), Error> {
     if crate::ClipboardKind::from_register(name).is_some() {
         Ok(())
     } else {

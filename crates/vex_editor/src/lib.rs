@@ -76,6 +76,7 @@ pub enum ApplicationAction {
     FilePicker,
     BufferPicker,
     LastPicker,
+    GlobalSearch(char),
     Buffer(BufferAction, usize),
     DocumentSymbols,
     WorkspaceSymbols,
@@ -303,6 +304,22 @@ impl Editor {
     /// Register selected for the active search prompt, including selection filters.
     pub fn search_prompt_register(&self) -> Option<char> {
         self.search.preview.as_ref().map(|preview| preview.register)
+    }
+
+    /// Remember a validated workspace query for subsequent n/N navigation.
+    /// Clipboard registers request the frontend's guarded background write.
+    pub fn remember_search_query(
+        &mut self,
+        register: char,
+        query: std::sync::Arc<str>,
+    ) -> Result<(), Error> {
+        search::writable_query(register)?;
+        if let Some(kind) = ClipboardKind::from_register(register) {
+            self.request_clipboard_search_write(kind, query, true);
+            Ok(())
+        } else {
+            self.yank_register.remember_search(register, query, true)
+        }
     }
 
     pub fn search_status(&self) -> Option<SearchStatus> {

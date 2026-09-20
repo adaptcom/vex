@@ -50,13 +50,13 @@ struct Directory {
     rules: Arc<Rules>,
 }
 
-struct Index {
-    session: u64,
-    root: PathBuf,
+pub(super) struct Index {
+    pub session: u64,
+    pub root: PathBuf,
     stack: Vec<Directory>,
-    entries: Vec<Arc<Entry<PathBuf>>>,
+    pub entries: Vec<Arc<Entry<PathBuf>>>,
     bytes: usize,
-    notice: String,
+    pub notice: String,
     ignore_scratch: Scratch,
 }
 
@@ -77,11 +77,15 @@ fn project_root(origin: Option<&Path>, cwd: &Path) -> PathBuf {
 }
 
 impl Index {
-    fn new(job: &FileJob) -> Self {
+    fn new(job: &FileJob) -> Option<Self> {
         let (origin, cwd) = job.source.as_ref().unwrap();
         let root = project_root(origin.as_deref(), cwd);
+        Self::at_root(job.session, root, &job.cancellation)
+    }
+
+    pub fn at_root(session: u64, root: PathBuf, cancellation: &Cancellation) -> Option<Self> {
         let mut index = Self {
-            session: job.session,
+            session,
             root,
             stack: Vec::new(),
             entries: Vec::new(),
@@ -89,8 +93,30 @@ impl Index {
             notice: String::new(),
             ignore_scratch: Scratch::default(),
         };
-        index.enter(PathBuf::new(), None);
-        index
+        let mut ancestors = Vec::new();
+        if !index.root.join(".git").exists() {
+            for ancestor in index.root.ancestors().skip(1).take(64) {
+                if cancellation.is_cancelled() {
+                    return None;
+                }
+                ancestors.push(ancestor.to_path_buf());
+                if ancestor.join(".git").exists() {
+                    break;
+                }
+            }
+        }
+        let mut parent = None;
+        for ancestor in ancestors.into_iter().rev() {
+            if cancellation.is_cancelled() {
+                return None;
+            }
+            parent = Some(index.rules(&ancestor, parent, true));
+        }
+        if cancellation.is_cancelled() {
+            return None;
+        }
+        index.enter(PathBuf::new(), parent);
+        (!cancellation.is_cancelled()).then_some(index)
     }
 
     fn enter(&mut self, relative: PathBuf, parent: Option<Arc<Rules>>) {
@@ -106,10 +132,19 @@ impl Index {
                 return;
             }
         };
+        let rules = self.rules(&path, parent, relative.as_os_str().is_empty());
+        self.stack.push(Directory {
+            entries,
+            pending: None,
+            rules,
+        });
+    }
+
+    fn rules(&mut self, path: &Path, parent: Option<Arc<Rules>>, repository: bool) -> Arc<Rules> {
         let mut contents = String::new();
         // Repository exclusions have lower precedence than .gitignore; .ignore
         // lets projects configure this picker without altering Git's policy.
-        let names: &[&str] = if relative.as_os_str().is_empty() {
+        let names: &[&str] = if repository {
             &[".git/info/exclude", ".gitignore", ".ignore"]
         } else {
             &[".gitignore", ".ignore"]
@@ -136,14 +171,14 @@ impl Index {
                 Err(error) => self.notice = format!("{}: {error}", file.display()),
             }
         }
-        self.stack.push(Directory {
-            entries,
-            pending: None,
-            rules: Arc::new(Rules::new(relative, &contents, parent)),
-        });
+        Arc::new(Rules::new(path.into(), &contents, parent))
     }
 
-    fn scan(&mut self, cancellation: &Cancellation) {
+    pub fn complete(&self) -> bool {
+        self.stack.is_empty()
+    }
+
+    pub fn scan(&mut self, cancellation: &Cancellation) {
         let deadline = Instant::now() + Duration::from_millis(3);
         for _ in 0..256 {
             if cancellation.is_cancelled() || Instant::now() >= deadline {
@@ -191,12 +226,11 @@ impl Index {
             return;
         }
         let relative = path.strip_prefix(&self.root).unwrap();
-        let Some(ignored) = directory.rules.check(
-            relative,
-            kind.is_dir(),
-            &mut self.ignore_scratch,
-            cancellation,
-        ) else {
+        let Some(ignored) =
+            directory
+                .rules
+                .check(&path, kind.is_dir(), &mut self.ignore_scratch, cancellation)
+        else {
             // read_dir already advanced. Retain the entry so a query change
             // cannot silently skip this file or its entire directory tree.
             directory.pending = Some(entry);
@@ -266,9 +300,11 @@ impl FileWorker {
             .as_ref()
             .is_none_or(|index| index.session != job.session)
         {
-            self.index = Some(Index::new(&job));
+            self.index = Index::new(&job);
         }
-        let index = self.index.as_mut().unwrap();
+        let Some(index) = self.index.as_mut() else {
+            return;
+        };
         let query = Query::new(&job.query);
         let mut ranked: BinaryHeap<Reverse<Ranked>> = BinaryHeap::new();
         let mut cursor = 0;
@@ -670,7 +706,7 @@ mod tests {
         fs::create_dir(root.join("src")).unwrap();
         fs::write(root.join(".gitignore"), "*.log").unwrap();
         fs::write(root.join("src/keep.txt"), "keep").unwrap();
-        let mut index = Index::new(&job(root, ""));
+        let mut index = Index::new(&job(root, "")).unwrap();
         let entry = index
             .stack
             .last_mut()

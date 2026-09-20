@@ -1,5 +1,46 @@
 # Performance baselines
 
+## Workspace search input
+
+`cargo bench -p vex_term --bench rendering --locked -- workspace_search_input --noplot`
+recorded these Criterion central estimates on 2026-09-20 (30 samples, 500 ms
+warmup, one second measurement):
+
+| Named buffer size | Loaded buffers | Open, paste query, cancel | Query character + Backspace |
+| --- | ---: | ---: | ---: |
+| 1 MiB | 1 | 7.80 µs | 0.152 µs |
+| 100 MiB | 1 | 7.79 µs | 0.150 µs |
+| 1 MiB | 32 | 8.53 µs | 0.150 µs |
+| 100 MiB | 32 | 8.56 µs | 0.152 µs |
+
+The 32-buffer cases keep the large file hidden and 31 small files loaded.
+Opening captures paths and shared rope snapshots once; query edits share the
+catalog through `Arc`. The input work does not scan or flatten buffer contents.
+These cases include command dispatch, current-directory capture, cancellation,
+and request setup. File loading, scanning, result delivery, drawing, and physical
+terminal latency are excluded. They do not establish an end-to-end latency bound.
+
+Workspace searches debounce for 150 ms, with immediate dispatch on early Enter.
+The existing picker worker reuses file discovery across query changes and drops
+its index when closed. Regex reads and scans check cancellation; retained results
+are capped at 512, source reads at 128 MiB per file / 1 GiB per query, with a
+cooperative ten-second query deadline. Single filesystem calls and compilation
+are not preemptible. See [search behavior and limits](pickers.md#workspace-text-search).
+
+The inline manual worker measurement can be repeated with:
+
+```sh
+cargo test --release -p vex_term workspace_worker_performance --locked -- --ignored --nocapture
+```
+
+Five searches for a unique match at EOF took a median **3.17 ms** over a 1 MiB
+shared buffer and **140.61 ms** over a 100 MiB shared buffer. Each run includes
+regex compilation and scanning; later runs reuse file discovery. The fixture
+uses repeated ASCII lines and one named unsaved snapshot, so these numbers
+exclude reading file contents from disk, worker scheduling, rendering, and
+slow regex fallback patterns. They show the size-dependent work that stays on
+the worker, separately from the input timings above.
+
 ## Prompt input and drawing
 
 On 2026-09-20, `cargo bench -p vex_term --bench rendering -- prompt_input`

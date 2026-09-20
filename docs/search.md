@@ -11,6 +11,7 @@ All commands are documented functions in the editor registry.
 | `S` | Split selections on regex matches, excluding the separators |
 | `K` | Keep selections containing a regex match |
 | `*` | Remember selected text as escaped alternatives, adding detected word boundaries |
+| `<space>/` | Open the [workspace text search picker](pickers.md#workspace-text-search) |
 | Enter | Accept the preview and remember its regex |
 | Escape / Ctrl-c | Restore original selections, preferred columns, and viewport |
 | `3n`, `2?`, etc. | Count successive matches, wrapping when necessary |

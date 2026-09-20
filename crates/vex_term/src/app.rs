@@ -535,6 +535,7 @@ impl App {
                 Ok(())
             }
             Some(ApplicationAction::LastPicker) => self.reopen_last_picker(),
+            Some(ApplicationAction::GlobalSearch(register)) => self.open_workspace_search(register),
             Some(ApplicationAction::BufferPicker) => {
                 self.open_buffer_picker();
                 Ok(())

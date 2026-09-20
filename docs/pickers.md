@@ -18,7 +18,7 @@ compatibility guarantee.
 ## Using the picker
 
 Space-f or `:file_picker` opens a fuzzy file picker. Space-' (`:last_picker`)
-reopens the most recently closed file, buffer, or symbol picker with its query,
+reopens the most recently closed file, buffer, symbol, or search picker with its query,
 caret, selected result, and scroll position. Accepting a result and cancelling
 both retain the picker. Only one previous picker is retained, with its bounded
 result list and preview; the full file index is released on the worker.
@@ -101,6 +101,44 @@ without parsing the whole document. External reloads invalidate pending previews
 Accepting switches the current pane and records a Ctrl-o checkpoint; early Enter
 waits for the current query before dispatching subsequent editing keys.
 
+## Workspace text search
+
+Space-/ (`:global_search`) searches file contents below the current working
+directory, following [Helix's global-search behavior](https://github.com/helix-editor/helix/blob/master/helix-term/src/commands.rs).
+The query is a regular expression with smart case and multiline anchors, using
+the [rope regex engine](search.md). An empty query waits for input. Invalid
+patterns leave the picker editable. The root stays fixed until the picker closes;
+Space-' reopens it with the same root, query, and selected result.
+
+Results show relative paths, line numbers, and short matching excerpts. The
+preview uses syntax colors and scrolls to the match. Enter selects the whole
+matching lines in the focused pane and records a Ctrl-o checkpoint. If results
+are still pending, Enter starts the current query immediately and holds later
+editing keys until a match opens or the query finishes. Normal typing waits
+150 ms after the last query edit before starting work, including while idle.
+
+The search includes unsaved text from loaded files, including hidden buffers.
+Their shared rope snapshots take precedence over disk contents. Scratch buffers
+have no path and are excluded. Discovery applies the same ignore and visibility
+rules as the file picker. Files created during a search session are picked up
+by closing and reopening the picker. Open-buffer revisions are checked before
+accepting results; missing files and invalid destinations leave the picker open.
+
+Accepting remembers the query in `/`, or a chosen register such as `"a<space>/`,
+and makes it available to `n`/`N`. Clipboard registers use the existing background
+clipboard transport. Escape/Ctrl-c cancels without changing the search register.
+
+Discovery and regex scanning share the existing picker worker; preview work
+uses its existing separate worker. Query changes cancel prior work and reuse
+the file index. Only the first 512 matching line ranges in path/line order are
+retained, with a total count. Search stops at 100,000 regex matches, 1 GiB of
+source bytes, or a cooperative ten-second deadline; narrow the query when a
+limit notice appears. Each file is limited to 128 MiB. Disk reads skip binary
+(NUL-containing), invalid UTF-8, unreadable, and oversized files, reporting the
+skip count. The picker limits query input to 1 KiB, including pasted text.
+Filesystem calls and
+regex compilation are not preemptible, but run off the input thread.
+
 ## Symbol pickers
 
 Space-s (`:symbol_picker`) opens document symbols, and Space-S
@@ -145,7 +183,7 @@ Ranking shares the file-picker worker, and previews share its preview worker.
 
 ## Discovery and visibility
 
-The root is the nearest enclosing Git repository of the current file, otherwise
+For the file picker, the root is the nearest enclosing Git repository of the current file, otherwise
 the outermost enclosing Cargo project, otherwise the working directory captured
 when opening the picker. Scratch buffers start discovery from the working
 directory. No language server or Git executable is required.
@@ -159,10 +197,12 @@ patterns include `*`, `?`, character ranges/negated classes, ASCII POSIX classes
 spaces, and negation. Ignored directories are pruned, so a child cannot be
 re-included without also including its parent.
 
-`.git/info/exclude` at the chosen root supplies lower-priority rules; `.ignore`
-in each directory supplies rules after that directory's `.gitignore`. Parent
-directory rules above the chosen root, Git's index, global Git configuration,
-and linked-worktree exclusion files are not read. Patterns are case sensitive.
+`.git/info/exclude` supplies lower-priority rules; `.ignore` in each directory
+supplies rules after that directory's `.gitignore`. When starting in a
+subdirectory, parent ignore files are inherited up to the nearest repository
+root (or 64 ancestors), with patterns relative to their original directories.
+Git's index, global Git configuration, and linked-worktree exclusion files are
+not read. Patterns are case sensitive.
 Consequently tracked files
 that match ignore patterns are also hidden. Ignore files must be UTF-8 and at
 most 64 KiB each; read errors appear in the picker footer.
@@ -203,8 +243,11 @@ cargo test --workspace --locked
 cargo test -p vex_term --locked project_ignore_results_agree_with_git -- --ignored
 cargo build --release -p vex_term --locked
 python3 tools/picker_smoke.py
+python3 tools/workspace_search_smoke.py
 ```
 
 The PTY check covers hints, Unicode queries, floating borders, highlighted
 previews, resizing, cancellation, early Enter followed by edit/save, jump-back,
-unsaved buffers, and terminal cleanup.
+unsaved buffers, and terminal cleanup. The workspace search check also covers
+idle debounce expiry, regex errors, matching-line selection, retained searches,
+and early acceptance before queued edits.
