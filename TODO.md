@@ -58,6 +58,8 @@ should be deliberate and documented. Alt bindings are deferred for now.
   diagnostic jumps (`[D`/`]D`). Retain diagnostics beyond the active document.
 - [ ] Scrollable hover documentation and signature help.
 - [ ] Git change navigation: `[g`/`]g`, `[G`/`]G`, and change textobjects.
+- [ ] Remap cached Git gutter markers across line insertions/deletions while
+  a background diff is pending.
 - [ ] Tree-sitter textobjects and navigation between functions, types, arguments,
   comments, and tests (`[f`/`]f`, `[t`/`]t`, `[a`/`]a`, `[c`/`]c`, `[T`/`]T`).
   Extend the language registry with textobject queries and use revision-matched

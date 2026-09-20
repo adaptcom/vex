@@ -796,11 +796,7 @@ impl App {
                             .unwrap_or_else(|| "[scratch]".into())
                     });
                 let dirty = files.is_dirty(editor.document());
-                let git = self.git.diff(
-                    editor.document().id(),
-                    editor.document().revision(),
-                    files.target(),
-                );
+                let git = self.git.gutter_diff(editor.document().id(), files.target());
                 editor
                     .with_view(pane.view, |editor| {
                         render::paint_view(

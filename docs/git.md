@@ -36,6 +36,10 @@ Git. No external dependencies were added; the crate uses the workspace's existin
 snapshot, cancellation, and temporary-file support.
 
 Edits debounce for 150 ms, with a 500 ms maximum wait during continuous typing.
+The gutter keeps its last accepted markers visible during this delay and while
+the worker runs, then replaces them together when a current result arrives.
+Marker positions can briefly reflect the previous diff after inserting or deleting
+lines. Changing a buffer's path immediately hides the old path's markers.
 Opening a file, saving, and terminal focus gain request a baseline refresh.
 An idle deadline also probes repositories every two seconds after completed work,
 so commits and branch switches are noticed without a keypress. A slow pending

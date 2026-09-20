@@ -434,11 +434,8 @@ impl App {
                     .map(|p| (p.prefix(), p.input.text(), p.input.cursor())),
             },
             reserved_bottom,
-            self.git.diff(
-                self.editor.document().id(),
-                self.editor.document().revision(),
-                self.files.target(),
-            ),
+            self.git
+                .gutter_diff(self.editor.document().id(), self.files.target()),
         )
         .map_err(io::Error::other)?;
         let body_height = frame.height().saturating_sub(1 + reserved_bottom);

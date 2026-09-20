@@ -1,5 +1,5 @@
 //! Per-buffer Git state and deadlines. Complete batches share one result slot;
-//! drawing only reads hunks for the current document revision and path.
+//! drawing retains the last accepted markers while a newer diff is pending.
 
 use super::App;
 use std::{
@@ -41,15 +41,18 @@ impl Drop for State {
 }
 
 impl State {
-    pub(super) fn diff(
+    /// Display fallback for this buffer/path until a current result replaces it.
+    /// Revision checks belong to result acceptance: hiding accepted markers on
+    /// every edit makes them blink throughout the debounce and worker delay.
+    /// These potentially older coordinates are only for drawing, not hunk edits.
+    pub(super) fn gutter_diff(
         &self,
         id: DocumentId,
-        revision: Revision,
         path: Option<&Path>,
     ) -> Option<&vex_git::Diff> {
         self.results
             .get(&id)
-            .filter(|result| result.revision == revision && Some(result.path.as_path()) == path)?
+            .filter(|result| Some(result.path.as_path()) == path)?
             .diff
             .as_deref()
     }
@@ -213,11 +216,7 @@ mod tests {
     }
     fn diff(app: &App) -> &vex_git::Diff {
         app.git
-            .diff(
-                app.editor.document().id(),
-                app.editor.document().revision(),
-                app.files.target(),
-            )
+            .gutter_diff(app.editor.document().id(), app.files.target())
             .unwrap()
     }
     fn draw(app: &mut App) -> Frame {
@@ -238,15 +237,7 @@ mod tests {
         let now = Instant::now();
         assert!(app.take_git_batch(now).is_none());
         assert_eq!(app.git_deadline(), Some(now + EDIT_DELAY));
-        assert!(
-            app.git
-                .diff(
-                    app.editor.document().id(),
-                    app.editor.document().revision(),
-                    app.files.target()
-                )
-                .is_none()
-        );
+        assert!(diff(&app).hunks.is_empty()); // Retain the previously clean gutter.
         finish(&mut app, &mut worker, now + EDIT_DELAY);
         assert_eq!(diff(&app).marker(0), Some(Marker::Added));
         app.enable_lsp();
@@ -276,6 +267,68 @@ mod tests {
         let frame = draw(&mut app);
         assert!(frame.cursor.unwrap().x < 9);
         assert!(render::gutter(9, 3).diff.is_none());
+    }
+
+    #[test]
+    fn typing_keeps_markers_visible_until_a_current_diff_replaces_them() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (_dir, mut app, mut worker) = fixture();
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.editor.insert_text("x").unwrap();
+        let now = Instant::now();
+        app.take_git_batch(now);
+        finish(&mut app, &mut worker, now + EDIT_DELAY);
+        app.execute("vsplit").unwrap();
+        app.editor.execute("insert_mode", 1).unwrap();
+
+        let assert_markers = |app: &mut App| {
+            let frame = draw(app);
+            assert_eq!(frame.style_at(3, 0), Some(Style::GitModified));
+            assert_eq!(frame.style_at(64, 0), Some(Style::GitModified));
+        };
+        assert_markers(&mut app);
+        let now = Instant::now();
+        for (index, ch) in "typing".chars().enumerate() {
+            app.handle(Event::Key(KeyEvent::new(
+                KeyCode::Char(ch),
+                KeyModifiers::NONE,
+            )));
+            // Drawing may happen before the scheduler observes the new revision.
+            assert_markers(&mut app);
+            assert!(
+                app.take_git_batch(now + Duration::from_millis(index as u64 * 20))
+                    .is_none()
+            );
+            assert_markers(&mut app);
+        }
+
+        let due = app.git.due.unwrap();
+        let pending = app.take_git_batch(due).unwrap();
+        assert_markers(&mut app); // A running diff must not empty either pane.
+        let stale = worker.run(pending).unwrap();
+        app.editor.insert_text("z").unwrap();
+        assert!(!app.handle_git_result(stale));
+        assert_markers(&mut app);
+        app.take_git_batch(due);
+        finish(&mut app, &mut worker, due + EDIT_DELAY);
+        assert_markers(&mut app);
+        assert_eq!(
+            app.git.results[&app.editor.document().id()].revision,
+            app.editor.document().revision()
+        );
+
+        // The old markers are only a display fallback. A clean current result
+        // must still replace them once undo restores the committed contents.
+        app.editor.execute("undo", 100).unwrap();
+        assert_eq!(app.editor.document().text(), "fn main() {}\n");
+        assert_markers(&mut app);
+        app.take_git_batch(due + EDIT_DELAY);
+        finish(&mut app, &mut worker, due + EDIT_DELAY * 2);
+        let frame = draw(&mut app);
+        assert!(diff(&app).hunks.is_empty());
+        assert_eq!(frame.row_text(0).chars().nth(3), Some(' '));
+        assert_eq!(frame.row_text(0).chars().nth(64), Some(' '));
     }
 
     #[test]
@@ -357,14 +410,16 @@ mod tests {
         app.execute(&format!("w {}", target.path().join("saved.txt").display()))
             .unwrap();
         assert!(!app.handle_git_result(stale));
+        // Save-as must hide the old path's markers even before the next batch.
+        assert!(
+            app.git
+                .gutter_diff(app.editor.document().id(), app.files.target())
+                .is_none()
+        );
         finish(&mut app, &mut worker, Instant::now());
         assert!(
             app.git
-                .diff(
-                    app.editor.document().id(),
-                    app.editor.document().revision(),
-                    app.files.target()
-                )
+                .gutter_diff(app.editor.document().id(), app.files.target())
                 .is_none()
         );
         let mut scratch = App::from_document(Document::from("hello"), (80, 24));
