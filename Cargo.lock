@@ -1103,6 +1103,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vex_git"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+ "tempfile",
+ "vex_core",
+ "vex_editor",
+]
+
+[[package]]
 name = "vex_lsp"
 version = "0.0.1"
 dependencies = [
@@ -1142,6 +1152,7 @@ dependencies = [
  "unicode-width",
  "vex_core",
  "vex_editor",
+ "vex_git",
  "vex_lsp",
  "vex_syntax",
 ]

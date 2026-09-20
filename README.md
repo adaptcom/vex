@@ -8,7 +8,7 @@ movement and streaming literal search. `vex_editor` adds normal/select/insert mo
 functions, configurable keybindings, and repeat counts. `vex_syntax` adds
 Tree-sitter parsing and a shared language registry. `vex_lsp` adds language-server
 integration over stdio with a small futures executor. These crates work without a
-terminal. `vex_term` provides the interactive application, using Crossterm for
+terminal. `vex_git` computes background Git diffs against HEAD. `vex_term` provides the interactive application, using Crossterm for
 terminal I/O and our own viewport, cell grid, and incremental drawing.
 
 ## Run
@@ -35,6 +35,8 @@ filename/shebang detection. See [syntax support and adding languages](docs/synta
 With the configured server on `PATH`, named files also get diagnostics, `K` for
 hover, `gd` for definitions, `Ctrl-o` to jump back, and `]d` / `[d` to navigate
 diagnostics. See [language services and setup](docs/lsp.md).
+Tracked files show live Git gutter markers, including unsaved changes, with
+Helix-style bars and deletion overlines. See [Git gutter behavior](docs/git.md).
 See [terminal usage and architecture](docs/terminal.md).
 
 Press Space-f for the fuzzy project file picker. Named key groups (`g`, Space,
@@ -60,6 +62,7 @@ cargo run -p vex_editor --example command_reference --locked
 cargo build --release -p vex_term --locked
 python3 tools/terminal_smoke.py
 python3 tools/picker_smoke.py
+python3 tools/git_smoke.py # Requires Git.
 python3 tools/lsp_smoke.py # Requires rust-analyzer and a Rust toolchain.
 python3 tools/languages_smoke.py # Requires typescript-language-server and TypeScript.
 python3 tools/background_search_benchmark.py

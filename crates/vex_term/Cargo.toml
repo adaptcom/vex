@@ -9,6 +9,7 @@ repository.workspace = true
 vex_core.workspace = true
 vex_editor.workspace = true
 vex_lsp.workspace = true
+vex_git.workspace = true
 vex_syntax.workspace = true
 crossterm.workspace = true
 unicode-segmentation.workspace = true

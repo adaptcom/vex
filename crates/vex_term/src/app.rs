@@ -16,6 +16,7 @@ use vex_editor::{
 };
 
 mod completion;
+mod git;
 mod language;
 mod picker;
 mod windows;
@@ -64,6 +65,7 @@ pub struct App {
     picker: picker::State,
     completion: completion::State,
     windows: windows::State,
+    git: git::State,
 }
 
 impl App {
@@ -96,6 +98,7 @@ impl App {
             picker: picker::State::default(),
             completion: completion::State::default(),
             windows,
+            git: git::State::default(),
         }
     }
 
@@ -152,6 +155,9 @@ impl App {
     }
 
     fn handle_at(&mut self, event: Event, now: std::time::Instant) -> bool {
+        if matches!(event, Event::FocusGained) {
+            self.refresh_git();
+        }
         if let Some(redraw) = self.handle_picker_input(&event) {
             return redraw;
         }
@@ -357,6 +363,11 @@ impl App {
                     .map(|p| (p.prefix(), p.input.text(), p.input.cursor())),
             },
             reserved_bottom,
+            self.git.diff(
+                self.editor.document().id(),
+                self.editor.document().revision(),
+                self.files.target(),
+            ),
         )
         .map_err(io::Error::other)?;
         let body_height = frame.height().saturating_sub(1 + reserved_bottom);
@@ -590,6 +601,7 @@ commands! {
         app.message = format!("wrote {bytes} bytes");
         app.language.saved += 1;
         app.language.saved_snapshot = Some(app.editor.document().snapshot());
+        app.refresh_git();
         Ok(())
     }
 
@@ -1137,7 +1149,7 @@ mod tests {
         let mut paint_style = |app: &mut App| {
             frame.reset(40, 6).unwrap();
             app.paint(&mut frame).unwrap();
-            frame.style_at(5, 0).unwrap()
+            frame.style_at(8, 0).unwrap()
         };
         assert_eq!(paint_style(&mut app), Style::Syntax(Highlight::Function));
         press(&mut app, "i//");

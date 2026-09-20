@@ -127,6 +127,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
     app.editor.set_background_search(true);
     app.editor.set_background_syntax(true);
     app.enable_lsp();
+    app.enable_git();
     if let Some(update) = app.take_lsp_update() {
         runtime.update_lsp(update);
     }
@@ -145,6 +146,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
         if let Some(update) = app.take_lsp_update() {
             runtime.update_lsp(update);
             redraw = true;
+        }
+        if let Some(batch) = app.take_git_batch(Instant::now()) {
+            runtime.submit_git(batch);
         }
         if redraw {
             let (width, height) = app.size();
@@ -168,6 +172,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
             .completion_deadline()
             .into_iter()
             .chain(app.symbol_deadline())
+            .chain(app.git_deadline())
             .min()
             .map_or(Duration::from_millis(100), |deadline| {
                 deadline
@@ -202,6 +207,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Preview(result)) => {
                     redraw |= app.handle_preview_result(result)
                 }
+                AppEvent::Background(BackgroundEvent::Git(result)) => {
+                    redraw |= app.handle_git_result(result);
+                }
                 AppEvent::Lsp(event) => redraw |= app.handle_lsp_event(event),
                 AppEvent::Failed(error) => return Err(error),
             }
@@ -210,6 +218,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(update) = app.take_lsp_update() {
                 runtime.update_lsp(update);
+            }
+            if let Some(batch) = app.take_git_batch(Instant::now()) {
+                runtime.submit_git(batch);
             }
             if let Some(job) = app.take_picker_job() {
                 runtime.submit_picker(job);

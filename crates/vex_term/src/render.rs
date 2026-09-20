@@ -14,6 +14,45 @@ pub struct Viewport {
     pub left_column: usize,
 }
 
+pub(crate) struct Gutter {
+    pub width: usize,
+    pub diagnostic: Option<u16>,
+    pub diff: Option<u16>,
+    number_start: u16,
+    digits: usize,
+}
+
+pub(crate) fn gutter(width: usize, lines: usize) -> Gutter {
+    let digits = lines.max(1).ilog10() as usize + 1;
+    if width >= 12 {
+        let digits = digits.min(width / 3);
+        Gutter {
+            width: digits + 4,
+            diagnostic: Some(0),
+            number_start: 1,
+            digits,
+            diff: Some((digits + 2) as u16),
+        }
+    } else if width >= 8 {
+        let digits = digits.min(width / 3 - 1);
+        Gutter {
+            width: digits + 1,
+            diagnostic: None,
+            number_start: 0,
+            digits,
+            diff: None,
+        }
+    } else {
+        Gutter {
+            width: 0,
+            diagnostic: None,
+            number_start: 0,
+            digits: 0,
+            diff: None,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Chrome<'a> {
     pub filename: &'a str,
@@ -32,7 +71,7 @@ pub fn paint(
     chrome: Chrome<'_>,
 ) -> Result<(), vex_core::Error> {
     editor.begin_syntax_frame();
-    paint_view(frame, editor, viewport, chrome, 1)?;
+    paint_view(frame, editor, viewport, chrome, 1, None)?;
     paint_command_line(frame, chrome.message, chrome.error, chrome.prompt);
     Ok(())
 }
@@ -45,6 +84,7 @@ pub(crate) fn paint_view(
     viewport: &mut Viewport,
     chrome: Chrome<'_>,
     reserved_bottom: u16,
+    git: Option<&vex_git::Diff>,
 ) -> Result<(), vex_core::Error> {
     let width = usize::from(frame.width());
     let height = usize::from(frame.height());
@@ -60,11 +100,8 @@ pub(crate) fn paint_view(
     let row = text.char_to_line(primary.0);
     let column = editor.display_column(primary)?;
     let body_height = height.saturating_sub(1 + usize::from(reserved_bottom));
-    let gutter = if width >= 8 {
-        (text.len_lines().ilog10() as usize + 2).min(width / 3)
-    } else {
-        0
-    };
+    let columns = gutter(width, text.len_lines());
+    let gutter = columns.width;
     let body_width = width - gutter;
     if body_height > 0 {
         let cursor_span = if editor.mode() != Mode::Insert && primary.0 < text.len_chars() {
@@ -136,17 +173,28 @@ pub(crate) fn paint_view(
             continue;
         }
         if gutter > 0 {
-            let number = format!("{:>padding$} ", line + 1, padding = gutter - 1);
+            let number = format!("{:>padding$}", line + 1, padding = columns.digits);
             frame.label(
-                0,
+                columns.number_start,
                 screen_row as u16,
-                &number[number.len().saturating_sub(gutter)..],
+                &number[number.len().saturating_sub(columns.digits)..],
                 if line == row {
                     Style::Message
                 } else {
                     Style::Gutter
                 },
             );
+            if let Some(column) = columns.diff
+                && let Some(marker) = git.and_then(|diff| diff.marker(line))
+            {
+                use vex_git::Marker;
+                let (glyph, style) = match marker {
+                    Marker::Added => ("▍", Style::GitAdded),
+                    Marker::Modified => ("▍", Style::GitModified),
+                    Marker::Deleted => ("▔", Style::GitDeleted),
+                };
+                frame.put(column, screen_row as u16, glyph, style);
+            }
         }
         let start = CharOffset(text.line_to_char(line));
         let (mut position, mut column) = if viewport.left_column == 0 {
@@ -487,10 +535,10 @@ mod tests {
             )))
             .unwrap();
         let frame = render(&editor, 24, 6, &mut Viewport::default());
-        assert!(frame.row_text(0).starts_with("1 a   界e\u{301}"));
-        assert_eq!(frame.style_at(6, 0), Some(Style::Selection));
-        assert_eq!(frame.cursor.unwrap().x, 8);
-        assert_eq!(frame.style_at(8, 0), Some(Style::PrimaryCursor(None)));
+        assert!(frame.row_text(0).starts_with(" 1   a   界e\u{301}"));
+        assert_eq!(frame.style_at(9, 0), Some(Style::Selection));
+        assert_eq!(frame.cursor.unwrap().x, 11);
+        assert_eq!(frame.style_at(11, 0), Some(Style::PrimaryCursor(None)));
     }
 
     #[test]
@@ -540,23 +588,23 @@ mod tests {
         editor.execute("goto_file_end", 1).unwrap();
         let frame = render(&editor, 50, 8, &mut Viewport::default());
         assert_eq!(
-            frame.style_at(2, 0),
+            frame.style_at(5, 0),
             Some(Style::Syntax(Highlight::Keyword))
         );
         assert_eq!(
-            frame.style_at(5, 0),
+            frame.style_at(8, 0),
             Some(Style::Syntax(Highlight::Function))
         );
         assert_eq!(
-            frame.style_at(6, 1),
+            frame.style_at(9, 1),
             Some(Style::Syntax(Highlight::Keyword))
         );
-        let quote = 14;
+        let quote = 17;
         for x in quote..quote + 5 {
             assert_eq!(frame.style_at(x, 1), Some(Style::Syntax(Highlight::String)));
         }
         assert_eq!(
-            frame.style_at(22, 1),
+            frame.style_at(25, 1),
             Some(Style::Syntax(Highlight::Comment))
         );
         editor
@@ -566,9 +614,9 @@ mod tests {
             )))
             .unwrap();
         let frame = render(&editor, 50, 8, &mut Viewport::default());
-        assert_eq!(frame.style_at(2, 0), Some(Style::Selection));
+        assert_eq!(frame.style_at(5, 0), Some(Style::Selection));
         assert_eq!(
-            frame.style_at(3, 0),
+            frame.style_at(6, 0),
             Some(Style::PrimaryCursor(Some(Highlight::Keyword)))
         );
     }
@@ -590,7 +638,7 @@ mod tests {
         let frame = render(&editor, 20, 5, &mut viewport);
         assert!(viewport.left_column > 0);
         for y in 0..2 {
-            for x in 2..19 {
+            for x in 5..19 {
                 assert_eq!(
                     frame.style_at(x, y),
                     Some(Style::Syntax(Highlight::Comment))

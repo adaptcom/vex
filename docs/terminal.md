@@ -120,6 +120,11 @@ opens a hover panel. Definition jumps can open another file after saving pending
 changes, and Ctrl-o returns to the origin. See [language services](lsp.md) for
 setup, active-document service limits, and failure handling.
 
+Tracked files show [Git changes against HEAD](git.md), including unsaved edits.
+The gutter reserves separate cells for diagnostics and Git markers around the
+line numbers. Added/modified lines use green/yellow `▍` bars; deletions use red
+`▔` overlines at the following line boundary. Very narrow panes hide these cells.
+
 ## Rendering and input
 
 `vex_term` uses Crossterm for events, terminal modes, and escape-sequence
@@ -128,7 +133,7 @@ encoding. It has no UI framework or Ratatui dependency:
 - `input` converts terminal keys to editor keys and owns prompt editing.
 - `events` combines terminal input and typed background completions in a wakeable
   inbox, with one input thread and independent search, syntax, picker, preview,
-  and LSP services.
+  Git, and LSP services.
 - `app` combines editor state, key dispatch, file state, prompt, and viewport.
 - `render` paints visible logical lines, selections, line numbers, status, and
   the prompt into a cell grid. It borrows rope slices where possible. Horizontal
@@ -186,11 +191,15 @@ File discovery/matching and previews use that mailbox implementation with two
 additional latest-result slots. The file index stays on its worker, and each
 completion is a bounded snapshot rather than a batch of new paths.
 
-`BackgroundEvent` carries search and syntax results. LSP has a separate typed
+Git uses another latest-result slot and batches all open buffers together, with
+cached HEAD baselines and hunks shared across views. Edit debounce and periodic
+repository refresh use event-loop deadlines. See [Git architecture and limits](git.md).
+
+`BackgroundEvent` carries search, syntax, picker, preview, and Git results. LSP has a separate typed
 event variant and a FIFO of up to 128 events with producer backpressure, preserving
 status, diagnostic, and response ordering. Service-specific validation and state
-updates happen on the main thread. Future Git status snapshots can use a
-latest-result policy; adding a service does not imply it may discard messages.
+updates happen on the main thread. Each service chooses its queue policy;
+adding a service does not imply it may discard messages.
 
 An early Enter or `n` / `N` may depend on an unfinished search. The inbox then
 holds later keys until the destination is ready, preserving sequences such as
@@ -200,13 +209,13 @@ ordinary input. This avoids applying edits to an unresolved search position.
 Enter during picker matching uses the same input ordering until the selected
 file opens. Closing a picker cancels its work and releases its index.
 
-Closing the runtime wakes blocked producers, cancels search, syntax, picker, and preview jobs,
+Closing the runtime wakes blocked producers, cancels search, syntax, picker, preview, and Git jobs,
 shuts down the language server, and joins owned threads before restoring terminal state. Input errors and worker
 failures wake the main loop and unwind through cleanup. Input polling has a
 50 ms shutdown check; the main inbox wait checks signal flags at most every
 100 ms while idle. Cancellation is cooperative; service limits and remaining
 synchronous work are documented in [search](search.md), [syntax](syntax.md), and
-[language services](lsp.md).
+[language services](lsp.md), and [Git](git.md).
 
 ## Files and current limits
 
@@ -278,6 +287,7 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo build --release -p vex_term --locked
 python3 tools/terminal_smoke.py
+python3 tools/git_smoke.py # Requires Git.
 python3 tools/lsp_smoke.py # Requires rust-analyzer and a Rust toolchain.
 python3 tools/languages_smoke.py # Requires typescript-language-server and TypeScript.
 cargo bench -p vex_term --bench rendering --locked -- --noplot

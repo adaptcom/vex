@@ -488,7 +488,12 @@ impl App {
     }
 
     pub(super) fn paint_language(&self, frame: &mut Frame, body_height: u16) {
-        if frame.width() >= 8 {
+        if let Some(column) = crate::render::gutter(
+            usize::from(frame.width()),
+            self.editor.document().text().len_lines(),
+        )
+        .diagnostic
+        {
             for row in 0..body_height {
                 let line = self.viewport.top_line + usize::from(row);
                 if let Some(severity) = self
@@ -500,7 +505,7 @@ impl App {
                     .min()
                 {
                     frame.put(
-                        0,
+                        column,
                         row,
                         if severity == 1 { "!" } else { "·" },
                         if severity == 1 {
