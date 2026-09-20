@@ -262,16 +262,16 @@ pub fn run(app: &mut App) -> io::Result<()> {
                     redraw |= app.handle_picker_result(result)
                 }
                 AppEvent::Background(BackgroundEvent::Diagnostics(result)) => {
-                    app.handle_diagnostic_result(result);
+                    redraw |= app.handle_diagnostic_result(result);
                 }
                 AppEvent::Background(BackgroundEvent::Locations(result)) => {
-                    app.handle_location_result(result);
+                    redraw |= app.handle_location_result(result);
                 }
                 AppEvent::Background(BackgroundEvent::WorkspaceEdit(result)) => {
-                    app.handle_workspace_edit(result);
+                    redraw |= app.handle_workspace_edit(result);
                 }
                 AppEvent::Background(BackgroundEvent::LocationNavigation(result)) => {
-                    app.handle_location_navigation(result);
+                    redraw |= app.handle_location_navigation(result);
                 }
                 AppEvent::Background(BackgroundEvent::Symbols(result)) => {
                     redraw |= app.handle_symbol_result(result)

@@ -20,6 +20,47 @@ import subprocess
 import tempfile
 import termios
 import time
+import unicodedata
+
+
+def displayed_text(output):
+    """Replay Vex's absolute cursor moves and clear/print output, ignoring styles.
+
+    Read only completed synchronized frames. This deliberately covers the
+    renderer's output subset, rather than emulating a general-purpose terminal.
+    """
+    end = output.rfind(b"\x1b[?2026l")
+    text = output[:end].decode("utf-8", errors="replace") if end >= 0 else ""
+    cells = {}
+    x = y = 0
+    parts = re.split(r"(\x1b\[[0-?]*[ -/]*[@-~])", text)
+    for part in parts:
+        if part.startswith("\x1b["):
+            if part[-1] in ("H", "f"):
+                position = part[2:-1].split(";")
+                y = int(position[0] or "1") - 1
+                x = int(position[1] or "1") - 1 if len(position) > 1 else 0
+            elif part in ("\x1b[2J", "\x1b[3J"):
+                cells.clear()
+            continue
+        for ch in part:
+            if ch == "\r":
+                x = 0
+            elif ch == "\n":
+                y += 1
+            elif ch.isprintable() and not unicodedata.combining(ch):
+                cells[x, y] = ch
+                width = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+                if width == 2:
+                    cells[x + 1, y] = ""
+                x += width
+    rows = {}
+    for (x, y), ch in cells.items():
+        rows.setdefault(y, {})[x] = ch
+    return "\n".join(
+        "".join(row.get(x, " ") for x in range(max(row) + 1))
+        for _, row in sorted(rows.items())
+    )
 
 
 class Terminal:
@@ -163,6 +204,18 @@ class Terminal:
             if self.poll() is not None:
                 break
         raise AssertionError(f"missing screen {needle!r}; terminal tail: {bytes(self.output[-2000:])!r}")
+
+    def expect_screen_idle(self, needle):
+        """Wait for actual displayed text without sending focus or input events."""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            self.drain()
+            visible = displayed_text(self.output)
+            if needle in visible:
+                return
+            if self.poll() is not None:
+                break
+        raise AssertionError(f"missing idle screen {needle!r}; displayed:\n{visible}")
 
     def start(self):
         self.expect(b"\x1b[?2026l")

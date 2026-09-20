@@ -118,6 +118,32 @@ while True:
     }
 
     #[test]
+    fn empty_catalog_finishes_loading_and_releases_early_acceptance() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notes.txt");
+        fs::write(&path, "plain text\n").unwrap();
+        let mut app = App::open(Some(&path), (100, 24)).unwrap();
+        let mut worker = crate::picker::diagnostics::Worker::default();
+        for binding in [" d", " D"] {
+            press(&mut app, binding);
+            key(&mut app, KeyCode::Enter);
+            assert!(app.input_waiting());
+            filter(&mut app, &mut worker);
+            let active = app.picker.active.as_ref().unwrap();
+            assert!(!active.view.pending);
+            assert!(active.view.items.is_empty());
+            assert!(!app.input_waiting());
+            let mut frame = crate::screen::Frame::default();
+            frame.reset(100, 24).unwrap();
+            app.paint(&mut frame).unwrap();
+            let rows: String = (0..24).map(|row| frame.row_text(row)).collect();
+            assert!(rows.contains("No matching diagnostics"));
+            assert!(!rows.contains("Loading"));
+            key(&mut app, KeyCode::Esc);
+        }
+    }
+
+    #[test]
     fn diagnostic_pickers_filter_preview_select_ranges_reopen_and_reject_stale_buffers() {
         let (_directory, mut app, _service, _receiver) = fixture();
         let origin = app.editor.document().id();

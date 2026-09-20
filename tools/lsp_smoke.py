@@ -13,6 +13,21 @@ import tempfile
 from terminal_smoke import Terminal
 
 
+def empty_diagnostic_pickers(binary, directory):
+    source = directory / "notes.txt"
+    source.write_text("No language server needed for an empty diagnostic catalog.\n")
+    for binding in (b" d", b" D"):
+        with Terminal([binary, str(source)]) as terminal:
+            terminal.start()
+            terminal.send(binding)
+            # Do not use expect_screen here: its focus events force a repaint
+            # and hide a missing redraw after the worker delivers zero rows.
+            terminal.expect_screen_idle("No matching diagnostics")
+            terminal.send(b"\x03:q\r")
+            terminal.finish()
+    print("PASS: empty document/workspace diagnostics repaint without further input")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=Path("target/release/vex"))
@@ -26,6 +41,7 @@ def main():
         os.environ["VEX_RUST_ANALYZER"] = str(args.server.absolute())
     with tempfile.TemporaryDirectory(prefix="vex-lsp-pty-") as directory:
         project = Path(directory).resolve()
+        empty_diagnostic_pickers(binary, project)
         (project / "Cargo.toml").write_text(
             '[package]\nname = "vex_lsp_pty"\nversion = "0.1.0"\nedition = "2024"\n'
         )
