@@ -116,15 +116,7 @@ impl Editor {
     /// Create a document editor using a session's shared internal yank register.
     /// Cloning the handle shares text across buffers without copying it.
     pub fn with_yank_register(document: Document, yank_register: YankRegister) -> Self {
-        let first = document.text().line(0);
-        let len = first.len_chars();
-        let newline = if len >= 2 && first.char(len - 2) == '\r' && first.char(len - 1) == '\n' {
-            "\r\n"
-        } else if len >= 1 && first.char(len - 1) == '\r' {
-            "\r"
-        } else {
-            "\n"
-        };
+        let newline = line_ending(document.text());
         let selections = SelectionSet::single(
             motion::block(document.text(), CharOffset(0)).expect("BOF is valid"),
         );
@@ -380,6 +372,18 @@ impl Editor {
         let mut context = CommandContext::new(self);
         context.text = Some(text);
         commands::insert_paste(&mut context)
+    }
+}
+
+fn line_ending(text: &vex_core::Rope) -> &'static str {
+    let first = text.line(0);
+    let len = first.len_chars();
+    if len >= 2 && first.char(len - 2) == '\r' && first.char(len - 1) == '\n' {
+        "\r\n"
+    } else if len >= 1 && first.char(len - 1) == '\r' {
+        "\r"
+    } else {
+        "\n"
     }
 }
 

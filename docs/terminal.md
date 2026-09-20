@@ -130,6 +130,7 @@ and both wrap and accept counts. See [search semantics and limits](search.md).
 |---|---|
 | `:write [PATH]`, `:w [PATH]` | Save to the current or supplied path |
 | `:write! [PATH]`, `:w! [PATH]` | Allow replacing an existing destination or external edits |
+| `:reload[!]` | Reload the current file as one undo step; `!` accepts disk contents over unsaved edits |
 | `:quit`, `:q` | Close the current pane; protect the last view of unsaved text |
 | `:quit!`, `:q!` | Close the current pane, allowing unsaved text to be discarded |
 | `:vsplit [PATH]`, `:hsplit [PATH]` | Split and optionally open a different file |
@@ -176,7 +177,7 @@ encoding. It has no UI framework or Ratatui dependency:
 - `input` converts terminal keys to editor keys and owns prompt editing.
 - `events` combines terminal input and typed background completions in a wakeable
   inbox, with one input thread and independent search, syntax, picker, preview,
-  Git, and LSP services.
+  Git, file polling, and LSP services.
 - `app` combines editor state, key dispatch, file state, prompt, and viewport.
 - `render` paints visible logical lines, selections, line numbers, status, and
   the prompt into a cell grid. It borrows rope slices where possible. Horizontal
@@ -244,7 +245,15 @@ Stage, unstage, and commit use a separate ordered write worker and a reliable
 FIFO of completion events. Commit drafts are normal editor buffers retained for
 the session; status remains visible in the adjacent pane.
 
-`BackgroundEvent` carries search, syntax, picker, preview, and Git results. LSP has a separate typed
+File polling has a separate worker and latest-result slot. Every two seconds,
+the UI snapshots file-backed documents shown in visible panes, deduplicating
+shared buffers. Only one batch runs at a time; metadata checks, reads, comparisons,
+and reload edit preparation happen off the UI thread. Results validate the document,
+revision, path, and save generation before applying. Hidden splits and documents
+covered by a Git pane are excluded; temporary picker/help overlays do not hide
+their underlying document from polling.
+
+`BackgroundEvent` carries search, syntax, picker, preview, Git, and file-poll results. LSP has a separate typed
 event variant and a FIFO of up to 128 events with producer backpressure, preserving
 status, diagnostic, and response ordering. Service-specific validation and state
 updates happen on the main thread. Each service chooses its queue policy;
@@ -258,7 +267,7 @@ ordinary input. This avoids applying edits to an unresolved search position.
 Enter during picker matching uses the same input ordering until the selected
 file opens. Closing a picker cancels its work and releases its index.
 
-Closing the runtime wakes blocked producers, cancels search, syntax, picker, preview, and Git query jobs,
+Closing the runtime wakes blocked producers, cancels search, syntax, picker, preview, file polling, and Git query jobs,
 shuts down the language server, and joins owned threads before restoring terminal state. Input errors and worker
 failures wake the main loop and unwind through cleanup. Input polling has a
 50 ms shutdown check; the main inbox wait checks signal flags at most every
@@ -277,6 +286,23 @@ different existing file, a removed file, or contents changed since load/save.
 The disk comparison runs on save, never during drawing. A failed write leaves
 the buffer dirty and keeps the editor open.
 
+Visible files are checked in the background every two seconds, even without
+keyboard input. Unchanged metadata reuses cached text; changed files are read
+as UTF-8 and compared with the last load/save. Clean buffers reload automatically,
+keeping document identity, view modes, and undo history. Syntax, search, LSP,
+and Git state follow the new document revision. Reloads replace the differing
+middle region, preserve unchanged prefixes/suffixes, and map each view's selections
+through the edit. A reload is one undo step; undoing it makes the buffer dirty,
+and redoing it returns to the saved state.
+
+If local edits are unsaved, disk changes produce a warning and leave the buffer
+intact. `:reload!` explicitly accepts the disk version; `:w!` writes the local
+version. Deletion, invalid UTF-8, and read errors also preserve the buffer.
+Atomic replacement and files created after opening a new path are detected.
+An explicit `:reload` reads immediately and refuses unsaved edits without `!`.
+Metadata-only detection can miss edits on filesystems that do not report a changed
+timestamp, size, or identity. Native filesystem notifications are tracked in TODO.md.
+
 The dirty check compares shared rope identity in O(1); undoing to a savepoint
 clears it. An independent edit that recreates identical bytes still counts as
 modified. New files use the temporary file's owner-only permissions. Atomic
@@ -285,7 +311,8 @@ attributes, and ACLs are not preserved. The content check is not a lock against
 concurrent writers, and the parent directory is not synced for crash durability.
 
 Split panes can show shared or different buffers; see [window mode](windows.md).
-Buffers are retained while at least one pane displays them. File I/O is synchronous. Rendering stops
+Buffers are retained while at least one pane displays them. Initial loads, explicit
+reloads, and saves remain synchronous; automatic file checks run in the background. Rendering stops
 at the right edge. Cached display columns avoid repeatedly scanning hidden line
 prefixes; cold queries and reindexing after an early edit can still be expensive.
 Bundled syntax languages share size and work budgets on a background worker.

@@ -128,6 +128,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
     app.editor.set_background_syntax(true);
     app.enable_lsp();
     app.enable_git();
+    app.enable_file_polling(Instant::now());
     if let Some(update) = app.take_lsp_update() {
         runtime.update_lsp(update);
     }
@@ -152,6 +153,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
         }
         if let Some(batch) = app.take_status_batch(Instant::now()) {
             runtime.submit_status(batch);
+        }
+        if let Some(batch) = app.take_file_poll(Instant::now()) {
+            runtime.submit_file_poll(batch);
         }
         while let Some(job) = app.take_git_write() {
             runtime.submit_git_write(job);
@@ -180,6 +184,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
             .chain(app.symbol_deadline())
             .chain(app.git_deadline())
             .chain(app.status_deadline())
+            .chain(app.file_poll_deadline())
             .min()
             .map_or(Duration::from_millis(100), |deadline| {
                 deadline
@@ -219,6 +224,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 }
                 AppEvent::Background(BackgroundEvent::GitStatus(result)) => {
                     redraw |= app.handle_status_result(result);
+                }
+                AppEvent::Background(BackgroundEvent::FilePoll(result)) => {
+                    redraw |= app.handle_file_poll(result, Instant::now());
                 }
                 AppEvent::Lsp(event) => redraw |= app.handle_lsp_event(event),
                 AppEvent::GitWrite(result) => redraw |= app.handle_git_write(result),

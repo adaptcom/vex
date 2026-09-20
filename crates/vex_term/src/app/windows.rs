@@ -249,6 +249,53 @@ impl App {
             .collect()
     }
 
+    pub(super) fn visible_file_probes(&self) -> Vec<crate::files::watch::Probe> {
+        let mut documents = std::collections::HashSet::new();
+        self.windows
+            .layout
+            .visible(self.window_area())
+            .0
+            .into_iter()
+            .filter_map(|(id, rect)| {
+                let pane = &self.windows.panes[&id];
+                if rect.width == 0
+                    || rect.height == 0
+                    || !matches!(pane.content, Content::Document)
+                    || !documents.insert(pane.document)
+                {
+                    return None;
+                }
+                if pane.document == self.editor.document().id() {
+                    self.files.probe(self.editor.document())
+                } else {
+                    let buffer = &self.windows.buffers[&pane.document];
+                    buffer.files.probe(buffer.editor.document())
+                }
+            })
+            .collect()
+    }
+
+    pub(super) fn with_file_buffer_mut<T>(
+        &mut self,
+        id: DocumentId,
+        f: impl FnOnce(&mut Editor, &mut FileState, bool) -> T,
+    ) -> Option<T> {
+        if id == self.editor.document().id() {
+            Some(f(
+                &mut self.editor,
+                &mut self.files,
+                self.automatic_language,
+            ))
+        } else {
+            let buffer = self.windows.buffers.get_mut(&id)?;
+            Some(f(
+                &mut buffer.editor,
+                &mut buffer.files,
+                buffer.automatic_language,
+            ))
+        }
+    }
+
     pub(crate) fn take_syntax_batch(&mut self) -> Option<crate::events::SyntaxBatch> {
         let mut editors: Vec<_> = std::iter::once(&mut self.editor)
             .chain(

@@ -36,6 +36,7 @@ pub(crate) enum BackgroundEvent {
     Preview(PreviewResult),
     Git(vex_git::Result),
     GitStatus(vex_git::status::Result),
+    FilePoll(crate::files::watch::Result),
 }
 
 #[derive(Default)]
@@ -43,7 +44,7 @@ struct Inbox {
     input: VecDeque<Event>,
     lsp: VecDeque<vex_lsp::Event>,
     git_writes: VecDeque<vex_git::write::Result>,
-    background: [Option<BackgroundEvent>; 6],
+    background: [Option<BackgroundEvent>; 7],
     next_background: usize,
     prefer_input: bool,
     failure: Option<io::Error>,
@@ -106,6 +107,7 @@ impl EventQueue {
                 BackgroundEvent::Preview(_) => 3,
                 BackgroundEvent::Git(_) => 4,
                 BackgroundEvent::GitStatus(_) => 5,
+                BackgroundEvent::FilePoll(_) => 6,
             };
             state.background[slot] = Some(result);
             self.0.ready.notify_one();
@@ -124,7 +126,7 @@ impl EventQueue {
         state.input.clear();
         state.lsp.clear();
         state.git_writes.clear();
-        state.background = [None, None, None, None, None, None];
+        state.background = [None, None, None, None, None, None, None];
         self.0.ready.notify_all();
         self.0.space.notify_all();
     }
@@ -219,6 +221,12 @@ fn cancels_search(event: &Event) -> bool {
 
 trait Job: Send + 'static {
     fn cancellation(&self) -> Cancellation;
+}
+
+impl Job for crate::files::watch::Batch {
+    fn cancellation(&self) -> Cancellation {
+        self.cancellation.clone()
+    }
 }
 
 impl Job for SearchJob {
@@ -472,6 +480,7 @@ pub(crate) struct Runtime {
     git: Option<LatestWorker<vex_git::Batch>>,
     git_status: Option<LatestWorker<vex_git::status::Batch>>,
     git_write: Option<WriteWorker>,
+    file_poll: Option<LatestWorker<crate::files::watch::Batch>>,
     input: Option<JoinHandle<()>>,
 }
 
@@ -479,6 +488,10 @@ impl Runtime {
     pub(crate) fn start() -> io::Result<Self> {
         let events = EventQueue::default();
         let git_write = WriteWorker::start(events.clone())?;
+        let mut poll_state = crate::files::watch::Worker::default();
+        let file_poll = LatestWorker::spawn("vex-file-poll", events.clone(), move |batch| {
+            poll_state.run(batch).map(BackgroundEvent::FilePoll)
+        })?;
         let search = SearchWorker::start(events.clone())?;
         let mut syntax_state = SyntaxBuffers::default();
         let syntax = LatestWorker::spawn("vex-syntax", events.clone(), move |job| {
@@ -548,6 +561,7 @@ impl Runtime {
             git: Some(git),
             git_status: Some(git_status),
             git_write: Some(git_write),
+            file_poll: Some(file_poll),
             input: Some(input),
         })
     }
@@ -582,6 +596,9 @@ impl Runtime {
     pub(crate) fn submit_git_write(&self, job: vex_git::write::Job) {
         self.git_write.as_ref().unwrap().submit(job);
     }
+    pub(crate) fn submit_file_poll(&self, batch: crate::files::watch::Batch) {
+        self.file_poll.as_ref().unwrap().submit(batch);
+    }
 }
 
 impl Drop for Runtime {
@@ -594,6 +611,7 @@ impl Drop for Runtime {
         self.preview.as_ref().unwrap().stop();
         self.git.as_ref().unwrap().stop();
         self.git_status.as_ref().unwrap().stop();
+        self.file_poll.as_ref().unwrap().stop();
         self.search.take();
         self.syntax.take();
         self.lsp.take();
@@ -602,6 +620,7 @@ impl Drop for Runtime {
         self.git.take();
         self.git_status.take();
         self.git_write.take();
+        self.file_poll.take();
         if let Some(thread) = self.input.take() {
             let _ = thread.join();
         }
@@ -728,6 +747,9 @@ mod tests {
             }
             AppEvent::GitWrite(result) => {
                 app.handle_git_write(result);
+            }
+            AppEvent::Background(BackgroundEvent::FilePoll(result)) => {
+                app.handle_file_poll(result, Instant::now());
             }
             AppEvent::Failed(error) => panic!("{error}"),
         }

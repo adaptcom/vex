@@ -20,6 +20,7 @@ mod git;
 mod git_write;
 mod language;
 mod picker;
+mod reload;
 mod status;
 mod windows;
 
@@ -70,6 +71,7 @@ pub struct App {
     git: git::State,
     status: status::State,
     git_write: git_write::State,
+    reload: reload::State,
 }
 
 impl App {
@@ -105,6 +107,7 @@ impl App {
             git: git::State::default(),
             status: status::State::default(),
             git_write: git_write::State::default(),
+            reload: reload::State::default(),
         }
     }
 
@@ -621,6 +624,12 @@ macro_rules! commands {
 }
 
 commands! {
+    /// Reload the current file from disk as one undo step. Unsaved edits require :reload!; failed reads keep the buffer intact.
+    fn reload_file(app, argument, force) ["reload"] {
+        if !argument.is_empty() { return Err(io::Error::other("reload takes no arguments")); }
+        app.reload_current_file(force)
+    }
+
     /// Stage the selected whole file from disk. Save unsaved buffers first; hunk staging is not yet supported.
     fn git_stage(app, argument, force) ["git_stage"] {
         if !argument.is_empty() || force { return Err(io::Error::other("git_stage takes no arguments")); }

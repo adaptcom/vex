@@ -67,6 +67,11 @@ should be deliberate and documented. Alt bindings are deferred for now.
 
 ## Later editing and interface work
 
+- [ ] Replace two-second polling of visible files with filesystem notifications.
+  Watch parent directories as well as files so atomic saves and deletion/recreation
+  remain observable; coalesce notifications through the background event queue.
+- [ ] Use finer-grained diffs for external reloads so cursors within several
+  separated changes track nearby unchanged text more accurately.
 - [ ] View mode `z`/sticky `Z`: center/top/bottom alignment, horizontal centering,
   and scrolling without moving selections. Add `gt`/`gc`/`gb` and Ctrl-b/Ctrl-f
   page aliases; keep logical/visual line movement explicit if soft wrapping arrives.
@@ -124,7 +129,8 @@ References: [PR listing](https://cli.github.com/manual/gh_pr_list) and
 - [ ] Send selected code and relevant diagnostics or task failures as context.
 - [ ] Display streamed responses, tool activity, and approval requests from Codex.
 - [ ] Connect resulting file changes to the existing Git review workflow.
-- [ ] Detect external file edits and reload clean buffers.
+- [x] Detect external file edits and reload clean buffers (visible panes, every
+  two seconds; background reads, with protection for unsaved text).
 - [ ] Reconcile external changes with unsaved editor text before replacing it.
 
 Reference: [Codex App Server](https://learn.chatgpt.com/docs/app-server).

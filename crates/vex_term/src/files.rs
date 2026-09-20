@@ -1,4 +1,5 @@
-//! File loading and atomic replacement. Disk checks run on save, never on draw.
+//! File loading and atomic replacement. Disk checks run on save or a background
+//! visible-file poll, never on draw.
 
 use std::{
     fs::{self, File},
@@ -7,12 +8,16 @@ use std::{
 };
 use vex_core::{Document, Rope};
 
+pub(crate) mod watch;
+
 #[derive(Debug)]
 pub struct FileState {
     path: Option<PathBuf>,
     target: Option<PathBuf>,
     existed: bool,
     saved: Rope,
+    generation: u64,
+    notice: Option<String>,
 }
 
 impl FileState {
@@ -49,6 +54,8 @@ impl FileState {
             target: None,
             existed: false,
             saved: document.text().clone(),
+            generation: 0,
+            notice: None,
         }
     }
 
@@ -142,9 +149,23 @@ impl FileState {
         }
         self.path = Some(path);
         self.target = Some(target);
+        self.mark_saved(document);
+        Ok(document.text().len_bytes())
+    }
+
+    pub(crate) fn mark_saved(&mut self, document: &Document) {
         self.existed = true;
         self.saved = document.text().clone();
-        Ok(document.text().len_bytes())
+        self.generation += 1;
+        self.notice = None;
+    }
+
+    pub(crate) fn notice(&mut self, notice: Option<String>) -> bool {
+        if self.notice == notice {
+            return false;
+        }
+        self.notice = notice;
+        true
     }
 }
 

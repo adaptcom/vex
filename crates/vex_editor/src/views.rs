@@ -35,6 +35,63 @@ impl Views {
 }
 
 impl Editor {
+    /// Apply a revision-checked external reload as one undo step. Preserve view
+    /// modes and map cursors through unchanged text; within replaced text, keep
+    /// their relative scalar offset, clamped to the replacement. All endpoints
+    /// are normalized back to grapheme boundaries before rendering.
+    pub fn apply_external_change(
+        &mut self,
+        transaction: vex_core::Transaction,
+    ) -> Result<(), crate::Error> {
+        use vex_core::{Affinity, CharOffset, Selection};
+        let replacements: Vec<_> = transaction
+            .edits()
+            .map(|edit| (edit.range(), edit.text().chars().count()))
+            .collect();
+        let map = |selections: &SelectionSet| -> Result<SelectionSet, vex_core::Error> {
+            let position = |position: CharOffset| -> Result<CharOffset, vex_core::Error> {
+                for (range, len) in &replacements {
+                    if range.contains(&position) {
+                        let start = transaction.map_position(range.start, Affinity::Before)?;
+                        return Ok(CharOffset(start.0 + (position.0 - range.start.0).min(*len)));
+                    }
+                }
+                transaction.map_position(position, Affinity::After)
+            };
+            SelectionSet::new(
+                selections
+                    .ranges()
+                    .iter()
+                    .map(|selection| {
+                        Ok(Selection::new(
+                            position(selection.anchor)?,
+                            position(selection.head)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, vex_core::Error>>()?,
+                selections.primary_index(),
+            )
+        };
+        let selections = map(&self.selections)?;
+        let inactive = self
+            .views
+            .inactive
+            .iter()
+            .map(|(&id, view)| Ok((id, map(&view.selections)?)))
+            .collect::<Result<Vec<_>, vex_core::Error>>()?;
+        self.apply(transaction.with_selections(selections)?, false)?;
+        self.selections = self.normalized(self.selections.clone(), self.mode)?;
+        for (id, selections) in inactive {
+            let selections = self.normalized(selections, self.views.inactive[&id].mode)?;
+            self.views.inactive.get_mut(&id).unwrap().selections = selections;
+        }
+        self.preferred_columns = None;
+        self.newline = crate::line_ending(self.document.text());
+        self.language_action = None;
+        self.application_action = None;
+        Ok(())
+    }
+
     pub fn active_view(&self) -> ViewId {
         self.views.active
     }
@@ -136,6 +193,35 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use vex_core::{CharOffset, Document, Selection};
+
+    #[test]
+    fn external_replacements_preserve_view_modes_cursors_and_reject_stale_work() {
+        let mut editor = Editor::new(Document::from("abcd e\u{301}nd\n"));
+        editor.execute("move_right", 2).unwrap();
+        let first = editor.active_view();
+        let second = editor.duplicate_view();
+        editor.focus_view(second);
+        editor.execute("insert_mode", 1).unwrap();
+        let transaction = editor
+            .document()
+            .transaction([vex_core::Edit::new(CharOffset(0)..CharOffset(4), "XY")])
+            .unwrap();
+        let stale = transaction.clone();
+        editor.apply_external_change(transaction).unwrap();
+        assert_eq!(editor.mode(), Mode::Insert);
+        assert_eq!(
+            editor.selections().primary(),
+            Selection::cursor(CharOffset(2))
+        );
+        editor.focus_view(first);
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(editor.selections().primary().start(), CharOffset(2));
+        let text = editor.document().text().clone();
+        assert!(editor.apply_external_change(stale).is_err());
+        assert!(text.is_instance(editor.document().text()));
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "abcd e\u{301}nd\n");
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(96))]
