@@ -406,8 +406,8 @@ impl App {
                 .as_ref()
                 .map(|p| (p.prefix(), p.input.text(), p.input.cursor())),
         );
-        self.paint_key_hints(frame);
         self.paint_active_picker(frame);
+        self.paint_key_hints(frame);
         Ok(())
     }
 
@@ -597,6 +597,23 @@ impl App {
 
     fn handle_prompt_key(&mut self, key: Key) {
         let mut prompt = self.prompt.take().unwrap();
+        if let Some(name) = prompt.input.register_key(key) {
+            if prompt.input.register_pending() {
+                self.keys.cache_register_hints(&self.editor);
+            }
+            if let Some(name) = name {
+                match self.editor.register_first(name) {
+                    Ok(Some(value)) => {
+                        prompt.input.insert(&value);
+                        self.preview_search(&prompt);
+                    }
+                    Ok(None) => {}
+                    Err(error) => self.fail(error),
+                }
+            }
+            self.prompt = Some(prompt);
+            return;
+        }
         match key {
             Key::Escape | Key::Ctrl('c') => {
                 self.keys.cancel(&mut self.editor);
@@ -1385,6 +1402,69 @@ mod tests {
         assert!(!app.is_dirty());
         app.execute("q").unwrap();
         assert!(app.should_quit());
+    }
+
+    #[test]
+    fn prompt_register_insertion_uses_the_first_fragment_at_the_cursor_without_submitting() {
+        use std::sync::Arc;
+        let mut app = App::from_document(Document::from("abc"), (80, 24));
+        app.editor
+            .set_register(
+                'a',
+                Arc::from([Arc::from("界e\u{301}\n"), Arc::from("unused")]),
+            )
+            .unwrap();
+        press(&mut app, ":xy");
+        key(&mut app, KeyCode::Home);
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('r'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(app.prompt.as_ref().unwrap().input.register_pending());
+        let mut frame = Frame::default();
+        frame.reset(80, 24).unwrap();
+        app.paint(&mut frame).unwrap();
+        assert!((0..24).any(|row| frame.row_text(row).contains("Insert register")));
+        press(&mut app, "a");
+        assert_eq!(app.prompt.as_ref().unwrap().input.text(), "界e\u{301}xy");
+        assert_eq!(
+            app.prompt.as_ref().unwrap().input.cursor(),
+            "界e\u{301}".len()
+        );
+        assert_eq!(app.editor.document().text(), "abc");
+        assert!(!app.should_quit());
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('r'),
+            KeyModifiers::CONTROL,
+        )));
+        key(&mut app, KeyCode::Esc);
+        assert!(app.prompt.is_some());
+        assert!(!app.prompt.as_ref().unwrap().input.register_pending());
+        key(&mut app, KeyCode::Esc);
+        assert!(app.prompt.is_none());
+    }
+
+    #[test]
+    fn register_insertion_updates_search_previews() {
+        use std::sync::Arc;
+        let mut app = App::from_document(Document::from("find cat"), (80, 24));
+        app.editor
+            .set_register('a', Arc::from([Arc::from("cat")]))
+            .unwrap();
+        press(&mut app, "/");
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('r'),
+            KeyModifiers::CONTROL,
+        )));
+        press(&mut app, "a");
+        assert_eq!(app.prompt.as_ref().unwrap().input.text(), "cat");
+        assert_eq!(
+            app.editor.selections().primary().range(),
+            vex_core::CharOffset(5)..vex_core::CharOffset(8)
+        );
+        key(&mut app, KeyCode::Enter);
+        assert!(app.prompt.is_none());
+        assert_eq!(app.editor.document().text(), "find cat");
     }
 
     #[test]

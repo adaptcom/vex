@@ -12,6 +12,8 @@ pub struct CommandContext<'a> {
     pub count_given: bool,
     pub text: Option<&'a str>,
     pub character: Option<char>,
+    /// Override the next-command register selected through the keymap.
+    pub register: Option<char>,
 }
 
 impl<'a> CommandContext<'a> {
@@ -22,6 +24,7 @@ impl<'a> CommandContext<'a> {
             count_given: false,
             text: None,
             character: None,
+            register: None,
         }
     }
 }
@@ -38,6 +41,8 @@ pub enum CommandInput {
     SurroundDelete,
     SurroundReplace,
     SurroundReplacement,
+    RegisterSelect,
+    RegisterInsert,
 }
 
 #[derive(Debug)]
@@ -474,6 +479,19 @@ fn clipboard(ctx: &mut CommandContext<'_>, action: crate::ClipboardAction) -> Re
 }
 
 commands! {
+    /// Select a register for the next command. Names are literal, case-sensitive Unicode characters; a motion or failed command also consumes the selection. Escape cancels it.
+    fn select_register(ctx) [RegisterSelect] {
+        ctx.editor.selected_register = Some(ctx.character.ok_or(Error::MissingCharacter)?);
+        Ok(())
+    }
+
+    /// Insert the following register's fragments at insertion carets, retaining insert mode. Fragments pair with selections and counts repeat each fragment; line endings follow the buffer. This is a separate undo step.
+    fn insert_register(ctx) [RegisterInsert] {
+        require_insert(ctx.editor)?;
+        ctx.register = Some(ctx.character.ok_or(Error::MissingCharacter)?);
+        crate::register::paste(ctx, crate::Paste::Cursor)
+    }
+
     /// Copy all selections to the system clipboard, retaining fragment boundaries for later pastes while the clipboard is unchanged. Leaves select mode; counts are ignored. The frontend performs clipboard I/O in the background.
     fn yank_to_clipboard(ctx) { clipboard(ctx, crate::ClipboardAction::Yank) }
 
@@ -1079,32 +1097,34 @@ commands! {
     /// Insert the context's pasted text at all carets as a separate undo step; requires insert mode.
     fn insert_paste(ctx) { insert(ctx, false) }
 
-    /// Copy selections to the shared internal register, retaining their order and leaving select mode. Does not edit text or undo history.
+    /// Copy selections to the chosen register (default: last-yanked text), retaining their order and leaving select mode. Registers are shared across buffers; undo history is unchanged.
     fn yank(ctx) {
-        let values = crate::register::capture(ctx.editor);
-        ctx.editor.yank_register.write(values);
+        let name = ctx.register.unwrap_or('"');
+        let values = crate::register::capture_for(ctx.editor, name)?;
+        ctx.editor.set_register(name, values)?;
         ctx.editor.finish_undo_group();
         ctx.editor.mode = Mode::Normal;
         normalize(ctx.editor)
     }
 
-    /// Paste the internal register after selections, selecting the inserted text in normal mode. Newline-terminated yanks paste below the selected lines; counts repeat each fragment in one undo step.
+    /// Paste the chosen register (default: last-yanked text) after selections, selecting the inserted text in normal mode. Newline-terminated yanks paste below the selected lines; counts repeat each fragment in one undo step.
     /// Fragments pair with selections in document order; extra destinations repeat the last fragment. Uses the destination's line endings without changing the register.
     fn paste_after(ctx) { crate::register::paste(ctx, crate::register::Paste::After) }
 
-    /// Paste the internal register before selections, selecting the inserted text in normal mode. Newline-terminated yanks paste above the selected lines; counts repeat each fragment in one undo step.
+    /// Paste the chosen register (default: last-yanked text) before selections, selecting the inserted text in normal mode. Newline-terminated yanks paste above the selected lines; counts repeat each fragment in one undo step.
     /// Fragments pair with selections in document order; extra destinations repeat the last fragment. Uses the destination's line endings without changing the register.
     fn paste_before(ctx) { crate::register::paste(ctx, crate::register::Paste::Before) }
 
-    /// Replace selections with the internal register in one undo step, selecting the replacements in normal mode. Counts repeat each fragment; replacement leaves the register unchanged.
+    /// Replace selections with the chosen register (default: last-yanked text) in one undo step, selecting the replacements in normal mode. Counts repeat each fragment; replacement leaves the register unchanged.
     /// Fragments pair in document order, repeating the last for extra destinations. Replaces the exact ranges even for linewise yanks, using the destination's line endings.
     fn replace_with_yanked(ctx) { crate::register::paste(ctx, crate::register::Paste::Replace) }
 
-    /// Cut selections into the shared internal register and delete them atomically, leaving normal-mode cursors at the edit locations.
+    /// Cut selections into the chosen register (default: last-yanked text) and delete them atomically, leaving normal-mode cursors at the edit locations. The discard register avoids copying selected text.
     fn delete_selection(ctx) {
-        let values = crate::register::capture(ctx.editor);
+        let name = ctx.register.unwrap_or('"');
+        let values = crate::register::capture_for(ctx.editor, name)?;
         delete_selection_without_yank(ctx)?;
-        ctx.editor.yank_register.write(values);
+        ctx.editor.set_register(name, values)?;
         Ok(())
     }
 
@@ -1117,14 +1137,15 @@ commands! {
         normalize(editor)
     }
 
-    /// Cut selections into the shared internal register and enter insert mode; the deletion and subsequent typing share one undo step.
+    /// Cut selections into the chosen register (default: last-yanked text) and enter insert mode; the deletion and subsequent typing share one undo step. The discard register avoids copying selected text.
     fn change_selection(ctx) {
-        let values = crate::register::capture(ctx.editor);
+        let name = ctx.register.unwrap_or('"');
+        let values = crate::register::capture_for(ctx.editor, name)?;
         let editor = &mut *ctx.editor;
         editor.finish_undo_group();
         let transaction = editor.document.replace_selections(&editor.selections, "")?;
         editor.apply(transaction, true)?;
-        editor.yank_register.write(values);
+        editor.set_register(name, values)?;
         editor.mode = Mode::Insert;
         normalize(editor)
     }

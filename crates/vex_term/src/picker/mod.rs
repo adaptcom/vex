@@ -71,6 +71,7 @@ pub(crate) struct Item<T> {
 }
 
 pub(crate) enum Action {
+    Register(char),
     None,
     Query,
     Selection,
@@ -125,6 +126,9 @@ impl<T: Eq> Picker<T> {
     }
 
     pub fn handle(&mut self, key: Key, page: usize) -> Action {
+        if let Some(name) = self.query.register_key(key) {
+            return name.map_or(Action::None, Action::Register);
+        }
         match key {
             Key::Escape | Key::Ctrl('c') => return Action::Cancel,
             Key::Enter => return Action::Accept,

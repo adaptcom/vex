@@ -319,6 +319,14 @@ impl App {
             _ => return Some(false),
         };
         match action {
+            Action::Register(name) => match self.editor.register_first(name) {
+                Ok(Some(value)) => {
+                    active.view.paste(&value);
+                    self.submit_picker_query();
+                }
+                Ok(None) => {}
+                Err(error) => self.fail(error),
+            },
             Action::Cancel => self.close_picker(),
             Action::Query => self.submit_picker_query(),
             Action::Selection => self.request_picker_preview(),
@@ -329,7 +337,11 @@ impl App {
                     self.accept_picker();
                 }
             }
-            Action::None => {}
+            Action::None => {
+                if active.view.query.register_pending() {
+                    self.keys.cache_register_hints(&self.editor);
+                }
+            }
         }
         Some(true)
     }
@@ -441,10 +453,23 @@ impl App {
     }
 
     pub(super) fn paint_key_hints(&self, frame: &mut Frame) {
-        if self.prompt.is_some() {
-            return;
-        }
-        let Some(hints) = self.keys.hints() else {
+        let inserting_register = self
+            .prompt
+            .as_ref()
+            .is_some_and(|p| p.input.register_pending())
+            || self
+                .picker
+                .active
+                .as_ref()
+                .is_some_and(|p| p.view.query.register_pending());
+        let hints = if inserting_register {
+            Some(self.keys.register_hints("Insert register"))
+        } else if self.prompt.is_some() || self.picker.active.is_some() {
+            None
+        } else {
+            self.keys.hints()
+        };
+        let Some(hints) = hints else {
             return;
         };
         // Show aliases together so window mode fits without repeating each
@@ -523,6 +548,47 @@ mod tests {
         for result in results(app, worker) {
             app.handle_picker_result(result);
         }
+    }
+
+    #[test]
+    fn picker_register_prefix_shows_hints_cancels_and_inserts_only_first_fragment() {
+        let (_directory, mut app) = fixture();
+        app.editor
+            .set_register('a', Arc::from([Arc::from("beta"), Arc::from("unused")]))
+            .unwrap();
+        press(&mut app, " f");
+        let mut worker = FileWorker::default();
+        finish(&mut app, &mut worker);
+        let ctrl_r = || Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        app.handle(ctrl_r());
+        let mut frame = Frame::default();
+        frame.reset(120, 18).unwrap();
+        app.paint(&mut frame).unwrap();
+        assert!((0..18).any(|row| frame.row_text(row).contains("Insert register")));
+        app.handle(key(KeyCode::Esc));
+        assert!(app.picker.active.is_some());
+        app.handle(ctrl_r());
+        press(&mut app, "a");
+        assert_eq!(
+            app.picker.active.as_ref().unwrap().view.query.text(),
+            "beta"
+        );
+        finish(&mut app, &mut worker);
+        assert_eq!(
+            app.picker
+                .active
+                .as_ref()
+                .unwrap()
+                .view
+                .selected()
+                .unwrap()
+                .label,
+            "beta.txt"
+        );
+        assert_eq!(app.editor.document().text(), "alpha contents");
+        app.handle(key(KeyCode::Enter));
+        assert!(app.picker.active.is_none());
+        assert_eq!(app.editor.document().text(), "beta contents");
     }
 
     #[test]

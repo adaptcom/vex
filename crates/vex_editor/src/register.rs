@@ -2,6 +2,7 @@
 
 use std::{
     borrow::Cow,
+    collections::BTreeMap,
     ops::Range,
     sync::{Arc, Mutex},
 };
@@ -11,23 +12,125 @@ use vex_core::{
 
 use crate::{CommandContext, Editor, Error, Mode};
 
-type Fragments = Arc<[Arc<str>]>;
+pub type RegisterValues = Arc<[Arc<str>]>;
+type Fragments = RegisterValues;
 
-/// An internal yank register shared by all buffers in an editor session.
+/// Internal text registers shared by all buffers in an editor session.
 /// Clones share immutable text; undo/redo and buffer lifetimes do not own it.
 /// A standalone [`Editor::new`] starts with its own empty register.
 #[derive(Clone, Debug, Default)]
 pub struct YankRegister {
-    values: Arc<Mutex<Fragments>>,
+    values: Arc<Mutex<BTreeMap<char, Fragments>>>,
 }
 
 impl YankRegister {
     fn read(&self) -> Fragments {
-        self.values.lock().expect("yank register lock").clone()
+        self.read_named('"')
     }
 
-    pub(crate) fn write(&self, values: Fragments) {
-        *self.values.lock().expect("yank register lock") = values;
+    fn read_named(&self, name: char) -> Fragments {
+        self.values
+            .lock()
+            .expect("register lock")
+            .get(&name)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn write_named(&self, name: char, values: Fragments) {
+        if name != '_' {
+            self.values
+                .lock()
+                .expect("register lock")
+                .insert(name, values);
+        }
+    }
+}
+
+pub(crate) fn writable(name: char) -> Result<(), Error> {
+    match name {
+        '#' | '.' | '%' => Err(Error::ReadOnlyRegister(name)),
+        '+' | '*' => Err(Error::ExternalRegister(name)),
+        _ => Ok(()),
+    }
+}
+
+pub(crate) fn capture_for(editor: &Editor, name: char) -> Result<Fragments, Error> {
+    writable(name)?;
+    Ok(if name == '_' {
+        Arc::from([])
+    } else {
+        capture(editor)
+    })
+}
+
+impl Editor {
+    /// Read a named register. Uppercase names are independent of lowercase.
+    /// Dynamic registers return current selection indices (#) or text (.).
+    /// Frontends resolve file names (%) and platform clipboard registers (+/*).
+    pub fn register(&self, name: char) -> Result<RegisterValues, Error> {
+        Ok(match name {
+            '_' => Arc::from([]),
+            '#' => (1..=self.selections.ranges().len())
+                .map(|index| Arc::from(index.to_string()))
+                .collect(),
+            '.' => capture(self),
+            '%' | '+' | '*' => return Err(Error::ExternalRegister(name)),
+            '"' => self.yank_register.read(),
+            _ => self.yank_register.read_named(name),
+        })
+    }
+
+    pub fn set_register(&mut self, name: char, values: RegisterValues) -> Result<(), Error> {
+        writable(name)?;
+        self.yank_register.write_named(name, values);
+        Ok(())
+    }
+
+    /// Read only the first fragment for a prompt. In particular, `.` does not
+    /// copy every selected range when the caller needs just one.
+    pub fn register_first(&self, name: char) -> Result<Option<Arc<str>>, Error> {
+        if name == '.' {
+            let selection = self.selections.ranges()[0];
+            return Ok(Some(Arc::from(
+                self.document
+                    .text()
+                    .slice(selection.start().0..selection.end().0)
+                    .to_string(),
+            )));
+        }
+        if name == '#' {
+            return Ok(Some(Arc::from("1")));
+        }
+        Ok(self.register(name)?.first().cloned())
+    }
+
+    pub fn selected_register(&self) -> Option<char> {
+        self.selected_register
+    }
+
+    pub fn clear_selected_register(&mut self) {
+        self.selected_register = None;
+    }
+
+    /// Return bounded previews for a register input helper. Never join fragments
+    /// or scan a long first line just to render a popup.
+    pub fn register_previews(&self) -> Vec<(char, String)> {
+        let values = self.yank_register.values.lock().expect("register lock");
+        values
+            .iter()
+            .take(64)
+            .map(|(&name, fragments)| {
+                let text = fragments.first().map_or("", AsRef::as_ref);
+                (
+                    name,
+                    text.chars()
+                        .take(48)
+                        .take_while(|ch| !matches!(ch, '\r' | '\n'))
+                        .collect(),
+                )
+            })
+            .collect()
     }
 }
 
@@ -54,6 +157,8 @@ pub enum Paste {
     Before,
     After,
     Replace,
+    /// Insert at each caret without applying linewise paste behavior.
+    Cursor,
 }
 
 /// Immutable preparation inputs for clipboard/register edits on a worker.
@@ -80,6 +185,20 @@ impl Editor {
         self.apply(transaction, false)?;
         self.mode = Mode::Normal;
         self.selections = self.normalized(self.selections.clone(), self.mode)?;
+        self.preferred_columns = None;
+        Ok(())
+    }
+
+    /// Insert prepared register fragments at carets while retaining insert mode.
+    pub fn apply_register_insert(&mut self, transaction: Transaction) -> Result<(), Error> {
+        if self.mode != Mode::Insert {
+            return Err(Error::WrongMode {
+                expected: Mode::Insert,
+                actual: self.mode,
+            });
+        }
+        self.apply(transaction, false)?;
+        self.selections = self.normalized(self.selections.clone(), Mode::Insert)?;
         self.preferred_columns = None;
         Ok(())
     }
@@ -189,12 +308,27 @@ impl Group {
 }
 
 pub(crate) fn paste(ctx: &mut CommandContext<'_>, action: Paste) -> Result<(), Error> {
+    let name = ctx.register.unwrap_or('"');
     let editor = &mut *ctx.editor;
-    let values = editor.yank_register.read();
+    let values = editor.register(name)?;
+    if name == '_' {
+        return Ok(());
+    }
+    if values.is_empty() {
+        return Err(if name == '"' {
+            Error::EmptyYankRegister
+        } else {
+            Error::EmptyRegister(name)
+        });
+    }
     let transaction = editor
         .paste_plan()
         .prepare(&values, action, ctx.count, &|| false)?;
-    editor.apply_paste(transaction)
+    if action == Paste::Cursor {
+        editor.apply_register_insert(transaction)
+    } else {
+        editor.apply_paste(transaction)
+    }
 }
 
 impl PastePlan {
@@ -211,8 +345,8 @@ impl PastePlan {
         if values.is_empty() {
             return Err(Error::EmptyYankRegister);
         }
-        let linewise =
-            action != Paste::Replace && values.iter().any(|value| value.ends_with(['\r', '\n']));
+        let linewise = matches!(action, Paste::Before | Paste::After)
+            && values.iter().any(|value| value.ends_with(['\r', '\n']));
         let values = values
             .iter()
             .take(self.selections.ranges().len())
@@ -231,6 +365,7 @@ impl PastePlan {
             let (value, chars) = &values[index.min(values.len() - 1)];
             let range = match action {
                 Paste::Replace => selection.range(),
+                Paste::Cursor => selection.head..selection.head,
                 Paste::Before | Paste::After => {
                     let at = if linewise {
                         if action == Paste::Before {
@@ -316,6 +451,207 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use vex_core::Document;
+
+    fn keys(editor: &mut Editor, text: &str) {
+        let mut handler = crate::KeyHandler::default();
+        for ch in text.chars() {
+            handler.handle(editor, crate::Key::Char(ch)).unwrap();
+        }
+    }
+
+    #[test]
+    fn named_yanks_are_case_sensitive_and_shared_with_fragment_boundaries() {
+        let mut source = Editor::new(Document::from("cat dog"));
+        select(&mut source, vec![range(0, 3), range(4, 7)], 1);
+        keys(&mut source, "\"ay");
+        select(&mut source, vec![range(4, 7)], 0);
+        keys(&mut source, "\"Ay");
+        assert_eq!(
+            source.register('a').unwrap().as_ref(),
+            &[Arc::from("cat"), Arc::from("dog")]
+        );
+        assert_eq!(source.register('A').unwrap().as_ref(), &[Arc::from("dog")]);
+        assert!(source.register('"').unwrap().is_empty());
+        let mut target = Editor::with_session(Document::from("1 2 3"), source.session());
+        select(&mut target, vec![range(0, 1), range(2, 3), range(4, 5)], 1);
+        keys(&mut target, "\"aR");
+        assert_eq!(target.document().text(), "cat dog dog");
+        assert_eq!(target.selections().primary_index(), 1);
+        target.execute("undo", 1).unwrap();
+        assert_eq!(target.document().text(), "1 2 3");
+        assert_eq!(target.register('a').unwrap(), source.register('a').unwrap());
+    }
+
+    #[test]
+    fn reads_share_fragments_and_previews_are_bounded_without_flattening_values() {
+        let mut editor = Editor::new(Document::from("first second"));
+        select(&mut editor, vec![range(0, 5), range(6, 12)], 1);
+        let values: RegisterValues =
+            Arc::from([Arc::from("界".repeat(1 << 20)), Arc::from("tail")]);
+        for name in (0x100..0x200).filter_map(char::from_u32) {
+            editor.set_register(name, values.clone()).unwrap();
+        }
+        let read = editor.register('Ā').unwrap();
+        assert!(Arc::ptr_eq(&read, &values));
+        assert!(Arc::ptr_eq(
+            &editor.register_first('Ā').unwrap().unwrap(),
+            &values[0]
+        ));
+        let previews = editor.register_previews();
+        assert_eq!(previews.len(), 64);
+        assert!(previews.iter().all(|(_, text)| text == &"界".repeat(48)));
+        assert_eq!(
+            editor.register_first('.').unwrap().as_deref(),
+            Some("first")
+        );
+        assert_eq!(editor.register_first('#').unwrap().as_deref(), Some("1"));
+        assert!(editor.register_first('_').unwrap().is_none());
+    }
+
+    #[test]
+    fn register_selection_is_used_by_one_command_and_keeps_counts() {
+        for sequence in ["\"a3p", "3\"ap"] {
+            let mut editor = Editor::new(Document::from("ab"));
+            editor
+                .set_register('a', Arc::from([Arc::from("X")]))
+                .unwrap();
+            editor
+                .set_register('"', Arc::from([Arc::from("Y")]))
+                .unwrap();
+            keys(&mut editor, sequence);
+            assert_eq!(editor.document().text(), "aXXXb");
+            keys(&mut editor, "p");
+            assert_eq!(editor.document().text(), "aXXXYb");
+        }
+        let mut editor = Editor::new(Document::from("ab"));
+        editor
+            .set_register('a', Arc::from([Arc::from("X")]))
+            .unwrap();
+        editor
+            .set_register('"', Arc::from([Arc::from("Y")]))
+            .unwrap();
+        keys(&mut editor, "\"alp");
+        assert_eq!(editor.document().text(), "abY");
+    }
+
+    #[test]
+    fn literal_register_names_and_escape_keep_pending_input_separate_from_editing() {
+        for name in ['3', ':', ' ', '界'] {
+            let mut editor = Editor::new(Document::from("x"));
+            editor
+                .set_register(name, Arc::from([Arc::from("ok")]))
+                .unwrap();
+            keys(&mut editor, &format!("\"{name}P"));
+            assert_eq!(editor.document().text(), "okx");
+        }
+        for cancel in [crate::Key::Escape, crate::Key::Ctrl('c')] {
+            let mut editor = Editor::new(Document::from("abc"));
+            editor.execute("select_mode", 1).unwrap();
+            let mut handler = crate::KeyHandler::default();
+            for ch in "\"a".chars() {
+                handler.handle(&mut editor, crate::Key::Char(ch)).unwrap();
+            }
+            assert_eq!(editor.selected_register(), Some('a'));
+            handler.handle(&mut editor, cancel).unwrap();
+            assert_eq!(editor.selected_register(), None);
+            assert_eq!(editor.mode(), Mode::Select);
+            assert_eq!(editor.document().text(), "abc");
+        }
+    }
+
+    #[test]
+    fn named_cuts_and_changes_preserve_the_default_register_and_undo_groups() {
+        let mut editor = Editor::new(Document::from("abc"));
+        editor
+            .set_register('"', Arc::from([Arc::from("old")]))
+            .unwrap();
+        keys(&mut editor, "\"ad");
+        assert_eq!(editor.document().text(), "bc");
+        assert_eq!(editor.register('a').unwrap()[0].as_ref(), "a");
+        keys(&mut editor, "\"bc");
+        editor.insert_text("X").unwrap();
+        editor.execute("normal_mode", 1).unwrap();
+        assert_eq!(editor.document().text(), "Xc");
+        assert_eq!(editor.register('b').unwrap()[0].as_ref(), "b");
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "bc");
+        assert_eq!(editor.register('"').unwrap()[0].as_ref(), "old");
+    }
+
+    #[test]
+    fn black_hole_discards_cuts_and_read_only_registers_fail_before_editing() {
+        let mut editor = Editor::new(Document::from("abc"));
+        editor
+            .set_register('"', Arc::from([Arc::from("old")]))
+            .unwrap();
+        keys(&mut editor, "\"_d");
+        assert_eq!(editor.document().text(), "bc");
+        keys(&mut editor, "\"_p");
+        assert_eq!(editor.document().text(), "bc");
+        assert_eq!(editor.register('"').unwrap()[0].as_ref(), "old");
+        for name in ['#', '.', '%'] {
+            let mut ctx = crate::CommandContext::new(&mut editor);
+            ctx.register = Some(name);
+            assert_eq!(
+                crate::commands::delete_selection(&mut ctx),
+                Err(Error::ReadOnlyRegister(name))
+            );
+            assert_eq!(editor.document().text(), "bc");
+        }
+        select(&mut editor, vec![range(0, 1), range(1, 2)], 1);
+        assert_eq!(
+            editor.register('#').unwrap().as_ref(),
+            &[Arc::from("1"), Arc::from("2")]
+        );
+        assert_eq!(
+            editor.register('.').unwrap().as_ref(),
+            &[Arc::from("b"), Arc::from("c")]
+        );
+    }
+
+    #[test]
+    fn insert_register_stays_at_carets_and_replays_the_named_command() {
+        let mut editor = Editor::new(Document::from("ab\r\n"));
+        editor
+            .set_register('a', Arc::from([Arc::from("界\nX")]))
+            .unwrap();
+        editor.execute("append_mode", 1).unwrap();
+        let mut handler = crate::KeyHandler::default();
+        handler.handle(&mut editor, crate::Key::Ctrl('r')).unwrap();
+        assert_eq!(handler.hints().unwrap().title, "Insert register");
+        handler.handle(&mut editor, crate::Key::Char('a')).unwrap();
+        assert_eq!(editor.mode(), Mode::Insert);
+        assert_eq!(editor.document().text(), "a界\r\nXb\r\n");
+        editor.execute("normal_mode", 1).unwrap();
+        editor
+            .set_register('a', Arc::from([Arc::from("Z")]))
+            .unwrap();
+        editor.execute("repeat_insert", 1).unwrap();
+        assert_eq!(editor.document().text(), "a界\r\nXZb\r\n");
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "a界\r\nXb\r\n");
+    }
+
+    #[test]
+    fn insert_register_pairs_fragments_and_creates_an_explicit_undo_step() {
+        let mut editor = Editor::new(Document::from("a b"));
+        select(&mut editor, vec![range(0, 1), range(2, 3)], 1);
+        editor
+            .set_register('a', Arc::from([Arc::from("e\u{301}"), Arc::from("界")]))
+            .unwrap();
+        editor.execute("append_mode", 1).unwrap();
+        editor.insert_text("x").unwrap();
+        let mut ctx = crate::CommandContext::new(&mut editor);
+        ctx.character = Some('a');
+        ctx.count = std::num::NonZeroUsize::new(2).unwrap();
+        crate::commands::insert_register(&mut ctx).unwrap();
+        assert_eq!(editor.document().text(), "axe\u{301}e\u{301} bx界界");
+        editor.execute("normal_mode", 1).unwrap();
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "ax bx");
+        editor.execute("undo", 1).unwrap();
+        assert_eq!(editor.document().text(), "a b");
+    }
 
     #[test]
     fn prepared_pastes_reject_stale_revisions_and_other_documents() {

@@ -34,6 +34,7 @@ enum Action {
         count: NonZeroUsize,
         explicit: bool,
         character: Option<char>,
+        register: Option<char>,
         text: Option<Range<usize>>,
     },
     Completion {
@@ -65,6 +66,7 @@ impl Program {
             count: ctx.count,
             explicit: ctx.count_given,
             character: ctx.character,
+            register: ctx.register,
             text,
         });
     }
@@ -122,6 +124,10 @@ pub(crate) fn invoke(
     }
     let before = ctx.editor.mode;
     if ctx.editor.recorder.depth == 0 {
+        let selected = ctx.editor.selected_register.take();
+        if ctx.register.is_none() {
+            ctx.register = selected;
+        }
         ctx.editor.recorder.service = false;
     }
     ctx.editor.recorder.depth += 1;
@@ -215,12 +221,14 @@ impl Editor {
                     count,
                     explicit,
                     character,
+                    register,
                     text,
                 } => {
                     let mut ctx = CommandContext::new(self);
                     ctx.count = *count;
                     ctx.count_given = *explicit;
                     ctx.character = *character;
+                    ctx.register = *register;
                     ctx.text = text.as_ref().map(|range| &program.text[range.clone()]);
                     (command.run)(&mut ctx)
                 }

@@ -176,6 +176,7 @@ impl Default for Keymap {
                 (vec![Char('v')], "select_mode"),
                 (vec![Char('i')], "insert_mode"),
                 (vec![Char('a')], "append_mode"),
+                (vec![Char('"')], "select_register"),
                 (vec![Char(' '), Char('y')], "yank_to_clipboard"),
                 (
                     vec![Char(' '), Char('Y')],
@@ -336,6 +337,7 @@ impl Default for Keymap {
             (Ctrl('d'), "delete_forward"),
             (Ctrl('j'), "insert_newline"),
             (Ctrl('s'), "commit_undo_checkpoint"),
+            (Ctrl('r'), "insert_register"),
         ] {
             keymap.bind(Mode::Insert, vec![key], command).unwrap();
         }
@@ -359,6 +361,7 @@ pub struct KeyHandler {
     count: Option<usize>,
     mode: Option<Mode>,
     character_command: Option<&'static Command>,
+    register_hints: Vec<(Key, String)>,
 }
 
 impl Default for KeyHandler {
@@ -375,6 +378,7 @@ impl KeyHandler {
             count: None,
             mode: None,
             character_command: None,
+            register_hints: Vec::new(),
         }
     }
 
@@ -388,7 +392,53 @@ impl KeyHandler {
         self.count
     }
 
+    /// Snapshot bounded register previews once when a register prefix opens.
+    /// Prompt and picker frontends can use the same helper without dispatching
+    /// an editing command or copying complete register contents every frame.
+    pub fn cache_register_hints(&mut self, editor: &Editor) {
+        let mut hints: BTreeMap<char, String> = [
+            ('"', "Last yanked text"),
+            ('_', "Discard values"),
+            ('#', "Selection indices"),
+            ('.', "Current selections"),
+        ]
+        .into_iter()
+        .map(|(key, text)| (key, text.to_owned()))
+        .collect();
+        hints.extend(editor.register_previews());
+        self.register_hints = hints
+            .into_iter()
+            .map(|(key, text)| (Key::Char(key), text))
+            .collect();
+        self.register_hints.push((Key::Escape, "Cancel".into()));
+    }
+
+    pub fn register_hints(&self, title: &'static str) -> KeyHints<'_> {
+        KeyHints {
+            title,
+            entries: self
+                .register_hints
+                .iter()
+                .map(|(key, text)| (*key, text.as_str()))
+                .collect(),
+        }
+    }
+
     pub fn hints(&self) -> Option<KeyHints<'_>> {
+        if let Some(command) = self.character_command
+            && matches!(
+                command.input,
+                crate::CommandInput::RegisterSelect | crate::CommandInput::RegisterInsert
+            )
+        {
+            return Some(self.register_hints(
+                if command.input == crate::CommandInput::RegisterSelect {
+                    "Select register"
+                } else {
+                    "Insert register"
+                },
+            ));
+        }
         if let Some(command) = self.character_command
             && matches!(
                 command.input,
@@ -473,6 +523,7 @@ impl KeyHandler {
 
     /// Cancel input and restore any active surround preview.
     pub fn cancel(&mut self, editor: &mut Editor) {
+        editor.clear_selected_register();
         editor.cancel_surround();
         self.reset();
     }
@@ -481,6 +532,7 @@ impl KeyHandler {
         self.pending.clear();
         self.count = None;
         self.character_command = None;
+        self.register_hints.clear();
     }
 
     pub fn handle(&mut self, editor: &mut Editor, key: Key) -> Result<Dispatch, Error> {
@@ -495,8 +547,14 @@ impl KeyHandler {
             self.cancel(editor);
         }
         self.mode = Some(editor.mode());
-        if key == Key::Escape || (key == Key::Ctrl('c') && !self.pending.is_empty()) {
-            if !self.pending.is_empty() || self.count.is_some() {
+        if key == Key::Escape
+            || (key == Key::Ctrl('c')
+                && (!self.pending.is_empty() || editor.selected_register().is_some()))
+        {
+            if !self.pending.is_empty()
+                || self.count.is_some()
+                || editor.selected_register().is_some()
+            {
                 self.cancel(editor);
                 return Ok(Dispatch::Ignored);
             }
@@ -549,6 +607,12 @@ impl KeyHandler {
             .copied()
         {
             if command.input != crate::CommandInput::None {
+                if matches!(
+                    command.input,
+                    crate::CommandInput::RegisterSelect | crate::CommandInput::RegisterInsert
+                ) {
+                    self.cache_register_hints(editor);
+                }
                 self.character_command = Some(command);
                 return Ok(Dispatch::Pending);
             }
@@ -592,6 +656,9 @@ impl KeyHandler {
         context.count_given = count.is_some();
         context.character = character;
         (command.run)(&mut context)?;
+        if command.input == crate::CommandInput::RegisterSelect {
+            self.count = count;
+        }
         if let Some(mut pending) = continuation {
             pending.push(Key::Char(character.expect("collected surround character")));
             self.pending = pending;

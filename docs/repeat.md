@@ -10,6 +10,8 @@ deletions, Enter, and explicit insert undo checkpoints are recorded as documente
 command calls with their arguments. Original command counts are retained: after
 `2o`, typing, and Escape, `.` opens two lines again. `3.` repeats that complete
 two-line operation three times, using the current selections each time.
+Register choices are retained too: a `"ac` entry cuts into `a` on replay, and
+insert-mode Ctrl-r `a` reads that register's current contents at the new carets.
 
 Normal-mode edits and undo/redo leave this history intact. An empty insert
 session replaces it too. The most recently completed session is shared across

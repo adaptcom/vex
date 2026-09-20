@@ -26,6 +26,8 @@ Everyday edits include `I`/`A` for insertion at line edges, `r<char>` to replace
 selected characters, `>`/`<` for language-configured indentation, `J` to join
 lines, and `[Space`/`]Space` to add blank lines. See the
 [editing controls](docs/terminal.md#controls) for selection and count behavior.
+Use `"ay` to copy into a named register, `"ap` to paste it, and Ctrl-r `a` to
+insert it while typing or editing a prompt. See [registers](docs/registers.md).
 
 The interface includes line numbers, selection highlighting, cursor-following
 scrolling, a status line, and an editable command prompt. Unicode graphemes,
@@ -270,7 +272,7 @@ queue. Completion opens automatically after two identifier characters and
 a 100 ms pause, or immediately on server trigger characters and `Ctrl-x`.
 The menu and documentation panel sit next to the cursor; see
 [language services](docs/lsp.md#completion) for controls and session settings.
-Named/system registers, more picker providers, and language
+Special-register integration, more picker providers, and language
 configuration files remain upcoming milestones. Further layout
 work can address cold indexing and updates near the beginning of a huge line.
 

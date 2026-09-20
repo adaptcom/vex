@@ -54,6 +54,8 @@ and calls that existing dispatcher.
 | `y` | Yank selections to the internal register shared across files and panes |
 | `p`, `P` | Paste after/before selections; newline-terminated yanks paste below/above selected lines |
 | `R` | Replace selections with yanked text without overwriting the register |
+| `"<register>` | Choose a [named register](registers.md) for the next normal/select command |
+| Ctrl-r `<register>` | Insert register contents in insert mode, a prompt, or a picker query |
 | Space-y, Space-Y | [Copy to the system clipboard](clipboard.md): all selections / primary selection |
 | Space-p, Space-P, Space-R | Paste clipboard after / before / replacing selections |
 | `d`, `c` | Cut selections to the internal register, then delete/change them |
@@ -184,8 +186,9 @@ If any yanked fragment ends in LF, CRLF, or CR, `p`/`P` paste at line boundaries
 A final line without a line ending is copied as characterwise text. Pasting below
 an unterminated destination line adds a separator. Register pastes normalize line
 endings to the destination's convention while retaining the original register
-bytes. Backspace/Delete in insert mode do not overwrite the register. System
-clipboard integration and named registers are planned in [TODO](../TODO.md).
+bytes. Backspace/Delete in insert mode do not overwrite the register. See
+[named registers](registers.md) for `"<register>` and Ctrl-r, and
+[system clipboard commands](clipboard.md) for Space-y/p/P/R.
 
 Bracketed paste in insert mode is a separate undo step, preserving the pasted
 bytes. Pasting in normal/select mode shows a message to enter insert mode. Pasting

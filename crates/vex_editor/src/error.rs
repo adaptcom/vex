@@ -25,6 +25,9 @@ pub enum Error {
     SelectionLimit,
     InvalidCompletion,
     EmptyYankRegister,
+    EmptyRegister(char),
+    ReadOnlyRegister(char),
+    ExternalRegister(char),
     SurroundNotFound,
     SurroundOverlap,
     SurroundAmbiguous,
@@ -52,6 +55,11 @@ impl fmt::Display for Error {
                 write!(f, "command requires a character in its command context")
             }
             Self::EmptyYankRegister => write!(f, "nothing yanked; use y, d, or c first"),
+            Self::EmptyRegister(name) => write!(f, "register {name} is empty"),
+            Self::ReadOnlyRegister(name) => write!(f, "register {name} is read-only"),
+            Self::ExternalRegister(name) => {
+                write!(f, "register {name} requires a frontend service")
+            }
             Self::SurroundNotFound => write!(f, "surround pair not found around every cursor"),
             Self::SurroundOverlap => {
                 write!(f, "multiple cursors target the same surround delimiter")

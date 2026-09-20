@@ -17,10 +17,10 @@ fn main() {
                     .iter()
                     .map(ToString::to_string)
                     .collect::<String>();
-                let argument = if command.input == CommandInput::Character {
-                    "<char>"
-                } else {
-                    ""
+                let argument = match command.input {
+                    CommandInput::RegisterSelect | CommandInput::RegisterInsert => "<register>",
+                    CommandInput::Character => "<char>",
+                    _ => "",
                 };
                 format!("{:?}: `{keys}{argument}`", binding.mode)
             })

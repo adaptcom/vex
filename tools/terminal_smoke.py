@@ -526,6 +526,19 @@ def main():
             assert clipboard_path.read_text() == "XXabc"
         print("PASS: background clipboard copy/paste, CRLF, counts, undo, and queued save")
 
+        register_path = Path(directory) / "registers.txt"
+        register_path.write_text("cat")
+        with Terminal([binary, str(register_path)]) as terminal:
+            terminal.start()
+            mark = terminal.send(b'%"ay"_di\x12a')
+            terminal.expect(b"INS", mark)
+            mark = terminal.send(b"\x1b")
+            terminal.expect(b"NOR", mark)
+            terminal.send(b'"aP:wq\r')
+            terminal.finish()
+            assert register_path.read_text() == "cacatt"
+        print("PASS: named register, discard deletion, insert Ctrl-r, and queued save")
+
         with Terminal([binary]) as terminal:
             terminal.start()
             mark = terminal.send(b"i")

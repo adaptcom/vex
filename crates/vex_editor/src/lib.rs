@@ -37,7 +37,7 @@ mod views;
 pub use commands::{Command, CommandContext, CommandInput};
 pub use error::Error;
 pub use keymap::{Binding, Dispatch, Key, KeyHandler, KeyHints, Keymap};
-pub use register::{Paste, PastePlan, YankRegister};
+pub use register::{Paste, PastePlan, RegisterValues, YankRegister};
 pub use repeat::Session;
 pub use search::{
     SearchCancellation, SearchCompletion, SearchJob, SearchPrompt, SearchResult, SearchStatus,
@@ -127,6 +127,7 @@ pub enum WindowAction {
 pub struct Editor {
     document: Document,
     yank_register: YankRegister,
+    selected_register: Option<char>,
     recorder: repeat::Recorder,
     selections: SelectionSet,
     mode: Mode,
@@ -164,6 +165,7 @@ impl Editor {
         Self {
             document,
             yank_register: session.yank.clone(),
+            selected_register: None,
             recorder: repeat::Recorder::new(session),
             selections,
             mode: Mode::Normal,
@@ -361,6 +363,7 @@ impl Editor {
     /// mode/selection changes, explicit edits, paste, and undo/redo do so already.
     /// Outside a replayed action, this also cancels pending insert playback.
     pub fn finish_undo_group(&mut self) {
+        self.selected_register = None;
         if !self.recorder.stepping {
             self.cancel_repeat();
         }

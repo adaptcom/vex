@@ -97,6 +97,34 @@ handoff cost, excluding worker wakeup, text capture, clipboard processes, paste
 preparation/application, drawing, and terminal latency. Actual copying remains
 proportional to selected text on the worker.
 
+## Named registers
+
+Recorded on 2026-09-20 with the same optimized profile:
+
+```sh
+cargo bench -p vex_editor --bench commands --locked -- registers --noplot
+```
+
+| Buffer and stored fragment | Read register | Open helper + Escape | Discard whole buffer + undo |
+|---|---:|---:|---:|
+| 1 MiB | 5.76 ns | 0.325 µs | 0.931 µs |
+| 100 MiB | 5.73 ns | 0.305 µs | 0.890 µs |
+
+The read clones an immutable register handle. The helper case dispatches `"`
+and Escape, builds a bounded preview of one stored register plus dynamic labels,
+and retrieves its hints; it does not draw. The discard case selects the entire
+buffer before timing, dispatches `"_d`, and undoes the deletion. It does not copy
+the selected text into a register, and each iteration restores the same rope
+and selections. Fixtures and register contents are constructed outside timing.
+These cache-warm central estimates exclude terminal input/output, rendering,
+ordinary yank capture, actual paste preparation, and growing undo history.
+
+Stored-register lookup is logarithmic in the number of names, independent of
+stored text size. The popup snapshots at most 64 names and 48 characters per
+first fragment once when opened, then reuses those previews across redraws.
+Prompt insertion fetches only the first fragment, including for the dynamic
+selection register. Ordinary yanks and pastes still scale with affected text.
+
 ## Retained buffers
 
 Recorded on 2026-09-20 on the same development machine and optimized profile:

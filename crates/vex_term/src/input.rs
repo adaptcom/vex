@@ -44,9 +44,31 @@ pub fn key(event: KeyEvent) -> Option<Key> {
 pub struct Prompt {
     text: String,
     cursor: usize,
+    register_pending: bool,
 }
 
 impl Prompt {
+    pub fn register_pending(&self) -> bool {
+        self.register_pending
+    }
+
+    /// Register input is a prefix: Escape or a non-character cancels only the
+    /// prefix. The frontend resolves text and performs any platform I/O.
+    pub fn register_key(&mut self, key: Key) -> Option<Option<char>> {
+        if self.register_pending {
+            self.register_pending = false;
+            return Some(match key {
+                Key::Char(ch) if !ch.is_control() => Some(ch),
+                _ => None,
+            });
+        }
+        if key == Key::Ctrl('r') {
+            self.register_pending = true;
+            return Some(None);
+        }
+        None
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -54,6 +76,7 @@ impl Prompt {
         self.cursor
     }
     pub fn insert(&mut self, text: &str) {
+        self.register_pending = false;
         // Pasting into a prompt never submits a command or introduces new lines.
         let text: String = text.chars().filter(|ch| !ch.is_control()).collect();
         self.text.insert_str(self.cursor, &text);

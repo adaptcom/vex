@@ -374,11 +374,46 @@ fn insert_repeat(c: &mut Criterion) {
     group.finish();
 }
 
+fn registers(c: &mut Criterion) {
+    use std::sync::Arc;
+    let mut group = c.benchmark_group("registers");
+    for bytes in [1usize << 20, 100 << 20] {
+        let line = "fn main() { let value = 123; }\n";
+        let text = line.repeat(bytes.div_ceil(line.len()));
+        let mut editor = Editor::new(Document::from(text.as_str()));
+        editor
+            .set_register('a', Arc::from([Arc::from(text)]))
+            .unwrap();
+        let mut keys = KeyHandler::default();
+        group.bench_function(BenchmarkId::new("read", bytes), |b| {
+            b.iter(|| black_box(editor.register(black_box('a')).unwrap()));
+        });
+        group.bench_function(BenchmarkId::new("helper_cancel", bytes), |b| {
+            b.iter(|| {
+                keys.handle(&mut editor, Key::Char('"')).unwrap();
+                black_box(keys.hints());
+                keys.handle(&mut editor, Key::Escape).unwrap();
+            });
+        });
+        editor.execute("select_all", 1).unwrap();
+        group.bench_function(BenchmarkId::new("discard_delete_undo", bytes), |b| {
+            b.iter(|| {
+                for ch in "\"_d".chars() {
+                    keys.handle(&mut editor, Key::Char(ch)).unwrap();
+                }
+                editor.execute("undo", 1).unwrap();
+                black_box(editor.document().text());
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects, delimiter_matching, surround_add, surround_edit, insert_repeat
+    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects, delimiter_matching, surround_add, surround_edit, insert_repeat, registers
 }
 criterion_main!(benches);
