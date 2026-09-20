@@ -1,10 +1,7 @@
 //! Repository view lifecycle. Only read queries use this replaceable mailbox;
 //! mutations use the separate ordered Git write worker.
-use super::{ActivePrompt, App, PromptKind};
-use crate::{
-    git_status::View,
-    input::{self, Prompt},
-};
+use super::{ActivePrompt, App};
+use crate::{git_status::View, input};
 use crossterm::event::{Event, KeyEventKind};
 use std::{
     collections::BTreeMap,
@@ -314,12 +311,7 @@ impl App {
                 }
                 let page = usize::from(self.active_size().1.saturating_sub(1)).max(1);
                 match pressed {
-                    Key::Char(':') => {
-                        self.prompt = Some(ActivePrompt {
-                            input: Prompt::default(),
-                            kind: PromptKind::Command,
-                        })
-                    }
+                    Key::Char(':') => self.prompt = Some(ActivePrompt::command()),
                     Key::Char('q') | Key::Escape | Key::Ctrl('c' | 'q') => {
                         if self.status.views[&key].help {
                             self.status.views.get_mut(&key).unwrap().help = false;

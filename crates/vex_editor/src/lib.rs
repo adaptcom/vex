@@ -36,7 +36,7 @@ mod views;
 
 pub use commands::{Command, CommandContext, CommandInput};
 pub use error::Error;
-pub use keymap::{Binding, Dispatch, Key, KeyHandler, KeyHints, Keymap};
+pub use keymap::{Binding, Dispatch, Key, KeyHandler, KeyHints, Keymap, Modifier, NamedKey};
 pub use register::{Paste, PastePlan, RegisterValues, YankRegister};
 pub use repeat::Session;
 pub use search::{
@@ -297,6 +297,11 @@ impl Editor {
             SearchPrompt::Backward => Some(SearchDirection::Backward),
             _ => None,
         }
+    }
+
+    /// Register selected for the active search prompt, including selection filters.
+    pub fn search_prompt_register(&self) -> Option<char> {
+        self.search.preview.as_ref().map(|preview| preview.register)
     }
 
     pub fn search_status(&self) -> Option<SearchStatus> {

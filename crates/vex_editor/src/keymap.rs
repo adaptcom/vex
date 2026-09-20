@@ -8,10 +8,37 @@ use std::{collections::BTreeMap, fmt};
 pub enum Key {
     Char(char),
     Ctrl(char),
+    Alt(char),
+    Modified(Modifier, NamedKey),
     Escape,
     Enter,
     Tab,
     BackTab,
+    PageUp,
+    PageDown,
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+}
+
+/// Modifiers for non-character keys. Plain characters already carry their case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Modifier {
+    Control,
+    Alt,
+    AltShift,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NamedKey {
+    Escape,
+    Enter,
+    Tab,
     PageUp,
     PageDown,
     Backspace,
@@ -30,6 +57,16 @@ impl fmt::Display for Key {
             Self::Char(' ') => write!(f, "<Space>"),
             Self::Char(ch) => write!(f, "{ch}"),
             Self::Ctrl(ch) => write!(f, "<C-{ch}>"),
+            Self::Alt(ch) => write!(f, "<A-{ch}>"),
+            Self::Modified(modifier, key) => write!(
+                f,
+                "<{}-{key:?}>",
+                match modifier {
+                    Modifier::Control => "C",
+                    Modifier::Alt => "A",
+                    Modifier::AltShift => "A-S",
+                }
+            ),
             key => write!(f, "<{key:?}>"),
         }
     }

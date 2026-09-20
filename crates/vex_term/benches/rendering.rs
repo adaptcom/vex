@@ -331,11 +331,44 @@ fn clipboard(c: &mut Criterion) {
     group.finish();
 }
 
+fn prompt_input(c: &mut Criterion) {
+    let mut group = c.benchmark_group("prompt_input");
+    for bytes in [1024usize, 64 * 1024, 1024 * 1024] {
+        let text = "word ".repeat(bytes.div_ceil(5));
+        let mut prompt = vex_term::input::Prompt::default();
+        prompt.insert(&text);
+        group.bench_function(BenchmarkId::new("append_backspace", bytes), |b| {
+            b.iter(|| {
+                prompt.handle(vex_editor::Key::Char('x'));
+                prompt.handle(vex_editor::Key::Backspace);
+                black_box(prompt.cursor());
+            });
+        });
+        let mut app = App::from_document(Document::from("source\n"), (120, 40));
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char(':'),
+            KeyModifiers::NONE,
+        )));
+        app.handle(Event::Paste(text));
+        let mut renderer = Renderer::default();
+        paint(&mut app, &mut renderer, (120, 40));
+        group.bench_function(BenchmarkId::new("move_and_draw", bytes), |b| {
+            b.iter(|| {
+                for code in [KeyCode::Left, KeyCode::Right] {
+                    app.handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+                    black_box(paint(&mut app, &mut renderer, (120, 40)));
+                }
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = rendering, long_lines, rust_syntax, background_syntax, buffers, clipboard
+    targets = rendering, long_lines, rust_syntax, background_syntax, buffers, clipboard, prompt_input
 }
 criterion_main!(benches);

@@ -402,7 +402,7 @@ pub(crate) struct Preview {
     mode: Mode,
     count: usize,
     pattern: Option<Arc<CompiledPattern>>,
-    register: char,
+    pub register: char,
     pub operation: SearchPrompt,
     pub error: Option<Error>,
     pub status: SearchStatus,

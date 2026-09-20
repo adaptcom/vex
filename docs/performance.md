@@ -1,5 +1,24 @@
 # Performance baselines
 
+## Prompt input and drawing
+
+On 2026-09-20, `cargo bench -p vex_term --bench rendering -- prompt_input`
+measured the following central estimates (30 samples, 500 ms warmup, one second
+measurement). Prompt construction and initial paste are outside measurement.
+
+| Prompt size | Append + Backspace | Left + draw + Right + draw, 120×40 |
+| --- | ---: | ---: |
+| 1 KiB | 33.0 ns | 80.6 µs |
+| 64 KiB | 34.2 ns | 81.7 µs |
+| 1 MiB | 33.3 ns | 81.6 µs |
+
+These cases use ASCII words, a small document, and terminal output to a sink.
+They exclude filesystem access, background completion, terminal I/O, and worker
+wake latency. Cursor repair uses local grapheme boundary queries; drawing walks
+back from the caret only far enough to fill the visible row. Unicode clusters
+can require surrounding context, and inserting in the middle of a flat prompt
+still shifts its trailing bytes. History is capped at 100 entries / 256 KiB.
+
 Recorded on 2026-09-19 on the development machine: arm64, macOS 26.6.2,
 Rust 1.98.1. CPU model was not available to the sandbox. These measurements are
 a local baseline, not a hardware-independent performance guarantee.

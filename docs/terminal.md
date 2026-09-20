@@ -241,8 +241,28 @@ on matches, `K` filters selections, and `*` remembers selected text for search. 
 
 The remaining text after a file command is a literal path, including internal
 spaces; quoting, shell expansion, and escapes are not interpreted. Leading and
-trailing whitespace is trimmed. Arrow keys, Home/End, Backspace, and Delete edit
-the prompt at grapheme boundaries. Escape cancels it.
+trailing whitespace is trimmed. Prompt editing follows grapheme boundaries:
+
+| Keys | Action |
+| --- | --- |
+| Left / Ctrl-b, Right / Ctrl-f | Move one character |
+| Alt-b / Ctrl-Left, Alt-f / Ctrl-Right | Move by path component or word |
+| Home / Ctrl-a, End / Ctrl-e | Move to the start or end |
+| Ctrl-w / Alt-Backspace / Ctrl-Backspace | Delete the previous word |
+| Alt-d / Alt-Delete / Ctrl-Delete | Delete through the next word start |
+| Ctrl-u, Ctrl-k | Delete to the start or end |
+| Backspace / Ctrl-h, Delete / Ctrl-d | Delete one character |
+| Up / Ctrl-p, Down / Ctrl-n | Previous or next history entry |
+| Enter | Submit; empty input repeats the latest history entry |
+| Escape / Ctrl-c | Cancel |
+
+History lasts for the session, follows buffers, and is separated by the prompt's
+register (`:` for commands, `/` by default for searches). It retains at most 100
+entries and 256 KiB total, with a 64 KiB limit per entry, and skips consecutive
+duplicates. Submitted search attempts are remembered; ordinary register values
+still contain only accepted queries. Editing keys also work in pickers unless
+reserved for result navigation. Prompt movement, editing, and drawing visit
+nearby graphemes and the affected text rather than scanning the entire prefix.
 
 File commands are also ordinary documented functions. A declaration macro uses
 each function's Rustdoc for the runtime registry, so `:help write` shares its

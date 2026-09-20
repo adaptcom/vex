@@ -42,7 +42,8 @@ and inverse filtering, ready for the later Alt bindings.
 
 Typing or backspacing always previews from the selections saved when the prompt
 opened. An empty, invalid, or unmatched query restores those selections. Enter
-cancels an empty prompt; invalid or unmatched prompts remain editable and preserve
+reuses the latest submitted query for an empty prompt (or cancels when there is no
+history); invalid or unmatched prompts remain editable and preserve
 the previous accepted search. Cursor movement within an invalid prompt retains
 its error. Prompt editing follows grapheme boundaries; paste strips control
 characters and cannot submit the query.
@@ -112,4 +113,5 @@ are not preemptible. Missing queries, cross-line reverse searches, long lines,
 and very large selection sets can still delay results. See
 [measured costs](performance.md#rope-regex-engine).
 
-Prompt history and highlighting every visible occurrence remain future work.
+Up/Ctrl-p and Down/Ctrl-n recall session prompt history. Highlighting every
+visible occurrence remains future work.

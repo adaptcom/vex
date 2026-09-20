@@ -21,6 +21,7 @@ mod git;
 mod git_write;
 mod language;
 mod picker;
+mod prompt;
 mod reload;
 mod status;
 mod windows;
@@ -36,9 +37,19 @@ enum PromptKind {
 struct ActivePrompt {
     input: Prompt,
     kind: PromptKind,
+    register: char,
+    history_position: Option<usize>,
 }
 
 impl ActivePrompt {
+    fn command() -> Self {
+        Self {
+            input: Prompt::default(),
+            kind: PromptKind::Command,
+            register: ':',
+            history_position: None,
+        }
+    }
     fn prefix(&self) -> &'static str {
         match self.kind {
             PromptKind::Command => ":",
@@ -53,6 +64,7 @@ pub struct App {
     keys: KeyHandler,
     viewport: Viewport,
     prompt: Option<ActivePrompt>,
+    prompt_history: prompt::History,
     message: String,
     error: bool,
     quit: bool,
@@ -91,6 +103,7 @@ impl App {
             keys: KeyHandler::default(),
             viewport: Viewport::default(),
             prompt: None,
+            prompt_history: prompt::History::default(),
             message: "i insert  / search  :w write  :q quit  :help".into(),
             error: false,
             quit: false,
@@ -310,10 +323,7 @@ impl App {
                                 && self.keys.pending_keys().is_empty() =>
                         {
                             self.keys.cancel(&mut self.editor);
-                            self.prompt = Some(ActivePrompt {
-                                input: Prompt::default(),
-                                kind: PromptKind::Command,
-                            });
+                            self.prompt = Some(ActivePrompt::command());
                         }
                         _ => {
                             if let Err(error) = self.keys.handle(&mut self.editor, key) {
@@ -343,6 +353,7 @@ impl App {
         if text.is_empty() {
             return Ok(());
         }
+        self.prompt_history.push(':', text);
         self.editor
             .set_register(':', std::sync::Arc::from([std::sync::Arc::from(text)]))
             .map_err(io::Error::other)?;
@@ -593,6 +604,8 @@ impl App {
             self.keys.cancel(&mut self.editor);
             self.prompt = Some(ActivePrompt {
                 input: Prompt::default(),
+                register: self.editor.search_prompt_register().unwrap_or('/'),
+                history_position: None,
                 kind: PromptKind::Search {
                     operation,
                     viewport: self.viewport,
@@ -648,37 +661,57 @@ impl App {
                     }
                 }
             }
-            Key::Enter => match prompt.kind {
-                PromptKind::Command => {
-                    if let Err(error) = self.execute(prompt.input.text()) {
-                        self.fail(error);
-                    }
+            Key::Enter => {
+                if prompt.input.text().is_empty()
+                    && let Some(text) = self.prompt_history.last(prompt.register)
+                {
+                    prompt.input.insert(&text);
+                    self.preview_search(&prompt);
                 }
-                PromptKind::Search { viewport, .. } => {
-                    let empty = self.editor.search_status() == Some(SearchStatus::Empty);
-                    match self.editor.execute("search_accept", 1) {
-                        Ok(()) => {
-                            if empty {
-                                self.viewport = viewport;
-                            }
-                            if self.editor.search_pending() {
-                                self.prompt = Some(prompt);
-                            }
-                        }
-                        Err(error) => {
+                if matches!(prompt.kind, PromptKind::Search { .. }) {
+                    self.prompt_history
+                        .push(prompt.register, prompt.input.text());
+                }
+                match prompt.kind {
+                    PromptKind::Command => {
+                        if let Err(error) = self.execute(prompt.input.text()) {
                             self.fail(error);
-                            if self.editor.search_prompt().is_some() {
-                                self.prompt = Some(prompt);
+                        }
+                    }
+                    PromptKind::Search { viewport, .. } => {
+                        let empty = self.editor.search_status() == Some(SearchStatus::Empty);
+                        match self.editor.execute("search_accept", 1) {
+                            Ok(()) => {
+                                if empty {
+                                    self.viewport = viewport;
+                                }
+                                if self.editor.search_pending() {
+                                    self.prompt = Some(prompt);
+                                }
+                            }
+                            Err(error) => {
+                                self.fail(error);
+                                if self.editor.search_prompt().is_some() {
+                                    self.prompt = Some(prompt);
+                                }
                             }
                         }
                     }
                 }
-            },
+            }
+            Key::Up | Key::Ctrl('p') | Key::Down | Key::Ctrl('n') => {
+                if let Some(text) = self.prompt_history.step(
+                    prompt.register,
+                    &mut prompt.history_position,
+                    matches!(key, Key::Up | Key::Ctrl('p')),
+                ) {
+                    prompt.input.replace(&text);
+                    self.preview_search(&prompt);
+                }
+                self.prompt = Some(prompt);
+            }
             _ => {
-                // Prompt keys only insert/remove bytes or move the caret.
-                let before = prompt.input.text().len();
-                prompt.input.handle(key);
-                if before != prompt.input.text().len() {
+                if prompt.input.handle(key) {
                     self.preview_search(&prompt);
                 } else if matches!(prompt.kind, PromptKind::Search { .. })
                     && self.editor.search_status() == Some(SearchStatus::NoMatch)

@@ -137,12 +137,9 @@ impl<T: Eq> Picker<T> {
             Key::PageDown | Key::Ctrl('d') => self.navigate(page.max(1) as isize),
             Key::PageUp | Key::Ctrl('u') => self.navigate(-(page.max(1) as isize)),
             _ => {
-                let before = self.query.text().to_owned();
                 if !matches!(key, Key::Char(ch) if self.query.text().len() + ch.len_utf8() > MAX_QUERY_BYTES)
+                    && self.query.handle(key)
                 {
-                    self.query.handle(key);
-                }
-                if self.query.text() != before {
                     self.changed();
                     return Action::Query;
                 }

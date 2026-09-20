@@ -50,6 +50,8 @@ selections, and measure operations that could affect input latency.
 - [x] Insert-mode word deletion and line kills: Ctrl-w, Ctrl-u, Ctrl-k, plus
   Ctrl-d/Ctrl-j aliases for Delete/Enter.
 - [ ] Prompt history, command/path completion, word movement, and line kills.
+  History, Unicode-aware movement/deletion, and viewport-bounded prompt drawing
+  are implemented; command/path completion remains.
 - [ ] Decide whether to track explicit linewise selection intent so a final line
   without a trailing newline can paste as a whole line rather than as characters.
 

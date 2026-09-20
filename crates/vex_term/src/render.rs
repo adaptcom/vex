@@ -444,13 +444,21 @@ pub(crate) fn paint_command_line(
             if error { Style::Error } else { Style::Text },
         );
         let tabs = NonZeroUsize::new(4).unwrap();
-        let prompt_column = prompt[..caret].graphemes(true).fold(0usize, |col, g| {
-            col.saturating_add(display::width(g, col, tabs))
-        });
         let available = width.saturating_sub(prefix_width);
-        let left = prompt_column.saturating_add(1).saturating_sub(available);
+        // Prompt input strips controls (including tabs). Walk back only far
+        // enough to fill this row instead of measuring the entire prefix.
+        let mut start = caret;
+        let mut prompt_column = 0usize;
+        for (index, cluster) in prompt[..caret].grapheme_indices(true).rev() {
+            let span = display::width(cluster, 0, tabs);
+            if prompt_column.saturating_add(span) >= available {
+                break;
+            }
+            start = index;
+            prompt_column += span;
+        }
         let mut column = 0;
-        for cluster in prompt.graphemes(true) {
+        for cluster in prompt[start..].graphemes(true) {
             let span = display::width(cluster, column, tabs);
             glyph(
                 frame,
@@ -459,17 +467,17 @@ pub(crate) fn paint_command_line(
                 cluster,
                 column,
                 span,
-                left,
+                0,
                 available,
                 Style::Text,
             );
             column = column.saturating_add(span);
-            if column >= left.saturating_add(available) {
+            if column >= available {
                 break;
             }
         }
         frame.cursor = Some(Cursor {
-            x: (prefix_width + prompt_column.saturating_sub(left)).min(width - 1) as u16,
+            x: (prefix_width + prompt_column).min(width - 1) as u16,
             y: bottom,
             shape: CursorShape::Bar,
         });
