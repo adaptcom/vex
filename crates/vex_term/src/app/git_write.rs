@@ -64,6 +64,7 @@ impl App {
         self.git_write.next += 1;
         let id = self.git_write.next;
         let label = format!("{} running…", operation.name());
+        let keep_position = matches!(operation, Operation::Stage(_) | Operation::Unstage(_));
         self.git_write.pending.insert(root.clone(), id);
         self.git_write.jobs.push_back(Job {
             id,
@@ -76,6 +77,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|snapshot| snapshot.root == root)
             {
+                view.keep_position = keep_position;
                 view.operation = Some(label.clone());
                 view.output = None;
                 view.rebuild();
@@ -256,6 +258,9 @@ impl App {
                 view.operation = None;
                 view.output = Some((format!("{title}\n{output}"), !success));
                 view.rebuild();
+                if !success {
+                    view.keep_position = false;
+                }
             }
         }
         if success && let Operation::Commit { message } = &result.operation {
@@ -415,6 +420,148 @@ mod tests {
         select_file(&mut app, Group::Unsaved);
         assert!(app.execute("git_stage").is_err());
         assert!(app.take_git_write().is_none());
+    }
+
+    #[test]
+    fn index_writes_keep_the_current_row_and_scroll_through_output_and_refresh() {
+        for stage in [true, false] {
+            for refresh_before_completion in [false, true] {
+                let (dir, mut app) = fixture();
+                let root = dir.path();
+                for i in 0..24 {
+                    fs::write(root.join(format!("file-{i:02}.txt")), "base\n").unwrap();
+                }
+                git(root, &["add", "."]);
+                git(root, &["commit", "-qm", "more files"]);
+                for i in 0..24 {
+                    fs::write(root.join(format!("file-{i:02}.txt")), "changed\n").unwrap();
+                }
+                if !stage {
+                    git(root, &["add", "."]);
+                }
+                refresh(&mut app);
+                app.handle(Event::Resize(80, 8));
+                let key = app.active_git_view().unwrap().clone();
+                let view = app.status.views.get_mut(&key).unwrap();
+                view.output = Some(("Previous operation\nPrevious output".into(), false));
+                view.rebuild();
+                view.list.selected = view
+                    .list
+                    .rows
+                    .iter()
+                    .position(|row| {
+                        matches!(&row.id, Id::File(file) if file.path == Path::new("file-12.txt"))
+                    })
+                    .unwrap();
+                view.list.top = view.list.selected - 2;
+                let position = (view.list.selected, view.list.top);
+                let assert_position = |app: &mut App, expected| {
+                    let frame = draw(app);
+                    let view = &app.status.views[&key];
+                    assert_eq!((view.list.selected, view.list.top), expected);
+                    assert_eq!(
+                        frame.style_at(0, (expected.0 - expected.1) as u16),
+                        Some(crate::screen::Style::Selection)
+                    );
+                };
+                press(&mut app, if stage { "s" } else { "u" });
+                assert_position(&mut app, position); // Removing the previous output.
+                let result = app.take_git_write().unwrap().run();
+                assert!(result.outcome.is_ok(), "{:?}", result.outcome);
+                if refresh_before_completion {
+                    // A periodic query may observe the write before its event arrives.
+                    refresh(&mut app);
+                    assert_position(&mut app, position);
+                    assert!(app.status.views[&key].keep_position);
+                }
+                press(&mut app, "j"); // Navigation while the worker runs must survive.
+                let position = (position.0 + 1, position.1);
+                assert!(app.handle_git_write(result));
+                assert_position(&mut app, position); // Adding the new output.
+                if !refresh_before_completion {
+                    app.status
+                        .views
+                        .get_mut(&key)
+                        .unwrap()
+                        .update(Err("temporary query failure".into()));
+                    assert_position(&mut app, position);
+                    assert!(app.status.views[&key].keep_position);
+                }
+                refresh(&mut app);
+                assert_position(&mut app, position); // Moving files between sections.
+                assert!(!app.status.views[&key].keep_position);
+
+                // Later refreshes resume preserving the selected row's identity.
+                select_file(
+                    &mut app,
+                    if stage {
+                        Group::Unstaged
+                    } else {
+                        Group::Staged
+                    },
+                );
+                let view = &app.status.views[&key];
+                let selected = view.list.rows[view.list.selected].id.clone();
+                let index = view.list.selected;
+                fs::write(root.join("aaa.txt"), "new\n").unwrap();
+                git(root, &["add", "aaa.txt"]);
+                if stage {
+                    fs::write(root.join("aaa.txt"), "changed\n").unwrap();
+                }
+                refresh(&mut app);
+                let view = &app.status.views[&key];
+                assert_eq!(view.list.rows[view.list.selected].id, selected);
+                assert!(view.list.selected > index);
+            }
+        }
+    }
+
+    #[test]
+    fn index_writes_clamp_when_an_expanded_file_disappears() {
+        let (_dir, mut app) = fixture();
+        key(&mut app, KeyCode::Tab);
+        refresh(&mut app);
+        let view_key = app.active_git_view().unwrap().clone();
+        let view = app.status.views.get_mut(&view_key).unwrap();
+        let file = match &view.list.rows[view.list.selected].id {
+            Id::File(file) => file.clone(),
+            _ => panic!("expected a file"),
+        };
+        press(&mut app, "s");
+        // Move into the disappearing preview while staging runs.
+        key(&mut app, KeyCode::End);
+        let view = app.status.views.get_mut(&view_key).unwrap();
+        view.list.top = view.list.selected;
+        complete(&mut app);
+        refresh(&mut app);
+        let view = &app.status.views[&view_key];
+        assert!(!view.expanded.contains(&file));
+        assert_eq!(view.list.selected, view.list.rows.len() - 1);
+        assert!(view.list.top <= view.list.selected);
+        assert!(!view.keep_position);
+        draw(&mut app);
+    }
+
+    #[test]
+    fn failed_index_write_releases_position_preservation() {
+        let (_dir, mut app) = fixture();
+        let key = app.active_git_view().unwrap().clone();
+        let view = &app.status.views[&key];
+        let position = (view.list.selected, view.list.top);
+        press(&mut app, "s");
+        let job = app.take_git_write().unwrap();
+        assert!(app.handle_git_write(WriteResult {
+            id: job.id,
+            root: job.root,
+            operation: job.operation,
+            outcome: Err("fixture write failure".into()),
+        }));
+        let view = &app.status.views[&key];
+        assert_eq!((view.list.selected, view.list.top), position);
+        assert!(!view.keep_position);
+        assert!(app.error);
+        refresh(&mut app);
+        assert!(!app.status.views[&key].keep_position);
     }
 
     #[test]

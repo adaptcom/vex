@@ -59,11 +59,13 @@ def main():
             screen(terminal, b"Stage complete")
             screen(terminal, b"Staged changes (1)")
             assert git(root, "show", ":file.txt") == b"saved disk\n"
-            terminal.send(b"u")
+            # Index writes keep the cursor row rather than following the file.
+            # End selects the only file beneath the new operation output.
+            terminal.send(b"\x1b[Fu")
             screen(terminal, b"Unstage complete")
             screen(terminal, b"Unstaged changes (1)")
             assert git(root, "diff", "--cached", "--name-only") == b""
-            terminal.send(b"s")
+            terminal.send(b"\x1b[Fs")
             screen(terminal, b"Stage complete")
             screen(terminal, b"Staged changes (1)")
 

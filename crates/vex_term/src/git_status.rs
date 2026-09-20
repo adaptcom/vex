@@ -153,6 +153,10 @@ pub(crate) struct View {
     pub help: bool,
     pub operation: Option<String>,
     pub output: Option<(String, bool)>,
+    /// Keep the current row and scroll through an index write and its next
+    /// successful refresh. Read the current position at each rebuild so moving
+    /// while the worker runs never restores an old cursor position.
+    pub keep_position: bool,
 }
 
 impl Default for View {
@@ -169,23 +173,21 @@ impl Default for View {
             help: false,
             operation: None,
             output: None,
+            keep_position: false,
         }
     }
 }
 
 impl View {
     pub fn update(&mut self, result: Result<Snapshot, String>) {
-        let selected_file = self.list.rows.get(self.list.selected).and_then(|row| {
-            if let Id::File(file) = &row.id {
-                Some(file.clone())
-            } else {
-                None
-            }
-        });
+        let refreshed = result.is_ok();
         match result {
             Ok(snapshot) => {
                 if self.snapshot.as_ref() == Some(&snapshot) && self.error.is_none() {
                     self.refreshing = false;
+                    if self.operation.is_none() {
+                        self.keep_position = false;
+                    }
                     return;
                 }
                 self.expanded
@@ -204,21 +206,8 @@ impl View {
         }
         self.refreshing = false;
         self.rebuild();
-        // Whole-file stage/unstage moves a file between sections. Follow that
-        // path when its old row disappears, so the next action has a clear target.
-        if let Some(file) = selected_file
-            && !self
-                .list
-                .rows
-                .iter()
-                .any(|row| matches!(&row.id, Id::File(next) if *next == file))
-            && let Some(index) = self
-                .list
-                .rows
-                .iter()
-                .position(|row| matches!(&row.id, Id::File(next) if next.path == file.path))
-        {
-            self.list.selected = index;
+        if refreshed && self.operation.is_none() {
+            self.keep_position = false;
         }
     }
 
@@ -405,8 +394,14 @@ impl View {
                 .rows
                 .iter()
                 .all(|row| matches!(row.id, Id::Header(_)));
-        self.list.replace(rows, Id::parent);
-        if initial {
+        if self.keep_position {
+            self.list.selected = self.list.selected.min(rows.len().saturating_sub(1));
+            self.list.top = self.list.top.min(self.list.selected);
+            self.list.rows = rows;
+        } else {
+            self.list.replace(rows, Id::parent);
+        }
+        if initial && !self.keep_position {
             self.list.selected = self
                 .list
                 .rows

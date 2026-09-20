@@ -56,8 +56,9 @@ commands retain the editor's unsaved-change checks.
 additions, modifications, deletions, and unstaging renames, including before the
 first commit. Paths are passed literally. Staging reads saved disk contents;
 save an unsaved editor buffer first to include its edits. Hunk/line, section,
-unsaved-buffer, and conflict rows do not perform index writes. When a file moves
-between staged and unstaged sections, selection follows its path.
+unsaved-buffer, and conflict rows do not perform index writes. Staging and
+unstaging keep the cursor row and scroll position as files move between sections,
+clamping to the remaining rows if the list shrinks.
 
 `c c`/`:git_commit` opens a regular editor buffer in a vertical split, falling
 back to a horizontal split on narrow terminals. It starts in insert mode and
