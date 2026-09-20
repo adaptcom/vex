@@ -58,6 +58,11 @@ enum Pattern {
 
 #[derive(Debug)]
 enum Work {
+    Textobject {
+        object: crate::textobject::Object,
+        around: bool,
+        count: usize,
+    },
     Search {
         pattern: Pattern,
         operation: SearchPrompt,
@@ -122,6 +127,19 @@ impl SearchJob {
             return None;
         }
         let outcome = (|| match self.work {
+            Work::Textobject {
+                object,
+                around,
+                count,
+            } => crate::textobject::select(
+                self.snapshot.text(),
+                &self.origins,
+                object,
+                around,
+                count,
+                &cancelled,
+            )
+            .map(Outcome::Selections),
             Work::Search {
                 pattern,
                 operation,
@@ -181,6 +199,7 @@ enum Kind {
     Preview { accept: bool },
     Repeat,
     CopyLines,
+    Textobject,
     Remember,
 }
 
@@ -211,13 +230,17 @@ impl Search {
         self.pending.as_ref().is_some_and(|p| {
             matches!(
                 p.kind,
-                Kind::Repeat | Kind::CopyLines | Kind::Remember | Kind::Preview { accept: true }
+                Kind::Repeat
+                    | Kind::CopyLines
+                    | Kind::Textobject
+                    | Kind::Remember
+                    | Kind::Preview { accept: true }
             )
         })
     }
     pub fn progress(&self) -> Option<&'static str> {
         self.pending.as_ref().map(|pending| match pending.kind {
-            Kind::CopyLines => "selecting...",
+            Kind::CopyLines | Kind::Textobject => "selecting...",
             _ => "searching...",
         })
     }
@@ -373,6 +396,26 @@ pub(crate) fn copy_lines(ctx: &mut CommandContext<'_>, down: bool) -> Result<(),
     )
 }
 
+pub(crate) fn textobject(ctx: &mut CommandContext<'_>, around: bool) -> Result<(), Error> {
+    let object = match ctx.character.ok_or(Error::MissingCharacter)? {
+        'w' => crate::textobject::Object::Word,
+        'W' => crate::textobject::Object::LongWord,
+        'p' => crate::textobject::Object::Paragraph,
+        _ => return Ok(()),
+    };
+    require_normal_or_select(ctx.editor)?;
+    ctx.editor.finish_undo_group();
+    dispatch(
+        ctx.editor,
+        Work::Textobject {
+            object,
+            around,
+            count: ctx.count.get(),
+        },
+        Kind::Textobject,
+    )
+}
+
 fn dispatch(editor: &mut Editor, work: Work, kind: Kind) -> Result<(), Error> {
     let cancellation = SearchCancellation::default();
     let snapshot = editor.document.snapshot();
@@ -475,7 +518,7 @@ pub(crate) fn apply_result(
             editor.preferred_columns = None;
             Ok(SearchCompletion::Navigation)
         }
-        Kind::CopyLines | Kind::Remember => unreachable!("handled above"),
+        Kind::CopyLines | Kind::Textobject | Kind::Remember => unreachable!("handled above"),
     }
 }
 

@@ -179,6 +179,8 @@ impl Default for Keymap {
                 (vec![Char('I')], "insert_at_line_start"),
                 (vec![Char('A')], "insert_at_line_end"),
                 (vec![Char('r')], "replace"),
+                (vec![Char('m'), Char('i')], "select_textobject_inner"),
+                (vec![Char('m'), Char('a')], "select_textobject_around"),
                 (vec![Char('>')], "indent"),
                 (vec![Char('<')], "unindent"),
                 (vec![Char('J')], "join_selections"),
@@ -273,6 +275,7 @@ impl Default for Keymap {
             }
             for (key, title) in [
                 ('g', "Goto"),
+                ('m', "Match"),
                 (' ', "Space"),
                 ('[', "Previous"),
                 (']', "Next"),
@@ -370,6 +373,26 @@ impl KeyHandler {
     }
 
     pub fn hints(&self) -> Option<KeyHints<'_>> {
+        if let Some(command) = self.character_command
+            && matches!(
+                command.input,
+                crate::CommandInput::TextobjectInner | crate::CommandInput::TextobjectAround
+            )
+        {
+            return Some(KeyHints {
+                title: if command.input == crate::CommandInput::TextobjectInner {
+                    "Match inside"
+                } else {
+                    "Match around"
+                },
+                entries: vec![
+                    (Key::Char('w'), "Word"),
+                    (Key::Char('W'), "WORD"),
+                    (Key::Char('p'), "Paragraph"),
+                    (Key::Escape, "Cancel"),
+                ],
+            });
+        }
         if self.character_command.is_some() {
             return Some(KeyHints {
                 title: "Character",
@@ -440,7 +463,7 @@ impl KeyHandler {
             .get(&(editor.mode(), self.pending.clone()))
             .copied()
         {
-            if command.input == crate::CommandInput::Character {
+            if command.input != crate::CommandInput::None {
                 self.character_command = Some(command);
                 return Ok(Dispatch::Pending);
             }

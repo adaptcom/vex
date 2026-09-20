@@ -421,6 +421,15 @@ def main():
             assert selections_path.read_text() == "  "
         print("PASS: regex select, filter, split, and ordered edits through the worker")
 
+        textobjects_path = Path(directory) / "textobjects.txt"
+        textobjects_path.write_text("alpha beta\n\nsecond para\n\nlast\n")
+        with Terminal([binary, str(textobjects_path)]) as terminal:
+            terminal.start()
+            terminal.send(b"miwd2mipd:w\r:q\r")
+            terminal.finish()
+        assert textobjects_path.read_text() == "\nlast\n"
+        print("PASS: word/paragraph textobjects complete before queued delete/save/quit")
+
         burst_path = Path(directory) / "input burst.txt"
         burst_path.write_text("")
         with Terminal([binary, str(burst_path)]) as terminal:

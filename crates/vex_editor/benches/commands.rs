@@ -184,11 +184,44 @@ fn copy_selections(c: &mut Criterion) {
     group.finish();
 }
 
+fn textobjects(c: &mut Criterion) {
+    let mut group = c.benchmark_group("textobjects");
+    for bytes in [1 << 20, 100 << 20] {
+        let line = "alpha beta gamma\nsecond line\n\n";
+        let rope = Rope::from_str(&line.repeat(bytes / line.len()));
+        let mut editor = editor(&rope, 1);
+        let origin = editor.selections().clone();
+        for (name, object) in [("word", 'w'), ("paragraph", 'p')] {
+            group.bench_function(BenchmarkId::new(name, bytes), |b| {
+                b.iter(|| {
+                    let mut context = vex_editor::CommandContext::new(&mut editor);
+                    context.character = Some(object);
+                    vex_editor::commands::select_textobject_inner(&mut context).unwrap();
+                    black_box(editor.selections());
+                    editor.set_selections(origin.clone()).unwrap();
+                });
+            });
+        }
+        editor.set_background_search(true);
+        group.bench_function(BenchmarkId::new("schedule_cancel", bytes), |b| {
+            b.iter(|| {
+                let mut context = vex_editor::CommandContext::new(&mut editor);
+                context.character = Some('p');
+                vex_editor::commands::select_textobject_inner(&mut context).unwrap();
+                let job = editor.take_search_job().unwrap();
+                editor.finish_undo_group();
+                black_box(job);
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = commands, search, background_search, comments, copy_selections, insert_line_kill
+    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects
 }
 criterion_main!(benches);

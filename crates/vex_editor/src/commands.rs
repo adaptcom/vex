@@ -32,6 +32,8 @@ pub enum CommandInput {
     #[default]
     None,
     Character,
+    TextobjectInner,
+    TextobjectAround,
 }
 
 #[derive(Debug)]
@@ -448,6 +450,11 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
 }
 
 commands! {
+    /// Select the word (w), WORD (W), or paragraph (p) at each cursor, retaining normal/select mode. Counts select successive paragraphs; word objects ignore counts. Scans support background cancellation.
+    fn select_textobject_inner(ctx) [TextobjectInner] { crate::search::textobject(ctx, false) }
+
+    /// Select each cursor's word (w) or WORD (W) with following horizontal whitespace, falling back to preceding whitespace, or paragraph (p) including following blank lines. Counts select successive paragraphs; word objects ignore counts.
+    fn select_textobject_around(ctx) [TextobjectAround] { crate::search::textobject(ctx, true) }
     /// Add copies of each selection on following logical lines at the same display columns. Counts add copies, skipping lines that cannot fit both endpoints. Multi-line selections advance by their height; the primary follows its last copy. Uses the cancellable search worker when enabled.
     fn copy_selection_on_next_line(ctx) { crate::search::copy_lines(ctx, true) }
 

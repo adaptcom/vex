@@ -78,6 +78,32 @@ latency, many visible panes, memory retained by undo, or closing large histories
 Hidden documents receive no syntax, Git gutter, or file polling jobs. Buffer-picker
 ranking and preview parsing use the existing cancellable worker services.
 
+## Textobject scans
+
+Recorded on 2026-09-20 with the same machine, optimized profile, and Criterion
+settings:
+
+```sh
+cargo bench -p vex_editor --bench commands --locked -- textobjects --noplot
+```
+
+| Document | Word + restore | Paragraph + restore | Schedule + cancel |
+|---|---:|---:|---:|
+| 1 MiB | 0.930 µs | 2.20 µs | 39.8 ns |
+| 100 MiB | 0.877 µs | 1.71 µs | 37.7 ns |
+
+The fixtures repeat short words and two-line paragraphs. Both sizes select the
+same local shape near the middle of the buffer; these are cache-warm local scans,
+not whole-file selection measurements. Scan cases include the documented command
+function, synchronous selection application, and restoration of the original
+selection. Scheduling calls the function directly and cancels before scanning;
+it excludes key dispatch, worker wakeup, rendering, and terminal latency.
+
+The terminal uses the existing ordered worker mailbox for these scans. Long
+words/paragraphs and many selections can require substantial work, but do not
+copy the full buffer or scan it on the input thread. Cancellation is checked
+between graphemes/lines; individual Unicode boundary lookups remain nonpreemptible.
+
 ## Command and movement baseline
 
 Recorded on the same development machine on 2026-09-19 with the same Criterion

@@ -29,6 +29,7 @@ mod register;
 mod search;
 mod selection;
 mod syntax;
+mod textobject;
 mod views;
 
 pub use commands::{Command, CommandContext, CommandInput};

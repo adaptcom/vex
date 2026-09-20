@@ -32,6 +32,7 @@ mod position;
 pub mod regex;
 pub mod search;
 mod selection;
+pub mod textobject;
 mod transaction;
 
 pub use document::{ChangeExtent, Document, DocumentId, Revision, Snapshot};
