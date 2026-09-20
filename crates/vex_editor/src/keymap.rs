@@ -155,6 +155,8 @@ impl Default for Keymap {
                 (vec![Char('l')], "move_right"),
                 (vec![Char('j')], "move_down"),
                 (vec![Char('k')], "move_up"),
+                (vec![Ctrl('u')], "page_cursor_half_up"),
+                (vec![Ctrl('d')], "page_cursor_half_down"),
                 (vec![Char('w')], "move_word_forward"),
                 (vec![Char('b')], "move_word_backward"),
                 (vec![Char('e')], "move_word_end"),
@@ -367,6 +369,64 @@ mod tests {
         for key in keys.chars() {
             handler.handle(editor, Key::Char(key)).unwrap();
         }
+    }
+
+    #[test]
+    fn half_page_bindings_are_documented_counted_and_remappable() {
+        use crate::ApplicationAction;
+        for mode in [Mode::Normal, Mode::Select] {
+            let mut editor = Editor::new(Document::from("text"));
+            if mode == Mode::Select {
+                editor.execute("select_mode", 1).unwrap();
+            }
+            let mut keys = KeyHandler::default();
+            press(&mut keys, &mut editor, "3");
+            assert_eq!(
+                keys.handle(&mut editor, Key::Ctrl('d')).unwrap(),
+                Dispatch::Executed("page_cursor_half_down")
+            );
+            assert_eq!(
+                editor.take_application_action(),
+                Some(ApplicationAction::HalfPageDown(3))
+            );
+            assert_eq!(keys.count(), None);
+            keys.handle(&mut editor, Key::Ctrl('u')).unwrap();
+            assert_eq!(
+                editor.take_application_action(),
+                Some(ApplicationAction::HalfPageUp(1))
+            );
+            assert_eq!(editor.mode(), mode);
+        }
+        let mut map = Keymap::empty();
+        map.bind(Mode::Normal, vec![Key::Char('z')], "page_cursor_half_down")
+            .unwrap();
+        assert!(
+            map.bindings()
+                .next()
+                .unwrap()
+                .command
+                .description()
+                .contains("half the visible text height")
+        );
+        let mut editor = Editor::new(Document::from("text"));
+        KeyHandler::new(map)
+            .handle(&mut editor, Key::Char('z'))
+            .unwrap();
+        assert_eq!(
+            editor.take_application_action(),
+            Some(ApplicationAction::HalfPageDown(1))
+        );
+        editor.execute("insert_mode", 1).unwrap();
+        let mut keys = KeyHandler::default();
+        assert_eq!(
+            keys.handle(&mut editor, Key::Ctrl('d')).unwrap(),
+            Dispatch::Ignored
+        );
+        assert_eq!(
+            keys.handle(&mut editor, Key::Ctrl('u')).unwrap(),
+            Dispatch::Ignored
+        );
+        assert!(editor.take_application_action().is_none());
     }
 
     #[test]

@@ -258,6 +258,26 @@ def main():
             assert saved_group.read_text() == "hello"
         print("PASS: grouped typing and undo to an insert-mode savepoint")
 
+        pages = Path(directory) / "pages.txt"
+        page_source = "".join(f"row {line:03}\n" for line in range(100))
+        pages.write_text(page_source)
+        with Terminal([binary, str(pages)]) as terminal:
+            terminal.start()
+            terminal.resize(80, 12)  # Ten text rows: five lines per half page.
+            terminal.send(b"20j2l\x04")
+            terminal.expect_screen(b"26:3")
+            terminal.send(b"\x15")
+            terminal.expect_screen(b"21:3")
+            terminal.send(b"2\x04")
+            terminal.expect_screen(b"31:3")
+            terminal.resize(80, 22)
+            terminal.send(b"\x15")
+            terminal.expect_screen(b"21:3")
+            terminal.send(b":q\r")
+            terminal.finish()
+        assert pages.read_text() == page_source
+        print("PASS: Ctrl-u/Ctrl-d half-page movement, counts, resize, and clean quit")
+
         rust_path = Path(directory) / "highlight.rs"
         rust_path.write_text('fn main() { let message = "界"; }\n')
         with Terminal([binary, str(rust_path)]) as terminal:

@@ -174,6 +174,7 @@ Text events call `Editor::insert_text`; paste events call `Editor::insert_paste`
 to get a separate undo step.
 
 The implemented commands cover `hjkl`, arrows, `w`/`b`/`e`, line/document bounds,
+`Ctrl-u`/`Ctrl-d` for half-page movement and scrolling in normal/select mode,
 line selection, mode changes, deletion/change, insertion, `o`/`O` to open lines
 below/above selections, insert-mode Backspace/`Ctrl-h`, and undo/redo.
 Open-line commands copy leading tabs and spaces; a count creates a caret on each

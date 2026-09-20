@@ -417,6 +417,18 @@ commands! {
     /// Move up by logical lines, retaining each cursor's desired display column.
     fn move_up(ctx) { vertical(ctx, false) }
 
+    /// Move cursors and scroll up by half the visible text height, retaining desired columns and extending selections in select mode. Counts multiply the distance; the frontend supplies the current viewport size.
+    fn page_cursor_half_up(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::HalfPageUp(ctx.count.get()));
+        Ok(())
+    }
+
+    /// Move cursors and scroll down by half the visible text height, retaining desired columns and extending selections in select mode. Counts multiply the distance; the frontend supplies the current viewport size.
+    fn page_cursor_half_down(ctx) {
+        ctx.editor.application_action = Some(crate::ApplicationAction::HalfPageDown(ctx.count.get()));
+        Ok(())
+    }
+
     /// Select through the next word start; repeat counts span multiple words.
     fn move_word_forward(ctx) { word(ctx, motion::word_forward) }
 

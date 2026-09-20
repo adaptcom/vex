@@ -28,6 +28,7 @@ and calls that existing dispatcher.
 | `gg`, `ge` | Start/end of document |
 | Home, End | Start/end of logical line |
 | Page Up, Page Down | Move by roughly one viewport of logical lines |
+| Ctrl-u, Ctrl-d | Move cursors and scroll half a page up/down in normal/select mode; counts multiply the distance |
 | `i`, `a` | Insert before/after the selection |
 | `o`, `O` | Open lines below/above selections and enter insert mode |
 | Enter in insert mode | Split the line and copy indentation before the caret |

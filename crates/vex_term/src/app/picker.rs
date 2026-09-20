@@ -13,7 +13,7 @@ use crate::{
 };
 use crossterm::event::{Event, KeyEventKind};
 use std::{io, path::PathBuf};
-use vex_editor::{ApplicationAction, Editor, Language, background::Cancellation};
+use vex_editor::{Editor, Language, background::Cancellation};
 
 struct Active {
     view: Picker<PathBuf>,
@@ -43,10 +43,7 @@ pub(super) struct State {
 }
 
 impl App {
-    pub(super) fn open_requested_picker(&mut self) {
-        if self.editor.take_application_action() != Some(ApplicationAction::FilePicker) {
-            return;
-        }
+    pub(super) fn open_file_picker(&mut self) {
         let cwd = match std::env::current_dir() {
             Ok(path) => path,
             Err(error) => {

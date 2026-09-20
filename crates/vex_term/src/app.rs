@@ -11,8 +11,8 @@ use crossterm::event::{Event, KeyCode, KeyEventKind};
 use std::{io, path::Path};
 use vex_core::Document;
 use vex_editor::{
-    Editor, Key, KeyHandler, Language, Mode, SearchCompletion, SearchDirection, SearchResult,
-    SearchStatus,
+    ApplicationAction, Editor, Key, KeyHandler, Language, Mode, SearchCompletion, SearchDirection,
+    SearchResult, SearchStatus,
 };
 
 mod completion;
@@ -256,7 +256,7 @@ impl App {
                     }
                 }
                 self.open_search_prompt();
-                self.open_requested_picker();
+                self.apply_application_action();
                 true
             }
             _ => false,
@@ -286,12 +286,12 @@ impl App {
         }
         self.editor.execute(name, 1).map_err(io::Error::other)?;
         self.open_search_prompt();
-        self.open_requested_picker();
+        self.apply_application_action();
         Ok(())
     }
 
     pub fn paint(&mut self, frame: &mut Frame) -> io::Result<()> {
-        self.open_requested_picker();
+        self.apply_application_action();
         self.refresh_diagnostics();
         self.open_search_prompt();
         let filename = self
@@ -338,6 +338,52 @@ impl App {
         self.paint_key_hints(frame);
         self.paint_completion(frame);
         self.paint_active_picker(frame);
+        Ok(())
+    }
+
+    fn apply_application_action(&mut self) {
+        let result = match self.editor.take_application_action() {
+            Some(ApplicationAction::FilePicker) => {
+                self.open_file_picker();
+                Ok(())
+            }
+            Some(ApplicationAction::HalfPageUp(count)) => self.scroll_half_page(false, count),
+            Some(ApplicationAction::HalfPageDown(count)) => self.scroll_half_page(true, count),
+            None => Ok(()),
+        };
+        if let Err(error) = result {
+            self.fail(error);
+        }
+    }
+
+    fn scroll_half_page(&mut self, down: bool, count: usize) -> Result<(), vex_editor::Error> {
+        let cursor_line = |editor: &Editor| -> Result<usize, vex_core::Error> {
+            let text = editor.document().text();
+            let cursor = if editor.mode() == Mode::Insert {
+                editor.selections().primary().head
+            } else {
+                vex_core::motion::cursor(text, editor.selections().primary())?
+            };
+            Ok(text.char_to_line(cursor.0))
+        };
+        let distance = (usize::from(self.size.1).saturating_sub(2) / 2)
+            .max(1)
+            .saturating_mul(count);
+        let before = cursor_line(&self.editor)?;
+        self.editor
+            .execute(if down { "move_down" } else { "move_up" }, distance)?;
+        let after = cursor_line(&self.editor)?;
+        // Move the view with the cursor, preserving its screen row away from
+        // document edges. Drawing still enforces the normal visibility margin.
+        self.viewport.top_line = if down {
+            self.viewport
+                .top_line
+                .saturating_add(after.saturating_sub(before))
+        } else {
+            self.viewport
+                .top_line
+                .saturating_sub(before.saturating_sub(after))
+        };
         Ok(())
     }
 
@@ -551,6 +597,102 @@ mod tests {
         frame.reset(app.size.0, app.size.1).unwrap();
         app.paint(&mut frame).unwrap();
         frame
+    }
+
+    #[test]
+    fn half_page_keys_scroll_with_the_cursor_use_counts_and_follow_resize() {
+        let source = "abcdefgh\n".repeat(100);
+        let mut app = App::from_document(Document::from(source.as_str()), (80, 12));
+        press(&mut app, "20j3l");
+        let original = draw(&mut app).cursor.unwrap();
+        let viewport = app.viewport;
+        let selections = app.editor.selections().clone();
+        let revision = app.editor.document().revision();
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.editor.selections().primary().start().0, 25 * 9 + 3);
+        assert_eq!(app.viewport.top_line, viewport.top_line + 5);
+        assert_eq!(draw(&mut app).cursor.unwrap(), original);
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.editor.selections(), &selections);
+        assert_eq!(app.viewport, viewport);
+        press(&mut app, "3");
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.editor.selections().primary().start().0, 35 * 9 + 3);
+        assert_eq!(app.keys.count(), None);
+        app.handle(Event::Resize(80, 22));
+        draw(&mut app);
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.editor.selections().primary().start().0, 25 * 9 + 3);
+        assert_eq!(app.editor.document().revision(), revision);
+        assert!(!app.is_dirty());
+    }
+
+    #[test]
+    fn half_pages_preserve_desired_columns_and_selection_anchors_and_clamp_at_edges() {
+        use vex_core::{CharOffset, Selection, SelectionSet};
+        let mut app = App::from_document(Document::from("a\t界z\nx\nx\nx\n123456z"), (80, 6));
+        let original = SelectionSet::single(Selection::new(CharOffset(3), CharOffset(4)));
+        app.editor.set_selections(original.clone()).unwrap();
+        app.execute("page_cursor_half_down").unwrap();
+        app.execute("page_cursor_half_down").unwrap();
+        assert_eq!(app.editor.selections().primary().start().0, 17);
+        assert_eq!(app.editor.display_column(CharOffset(17)).unwrap(), 6);
+        app.execute("page_cursor_half_up").unwrap();
+        app.execute("page_cursor_half_up").unwrap();
+        assert_eq!(app.editor.selections(), &original);
+        press(&mut app, "v");
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.editor.selections().primary().anchor, CharOffset(3));
+        assert_eq!(app.editor.mode(), Mode::Select);
+        assert!(app.editor.selections().primary().head > CharOffset(4));
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.editor.selections(), &original);
+        key(&mut app, KeyCode::Esc);
+        press(&mut app, &usize::MAX.to_string());
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.editor.selections().primary().start().0, 17);
+        draw(&mut app);
+        press(&mut app, &usize::MAX.to_string());
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.editor.selections(), &original);
+        draw(&mut app);
+        assert_eq!(app.viewport.top_line, 0);
+        app.handle(Event::Resize(1, 1));
+        app.execute("page_cursor_half_down").unwrap();
+        assert_eq!(
+            app.editor
+                .document()
+                .text()
+                .char_to_line(app.editor.selections().primary().start().0),
+            1
+        );
+        draw(&mut app);
+        app.execute("help page_cursor_half_down").unwrap();
+        assert!(app.message.contains("half the visible text height"));
     }
 
     #[test]

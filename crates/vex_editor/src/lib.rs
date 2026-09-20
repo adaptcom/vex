@@ -56,6 +56,8 @@ pub enum LanguageAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApplicationAction {
     FilePicker,
+    HalfPageUp(usize),
+    HalfPageDown(usize),
 }
 
 /// The first editor model: one document and its active view, independent of a TTY.
