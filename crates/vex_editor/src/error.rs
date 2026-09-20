@@ -13,6 +13,8 @@ pub enum Error {
     ConflictingBinding,
     ReservedBinding,
     CountOverflow,
+    RepeatChanged,
+    RepeatCompletion,
     NoSearch,
     NoSearchPreview,
     SearchActive,
@@ -67,6 +69,8 @@ impl fmt::Display for Error {
                 write!(f, "Escape and leading repeat-count digits are reserved")
             }
             Self::CountOverflow => write!(f, "repeat count is too large"),
+            Self::RepeatChanged => write!(f, "document or view changed during insert replay"),
+            Self::RepeatCompletion => write!(f, "recorded completion does not fit at every cursor"),
             Self::NoSearch => write!(f, "no accepted search; use / or ? first"),
             Self::NoSearchPreview => write!(f, "no active search preview"),
             Self::SearchActive => write!(f, "accept or cancel the active search first"),

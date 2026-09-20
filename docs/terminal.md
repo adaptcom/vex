@@ -63,6 +63,7 @@ and calls that existing dispatcher.
 | `X` | Expand to line boundaries, preserving direction |
 | `_` | Trim whitespace from selection edges |
 | `u`, `U` | Undo/redo |
+| `.` | [Repeat the last insert](repeat.md), including its entry command; counts repeat the entire session |
 | `gd`, Ctrl-o | Go to definition / return to the previous jump checkpoint |
 | `]d`, `[d` | Next/previous diagnostic, with counts and wrapping |
 | Space-f, Space-k | Open file picker / show hover |

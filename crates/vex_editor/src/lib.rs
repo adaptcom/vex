@@ -26,6 +26,7 @@ mod editing;
 mod error;
 mod keymap;
 mod register;
+mod repeat;
 mod search;
 mod selection;
 mod surround;
@@ -37,6 +38,7 @@ pub use commands::{Command, CommandContext, CommandInput};
 pub use error::Error;
 pub use keymap::{Binding, Dispatch, Key, KeyHandler, KeyHints, Keymap};
 pub use register::YankRegister;
+pub use repeat::Session;
 pub use search::{
     SearchCancellation, SearchCompletion, SearchJob, SearchPrompt, SearchResult, SearchStatus,
 };
@@ -116,6 +118,7 @@ pub enum WindowAction {
 pub struct Editor {
     document: Document,
     yank_register: YankRegister,
+    recorder: repeat::Recorder,
     selections: SelectionSet,
     mode: Mode,
     preferred_columns: Option<Vec<usize>>,
@@ -139,6 +142,11 @@ impl Editor {
     /// Create a document editor using a session's shared internal yank register.
     /// Cloning the handle shares text across buffers without copying it.
     pub fn with_yank_register(document: Document, yank_register: YankRegister) -> Self {
+        Self::with_session(document, Session::with_yank_register(yank_register))
+    }
+
+    /// Create a buffer sharing registers and insert history with other buffers.
+    pub fn with_session(document: Document, session: Session) -> Self {
         let newline = line_ending(document.text());
         let selections = SelectionSet::single(
             motion::block(document.text(), CharOffset(0)).expect("BOF is valid"),
@@ -146,7 +154,8 @@ impl Editor {
         let views = views::Views::new(document.revision());
         Self {
             document,
-            yank_register,
+            yank_register: session.yank.clone(),
+            recorder: repeat::Recorder::new(session),
             selections,
             mode: Mode::Normal,
             preferred_columns: None,
@@ -193,6 +202,16 @@ impl Editor {
     /// Take an application action after dispatch; the frontend owns its UI.
     pub fn take_application_action(&mut self) -> Option<ApplicationAction> {
         self.application_action.take()
+    }
+
+    fn request_language_action(&mut self, action: LanguageAction) {
+        self.recorder.service = true;
+        self.language_action = Some(action);
+    }
+
+    fn request_application_action(&mut self, action: ApplicationAction) {
+        self.recorder.service = true;
+        self.application_action = Some(action);
     }
 
     /// The active regex prompt requested by an editor command.
@@ -318,7 +337,7 @@ impl Editor {
     // Every text command goes through here, including each event in a batch.
     // Otherwise several edits before drawing would skip cache revisions.
     fn apply(&mut self, transaction: vex_core::Transaction, grouped: bool) -> Result<(), Error> {
-        if grouped {
+        if grouped || self.recorder.stepping {
             self.document
                 .apply_grouped(transaction, &mut self.selections)?;
         } else {
@@ -331,10 +350,16 @@ impl Editor {
     /// Separate subsequent typing from the current undo step. Integrations must
     /// call this at savepoints so undo can return to the saved text. Movements,
     /// mode/selection changes, explicit edits, paste, and undo/redo do so already.
+    /// Outside a replayed action, this also cancels pending insert playback.
     pub fn finish_undo_group(&mut self) {
+        if !self.recorder.stepping {
+            self.cancel_repeat();
+        }
         surround::cancel(self);
         self.search.invalidate();
-        self.document.finish_undo_group();
+        if !self.recorder.stepping {
+            self.document.finish_undo_group();
+        }
     }
 
     /// Accept a completion and its additional edits as one undo step. All edits
@@ -359,6 +384,7 @@ impl Editor {
             return Err(Error::InvalidCompletion);
         }
         let start = edit.range().start;
+        let recorded = edit.clone();
         let transaction = self
             .document
             .transaction(std::iter::once(edit).chain(additional))?;
@@ -368,12 +394,14 @@ impl Editor {
         self.apply(transaction, false)?;
         self.selections = self.normalized(self.selections.clone(), self.mode)?;
         self.preferred_columns = None;
+        self.record_completion(cursor, &recorded);
         Ok(())
     }
 
     /// Install selections after checking bounds and snapping endpoints outward
     /// to whole graphemes. Insert mode collapses them to carets at their heads.
     pub fn set_selections(&mut self, selections: SelectionSet) -> Result<(), Error> {
+        self.cancel_repeat();
         let selections = self.normalized(selections, self.mode)?;
         self.finish_undo_group();
         self.selections = selections;

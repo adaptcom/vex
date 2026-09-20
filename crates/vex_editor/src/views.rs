@@ -44,6 +44,7 @@ impl Editor {
         transaction: vex_core::Transaction,
     ) -> Result<(), crate::Error> {
         use vex_core::{Affinity, CharOffset, Selection};
+        self.cancel_repeat();
         self.cancel_surround();
         let replacements: Vec<_> = transaction
             .edits()

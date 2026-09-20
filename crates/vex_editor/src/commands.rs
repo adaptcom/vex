@@ -65,7 +65,13 @@ macro_rules! commands {
     ($($(#[doc = $doc:literal])+ fn $name:ident($ctx:ident) $([$input:ident])? $body:block)+) => {
         $(
             $(#[doc = $doc])+
-            pub fn $name($ctx: &mut CommandContext<'_>) -> Result<(), Error> $body
+            pub fn $name($ctx: &mut CommandContext<'_>) -> Result<(), Error> {
+                static COMMAND: Command = Command {
+                    name: stringify!($name), documentation: concat!($($doc, "\n",)+),
+                    run: $name, input: commands!(@input $($input)?),
+                };
+                crate::repeat::invoke($ctx, &COMMAND, |$ctx| $body)
+            }
         )+
         pub static COMMANDS: &[Command] = &[
             $(Command { name: stringify!($name), documentation: concat!($($doc, "\n",)+), run: $name, input: commands!(@input $($input)?) },)+
@@ -454,6 +460,9 @@ fn insert(ctx: &mut CommandContext<'_>, grouped: bool) -> Result<(), Error> {
 }
 
 commands! {
+    /// Repeat the last completed insert session at the current selections. Replays its entry command, counts, text, motions, and accepted completion locally. A count repeats the whole session; ordinary normal-mode edits do not replace it.
+    fn repeat_insert(ctx) { crate::repeat::start(ctx) }
+
     /// Surround each selection with a character or bracket pair, selecting the result and returning to normal mode. Either bracket chooses its matching pair; other characters repeat on both sides. Enter uses the buffer's line ending. Ignores counts, leaves registers unchanged, and records one undo step.
     fn surround_add(ctx) [SurroundAdd] { crate::surround::add(ctx) }
 
@@ -483,7 +492,7 @@ commands! {
     /// Save the current selections as a jump checkpoint without writing the file.
     fn save_selection(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.application_action = Some(crate::ApplicationAction::SaveSelection);
+        ctx.editor.request_application_action(crate::ApplicationAction::SaveSelection);
         Ok(())
     }
 
@@ -495,91 +504,91 @@ commands! {
 
     /// Focus the next window in layout order. A count advances multiple windows.
     fn rotate_view(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::Rotate, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::Rotate, ctx.count.get()));
         Ok(())
     }
 
     /// Split the current window vertically, opening a shared view on the right.
     fn vsplit(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::SplitVertical, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::SplitVertical, ctx.count.get()));
         Ok(())
     }
 
     /// Split the current window horizontally, opening a shared view below.
     fn hsplit(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::SplitHorizontal, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::SplitHorizontal, ctx.count.get()));
         Ok(())
     }
 
     /// Focus the window to the left.
     fn jump_view_left(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::FocusLeft, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::FocusLeft, ctx.count.get()));
         Ok(())
     }
 
     /// Focus the window below.
     fn jump_view_down(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::FocusDown, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::FocusDown, ctx.count.get()));
         Ok(())
     }
 
     /// Focus the window above.
     fn jump_view_up(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::FocusUp, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::FocusUp, ctx.count.get()));
         Ok(())
     }
 
     /// Focus the window to the right.
     fn jump_view_right(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::FocusRight, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::FocusRight, ctx.count.get()));
         Ok(())
     }
 
     /// Swap the current window with the window to the left.
     fn swap_view_left(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::SwapLeft, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::SwapLeft, ctx.count.get()));
         Ok(())
     }
 
     /// Swap the current window with the window below.
     fn swap_view_down(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::SwapDown, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::SwapDown, ctx.count.get()));
         Ok(())
     }
 
     /// Swap the current window with the window above.
     fn swap_view_up(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::SwapUp, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::SwapUp, ctx.count.get()));
         Ok(())
     }
 
     /// Swap the current window with the window to the right.
     fn swap_view_right(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::SwapRight, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::SwapRight, ctx.count.get()));
         Ok(())
     }
 
     /// Close this window, protecting the last view of unsaved text. Exit when no windows remain.
     fn wclose(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::Close, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::Close, ctx.count.get()));
         Ok(())
     }
 
     /// Keep only this window, protecting unsaved text in other buffers.
     fn wonly(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::Only, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::Only, ctx.count.get()));
         Ok(())
     }
 
     /// Open filenames in the selections in horizontal splits. Paths are relative to the current file.
     fn goto_file_hsplit(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::OpenHorizontal, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::OpenHorizontal, ctx.count.get()));
         Ok(())
     }
 
     /// Open filenames in the selections in vertical splits. Paths are relative to the current file.
     fn goto_file_vsplit(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Window(crate::WindowAction::OpenVertical, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::OpenVertical, ctx.count.get()));
         Ok(())
     }
 
@@ -589,107 +598,107 @@ commands! {
         if ctx.editor.selections().ranges().len() != 1 {
             return Err(Error::InvalidCompletion);
         }
-        ctx.editor.language_action = Some(crate::LanguageAction::Completion);
+        ctx.editor.request_language_action(crate::LanguageAction::Completion);
         Ok(())
     }
 
     /// Open a fuzzy file picker at the current project root.
     fn file_picker(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.application_action = Some(crate::ApplicationAction::FilePicker);
+        ctx.editor.request_application_action(crate::ApplicationAction::FilePicker);
         Ok(())
     }
 
     /// Open a fuzzy picker of loaded buffers, including hidden and unsaved buffers.
     fn buffer_picker(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.application_action = Some(crate::ApplicationAction::BufferPicker);
+        ctx.editor.request_application_action(crate::ApplicationAction::BufferPicker);
         Ok(())
     }
 
     /// Switch to the last buffer accessed in this pane, restoring its view.
     fn goto_last_accessed_file(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Buffer(crate::BufferAction::LastAccessed, 1));
+        ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::LastAccessed, 1));
         Ok(())
     }
 
     /// Switch to the last other buffer modified in this pane.
     fn goto_last_modified_file(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Buffer(crate::BufferAction::LastModified, 1));
+        ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::LastModified, 1));
         Ok(())
     }
 
     /// Switch to the next loaded buffer in opening order, wrapping; accepts a count.
     fn goto_next_buffer(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Buffer(crate::BufferAction::Next, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::Next, ctx.count.get()));
         Ok(())
     }
 
     /// Switch to the previous loaded buffer in opening order, wrapping; accepts a count.
     fn goto_previous_buffer(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Buffer(crate::BufferAction::Previous, ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::Previous, ctx.count.get()));
         Ok(())
     }
 
     /// Open filenames in the selections in the current pane. Paths are relative to the current file; earlier buffers remain loaded.
     fn goto_file(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::Buffer(crate::BufferAction::OpenSelected, 1));
+        ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::OpenSelected, 1));
         Ok(())
     }
 
     /// Open the repository status view with expandable staged and unstaged diffs.
     fn git_status(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.application_action = Some(crate::ApplicationAction::GitStatus);
+        ctx.editor.request_application_action(crate::ApplicationAction::GitStatus);
         Ok(())
     }
 
     /// Open a searchable picker of symbols in the current document using its language server.
     fn symbol_picker(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.application_action = Some(crate::ApplicationAction::DocumentSymbols);
+        ctx.editor.request_application_action(crate::ApplicationAction::DocumentSymbols);
         Ok(())
     }
 
     /// Search workspace symbols using the current document's language server.
     fn workspace_symbol_picker(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.application_action = Some(crate::ApplicationAction::WorkspaceSymbols);
+        ctx.editor.request_application_action(crate::ApplicationAction::WorkspaceSymbols);
         Ok(())
     }
 
     /// Return to the location before the last successful file, definition, or symbol jump.
     fn jump_back(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.language_action = Some(crate::LanguageAction::JumpBack);
+        ctx.editor.request_language_action(crate::LanguageAction::JumpBack);
         Ok(())
     }
 
     /// Show language-server documentation for the symbol at the primary cursor.
     fn hover(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.language_action = Some(crate::LanguageAction::Hover);
+        ctx.editor.request_language_action(crate::LanguageAction::Hover);
         Ok(())
     }
 
     /// Jump to the definition of the symbol at the primary cursor.
     fn goto_definition(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.language_action = Some(crate::LanguageAction::Definition);
+        ctx.editor.request_language_action(crate::LanguageAction::Definition);
         Ok(())
     }
 
     /// Move to the next diagnostic, wrapping and honoring the repeat count.
     fn goto_next_diagnostic(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.language_action = Some(crate::LanguageAction::NextDiagnostic(ctx.count.get()));
+        ctx.editor.request_language_action(crate::LanguageAction::NextDiagnostic(ctx.count.get()));
         Ok(())
     }
 
     /// Move to the previous diagnostic, wrapping and honoring the repeat count.
     fn goto_previous_diagnostic(ctx) {
         ctx.editor.finish_undo_group();
-        ctx.editor.language_action = Some(crate::LanguageAction::PreviousDiagnostic(ctx.count.get()));
+        ctx.editor.request_language_action(crate::LanguageAction::PreviousDiagnostic(ctx.count.get()));
         Ok(())
     }
 
@@ -750,13 +759,13 @@ commands! {
 
     /// Move cursors and scroll up by half the visible text height, retaining desired columns and extending selections in select mode. Counts multiply the distance; the frontend supplies the current viewport size.
     fn page_cursor_half_up(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::HalfPageUp(ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::HalfPageUp(ctx.count.get()));
         Ok(())
     }
 
     /// Move cursors and scroll down by half the visible text height, retaining desired columns and extending selections in select mode. Counts multiply the distance; the frontend supplies the current viewport size.
     fn page_cursor_half_down(ctx) {
-        ctx.editor.application_action = Some(crate::ApplicationAction::HalfPageDown(ctx.count.get()));
+        ctx.editor.request_application_action(crate::ApplicationAction::HalfPageDown(ctx.count.get()));
         Ok(())
     }
 
@@ -1002,6 +1011,7 @@ commands! {
     fn commit_undo_checkpoint(ctx) {
         require_insert(ctx.editor)?;
         ctx.editor.finish_undo_group();
+        ctx.editor.document.finish_undo_group();
         Ok(())
     }
 

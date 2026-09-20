@@ -208,6 +208,11 @@ the current line's indentation before the caret. Tab inserts a literal tab.
 Text events call `Editor::insert_text`; paste events call `Editor::insert_paste`
 to get a separate undo step.
 
+`.` in normal/select mode [repeats the last insert session](docs/repeat.md),
+including its entry command, editing actions, and accepted completion text.
+The recording is shared across buffers and uses command functions rather than
+terminal keys. Counted playback yields between batches in the event loop.
+
 The implemented commands cover `hjkl`, arrows, `w`/`b`/`e`, `W`/`B`/`E`,
 cross-line `f`/`F`/`t`/`T`, `gs`, counted `gg`/`G` and `g|`, line/document bounds,
 `Ctrl-u`/`Ctrl-d` for half-page movement and scrolling in normal/select mode,

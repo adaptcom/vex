@@ -339,11 +339,46 @@ fn surround_add(c: &mut Criterion) {
     group.finish();
 }
 
+fn insert_repeat(c: &mut Criterion) {
+    fn record(editor: &mut Editor) {
+        editor.execute("insert_mode", 1).unwrap();
+        for text in ["n", "e", "w", "_", "v", "a", "l", "u", "e"] {
+            editor.insert_text(black_box(text)).unwrap();
+        }
+        editor.execute("normal_mode", 1).unwrap();
+    }
+    let mut group = c.benchmark_group("insert_repeat");
+    for bytes in [1usize << 20, 100 << 20] {
+        let line = "fn main() { let value = 123; }\n";
+        let rope = Rope::from_str(&line.repeat(bytes.div_ceil(line.len())));
+        for count in [1, 1_000] {
+            let mut editor = editor(&rope, count);
+            record(&mut editor);
+            editor.execute("undo", 1).unwrap();
+            for recording in [true, false] {
+                let name = format!("{}_{}", if recording { "record" } else { "replay" }, count);
+                group.bench_function(BenchmarkId::new(name, bytes), |b| {
+                    b.iter(|| {
+                        if recording {
+                            record(&mut editor);
+                        } else {
+                            editor.execute("repeat_insert", 1).unwrap();
+                        }
+                        editor.execute("undo", 1).unwrap();
+                        black_box(editor.document().text());
+                    });
+                });
+            }
+        }
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(30)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(1));
-    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects, delimiter_matching, surround_add, surround_edit
+    targets = commands, search, background_search, comments, copy_selections, insert_line_kill, textobjects, delimiter_matching, surround_add, surround_edit, insert_repeat
 }
 criterion_main!(benches);

@@ -32,8 +32,9 @@ selections, and measure operations that could affect input latency.
    Textobjects and bracket matching now run through the cancellable selection
    worker with shared syntax trees. `ms`/`mr`/`md` add, replace, and remove
    surrounds; replacement previews delimiters before collecting its second input.
-8. [ ] Repeat the last insert with `.`. Record logical editing actions, including
-   counted commands and completion, so replay stays independent of terminal input.
+8. [x] Repeat the last insert with `.`. Logical command recording retains counts,
+   text, motions, and accepted completion across buffers. Cooperative playback
+   preserves queued input order and supports cancellation and undo checkpoints.
 
 ## Registers and input follow-ups
 

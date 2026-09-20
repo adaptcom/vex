@@ -4,6 +4,7 @@ Generated from command Rustdoc and the default keymap.
 
 | Command | Bindings by mode | Description |
 |---|---|---|
+| `repeat_insert` | Normal: `.`, Select: `.` | Repeat the last completed insert session at the current selections. Replays its entry command, counts, text, motions, and accepted completion locally. A count repeats the whole session; ordinary normal-mode edits do not replace it. |
 | `surround_add` | Normal: `ms`, Select: `ms` | Surround each selection with a character or bracket pair, selecting the result and returning to normal mode. Either bracket chooses its matching pair; other characters repeat on both sides. Enter uses the buffer's line ending. Ignores counts, leaves registers unchanged, and records one undo step. |
 | `surround_delete` | Normal: `md`, Select: `md` | Delete a surrounding pair at every cursor. Either bracket chooses its pair; m chooses the nearest pair. Counts seek outer pairs. Missing or overlapping pairs cancel all edits. Returns to normal mode with one undo step and leaves registers unchanged. |
 | `surround_replace` | Normal: `mr`, Select: `mr` | Find and preview surrounding delimiters before replacing them. Supply the old delimiter (or m for nearest); counts seek outer pairs. Then supply the replacement character with surround_replace_finish. Cancellation restores the original selections. |

@@ -165,6 +165,26 @@ impl App {
         self.handle_at(event, std::time::Instant::now())
     }
 
+    /// Cooperatively replay before the next event batch, keeping background
+    /// services, drawing, resize, and cancellation live during large counts.
+    pub(crate) fn advance_repeat(&mut self) -> bool {
+        if !self.editor.repeat_pending() {
+            return false;
+        }
+        self.completion.clear();
+        match self.editor.advance_repeat(64) {
+            Ok(changed) => {
+                self.observe_buffer_revision();
+                changed
+            }
+            Err(error) => {
+                self.observe_buffer_revision();
+                self.fail(error);
+                true
+            }
+        }
+    }
+
     fn handle_at(&mut self, event: Event, now: std::time::Instant) -> bool {
         self.observe_buffer_revision();
         let changed = self.handle_event_at(event, now);
@@ -255,6 +275,10 @@ impl App {
                     self.handle_prompt_key(key);
                 } else {
                     match key {
+                        Key::Escape | Key::Ctrl('c') if self.editor.repeat_pending() => {
+                            self.editor.cancel_repeat();
+                            self.keys.cancel(&mut self.editor);
+                        }
                         Key::Ctrl('c') if self.editor.search_waiting() => {
                             // A pending scan is cancellable before subsequent
                             // editing keys. Do not dispatch normal-mode comments.
@@ -1348,6 +1372,37 @@ mod tests {
         assert!(!app.is_dirty());
         app.execute("q").unwrap();
         assert!(app.should_quit());
+    }
+
+    #[test]
+    fn large_insert_repeats_keep_resize_and_cancellation_live() {
+        for cancel in [
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        ] {
+            let mut app = App::from_document(Document::from("a"), (80, 24));
+            app.editor.set_deferred_repeat(true);
+            press(&mut app, "aX");
+            key(&mut app, KeyCode::Esc);
+            press(&mut app, "1000000.");
+            assert!(app.input_waiting());
+            assert!(app.advance_repeat());
+            assert!(app.editor.document().text().len_chars() > 2);
+            app.handle(Event::Resize(50, 12));
+            assert_eq!(app.size(), (50, 12));
+            draw(&mut app);
+            assert!(app.editor.repeat_pending());
+            app.handle(Event::Key(cancel));
+            assert!(!app.input_waiting());
+            assert_eq!(app.editor.mode(), Mode::Normal);
+            press(&mut app, "u");
+            assert_eq!(app.editor.document().text(), "aX");
+            press(&mut app, ".");
+            while app.editor.repeat_pending() {
+                app.advance_repeat();
+            }
+            assert_eq!(app.editor.document().text(), "aXX");
+        }
     }
 
     #[test]

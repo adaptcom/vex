@@ -50,6 +50,36 @@ through long lines. The first application target remains under 5 ms at p95 for
 ordinary editing in a 10 MiB file on a documented machine; the core measurements
 above do not establish that end-to-end result.
 
+## Insert recording and replay
+
+Recorded on 2026-09-20 with the same optimized profile:
+
+```sh
+cargo bench -p vex_editor --bench commands --locked -- insert_repeat --noplot
+```
+
+| Document | Carets | Record nine characters + undo | Replay + undo |
+|---|---:|---:|---:|
+| 1 MiB | 1 | 6.97 µs | 6.49 µs |
+| 100 MiB | 1 | 8.22 µs | 7.90 µs |
+| 1 MiB | 1,000 | 3.83 ms | 3.78 ms |
+| 100 MiB | 1,000 | 6.64 ms | 6.73 ms |
+
+Each session enters insert mode, inserts `new_value` as nine separate text events,
+and leaves insert mode. The timed loop includes command dispatch, rope edits,
+selection mapping, recording or replay, and undo. Selection positions are evenly
+distributed through repeated short ASCII source lines. Construction is outside
+the loop, and undo restores the same positions for cache-warm measurements.
+The fixture rope remains shared. These figures exclude the event queue, drawing,
+terminal latency, and growing undo history; they are not p95 input latencies.
+
+Recording stores command arguments and one text pool, without copying the
+document or multiplying recorded text by the number of carets. Playback shares
+the immutable recording across buffers. The terminal runs at most 64 actions
+per batch, checking a four-millisecond deadline between actions, then services
+input/background results and draws. An individual existing command or large
+paste remains nonpreemptible, so the deadline is a cooperative scheduling bound.
+
 ## Retained buffers
 
 Recorded on 2026-09-20 on the same development machine and optimized profile:

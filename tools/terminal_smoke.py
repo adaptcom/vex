@@ -472,6 +472,21 @@ def main():
             terminal.finish()
         print("PASS: bounded event batches preserve all 900 queued text keys")
 
+        repeat_path = Path(directory) / "repeat.txt"
+        repeat_path.write_text("a\n")
+        with Terminal([binary, str(repeat_path)]) as terminal:
+            terminal.start()
+            mark = terminal.send(b"aX")
+            terminal.expect(b"INS", mark)
+            mark = terminal.send(b"\x1b")
+            terminal.expect(b"NOR", mark)
+            # Replay spans multiple event-loop batches. The queued colon/save
+            # keys must wait for all 100 sessions to finish in normal mode.
+            terminal.send(b"100.:wq\r")
+            terminal.finish()
+            assert repeat_path.read_text() == "a" + "X" * 101 + "\n"
+        print("PASS: counted insert replay and queued save preserve input order")
+
         with Terminal([binary]) as terminal:
             terminal.start()
             mark = terminal.send(b"i")

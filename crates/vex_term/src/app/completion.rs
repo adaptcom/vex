@@ -186,6 +186,7 @@ impl App {
 
     pub(super) fn schedule_completion(&mut self, typing: Typing, now: Instant) {
         if self.editor.mode() != Mode::Insert
+            || self.editor.repeat_pending()
             || self.prompt.is_some()
             || self.error
             || self.editor.selections().ranges().len() != 1
@@ -755,6 +756,23 @@ mod tests {
         app.editor.execute("goto_file_end", 1).unwrap();
         app.editor.execute("insert_mode", 1).unwrap();
         (directory, app)
+    }
+
+    #[test]
+    fn replay_sends_document_updates_without_requesting_completion() {
+        let (_directory, mut app) = automatic_fixture("");
+        app.editor.insert_text("printed").unwrap();
+        app.editor.execute("normal_mode", 1).unwrap();
+        app.take_lsp_update();
+        app.editor.set_deferred_repeat(true);
+        app.editor.execute("repeat_insert", 100).unwrap();
+        assert!(app.advance_repeat());
+        let update = app.take_lsp_update().unwrap();
+        assert!(update.document.is_some());
+        assert!(update.request.is_none());
+        assert!(app.completion_deadline().is_none());
+        assert!(app.completion.active.is_none());
+        app.editor.cancel_repeat();
     }
 
     fn automatic_answer(app: &App, incomplete: bool) -> Answer {

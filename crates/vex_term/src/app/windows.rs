@@ -127,8 +127,9 @@ impl App {
             } else {
                 let document = vex_core::Document::default();
                 let files = FileState::scratch(&document);
-                let mut editor = Editor::with_yank_register(document, self.editor.yank_register());
+                let mut editor = Editor::with_session(document, self.editor.session());
                 editor.set_background_search(true);
+                editor.set_deferred_repeat(true);
                 editor.execute("insert_mode", 1).map_err(io::Error::other)?;
                 self.git_write.drafts.insert(
                     editor.document().id(),
@@ -465,9 +466,10 @@ impl App {
             return Ok(Prepared::Existing(id));
         }
         let (document, files) = FileState::load(Some(path))?;
-        let mut editor = Editor::with_yank_register(document, self.editor.yank_register());
+        let mut editor = Editor::with_session(document, self.editor.session());
         editor.set_language(Language::detect(files.path(), editor.document().text()));
         editor.set_background_search(true);
+        editor.set_deferred_repeat(true);
         editor.set_background_syntax(true);
         Ok(Prepared::New(Box::new(Buffer {
             editor,
@@ -637,8 +639,9 @@ impl App {
         } else {
             let document = vex_core::Document::default();
             let files = FileState::scratch(&document);
-            let mut editor = Editor::with_yank_register(document, self.editor.yank_register());
+            let mut editor = Editor::with_session(document, self.editor.session());
             editor.set_background_search(true);
+            editor.set_deferred_repeat(true);
             editor.set_background_syntax(true);
             Prepared::New(Box::new(Buffer {
                 editor,
@@ -1207,6 +1210,31 @@ mod tests {
         press(&mut other, "p");
         assert!(other.error);
         assert_eq!(other.editor.document().text(), "xy");
+    }
+
+    #[test]
+    fn insert_repeat_survives_buffer_switching_and_closing_its_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let target = directory.path().join("target");
+        std::fs::write(&source, "a").unwrap();
+        std::fs::write(&target, "b").unwrap();
+        let mut app = App::open(Some(&source), (80, 24)).unwrap();
+        app.editor.execute("append_mode", 1).unwrap();
+        app.editor.insert_text("X").unwrap();
+        app.editor.execute("normal_mode", 1).unwrap();
+        app.execute("bc!").unwrap();
+        app.open_window_file(&target).unwrap();
+        app.editor.execute("repeat_insert", 1).unwrap();
+        while app.editor.repeat_pending() {
+            app.advance_repeat();
+        }
+        assert_eq!(app.editor.document().text(), "bX");
+        app.editor.execute("undo", 1).unwrap();
+        assert_eq!(app.editor.document().text(), "b");
+        let mut other = App::open(Some(&target), (80, 24)).unwrap();
+        other.editor.execute("repeat_insert", 1).unwrap();
+        assert_eq!(other.editor.document().text(), "b");
     }
 
     #[test]

@@ -176,6 +176,7 @@ impl Default for Keymap {
                 (vec![Char('v')], "select_mode"),
                 (vec![Char('i')], "insert_mode"),
                 (vec![Char('a')], "append_mode"),
+                (vec![Char('.')], "repeat_insert"),
                 (vec![Char('I')], "insert_at_line_start"),
                 (vec![Char('A')], "insert_at_line_end"),
                 (vec![Char('r')], "replace"),
