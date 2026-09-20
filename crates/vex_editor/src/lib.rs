@@ -35,7 +35,9 @@ pub use commands::{Command, CommandContext, CommandInput};
 pub use error::Error;
 pub use keymap::{Binding, Dispatch, Key, KeyHandler, KeyHints, Keymap};
 pub use register::YankRegister;
-pub use search::{SearchCancellation, SearchCompletion, SearchJob, SearchResult, SearchStatus};
+pub use search::{
+    SearchCancellation, SearchCompletion, SearchJob, SearchPrompt, SearchResult, SearchStatus,
+};
 pub use syntax::{SyntaxJob, SyntaxResult, SyntaxWorker};
 pub use vex_core::search::Direction as SearchDirection;
 pub use vex_syntax::{Highlight, HighlightSpan, IndentStyle, Indentation, Language};
@@ -177,16 +179,28 @@ impl Editor {
         self.application_action.take()
     }
 
-    /// Direction of an active search prompt, if a search command requested one.
-    pub fn search_direction(&self) -> Option<SearchDirection> {
+    /// The active regex prompt requested by an editor command.
+    pub fn search_prompt(&self) -> Option<SearchPrompt> {
         self.search
             .preview
             .as_ref()
-            .map(|preview| preview.direction)
+            .map(|preview| preview.operation)
+    }
+
+    pub fn search_direction(&self) -> Option<SearchDirection> {
+        match self.search_prompt()? {
+            SearchPrompt::Forward => Some(SearchDirection::Forward),
+            SearchPrompt::Backward => Some(SearchDirection::Backward),
+            _ => None,
+        }
     }
 
     pub fn search_status(&self) -> Option<SearchStatus> {
         self.search.preview.as_ref().map(|preview| preview.status)
+    }
+
+    pub fn search_error(&self) -> Option<&Error> {
+        self.search.preview.as_ref()?.error.as_ref()
     }
 
     /// Use deferred search and selection-scan commands. The frontend must take each job, run it
@@ -224,8 +238,8 @@ impl Editor {
         self.search.waiting()
     }
 
-    /// Preview literal matches from the selections saved by search_forward or
-    /// search_backward. The empty query restores those selections.
+    /// Preview a regex operation from its saved selections. An empty query
+    /// restores those selections.
     pub fn update_search(&mut self, text: &str) -> Result<(), Error> {
         let mut context = CommandContext::new(self);
         context.text = Some(text);

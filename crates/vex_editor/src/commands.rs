@@ -630,25 +630,43 @@ commands! {
         Ok(())
     }
 
-    /// Begin a forward literal search from each selection's start, including the current position; accepts a match count. Integrations should open a prompt and send search_update, search_accept, or search_cancel.
-    fn search_forward(ctx) { crate::search::begin(ctx, crate::SearchDirection::Forward) }
+    /// Begin a forward regex search after the primary selection. Matches wrap; counts select successive matches, and select mode adds them.
+    fn search_forward(ctx) { crate::search::begin(ctx, crate::SearchPrompt::Forward) }
 
-    /// Begin a backward literal search from each selection's start, including the current position; accepts a match count. Matches wrap at document boundaries.
-    fn search_backward(ctx) { crate::search::begin(ctx, crate::SearchDirection::Backward) }
+    /// Begin a backward regex search before the primary selection, wrapping at document boundaries.
+    fn search_backward(ctx) { crate::search::begin(ctx, crate::SearchPrompt::Backward) }
 
-    /// Preview the context's literal text from the original selections. Empty or unmatched text restores them; selections expand to whole graphemes in normal and select modes.
+    /// Select regex matches inside the current selections; lowercase queries ignore case.
+    fn select_regex(ctx) { crate::search::begin(ctx, crate::SearchPrompt::Select) }
+
+    /// Split current selections on regex matches, excluding the matched separators.
+    fn split_selection(ctx) { crate::search::begin(ctx, crate::SearchPrompt::Split) }
+
+    /// Keep selections containing a regex match.
+    fn keep_selections(ctx) { crate::search::begin(ctx, crate::SearchPrompt::Keep) }
+
+    /// Remove selections containing a regex match, retaining at least one selection.
+    fn remove_selections(ctx) { crate::search::begin(ctx, crate::SearchPrompt::Remove) }
+
+    /// Remember selected text as a literal regex with detected word boundaries; use n/N to navigate.
+    fn search_selection_detect_word_boundaries(ctx) { crate::search::remember(ctx, true) }
+
+    /// Remember selected text as a literal regex, without adding word boundaries.
+    fn search_selection(ctx) { crate::search::remember(ctx, false) }
+
+    /// Preview the context's regex from the original selections. Empty, invalid, or unmatched input restores them.
     fn search_update(ctx) { crate::search::update(ctx.editor, ctx.text.ok_or(Error::MissingText)?) }
 
-    /// Accept a matching preview for n/N navigation, waiting for pending background work if needed. An empty query cancels; an unmatched query keeps the prompt open and preserves the previous accepted search.
+    /// Accept a matching preview for n/N navigation, waiting for pending work if needed. Invalid or unmatched queries remain editable.
     fn search_accept(ctx) { crate::search::accept(ctx.editor) }
 
-    /// Cancel a search preview and restore its original selections and preferred columns. The terminal integration also restores its saved viewport.
+    /// Cancel a regex preview and restore its original selections and preferred columns.
     fn search_cancel(ctx) { crate::search::cancel(ctx.editor) }
 
-    /// Select the next literal match for each selection, following the accepted search direction and wrapping; accepts a count. Replaces ranges even in select mode.
+    /// Search forward from the primary selection; select mode adds matches. Counts wrap and selection direction is preserved.
     fn search_next(ctx) { crate::search::repeat(ctx, false) }
 
-    /// Select the previous literal match for each selection, opposite the accepted search direction and wrapping; accepts a count. Replaces ranges even in select mode.
+    /// Search backward from the primary selection; select mode adds matches. This is independent of the last prompt direction.
     fn search_previous(ctx) { crate::search::repeat(ctx, true) }
 
     /// Move right by graphemes, extending the selection in select mode.

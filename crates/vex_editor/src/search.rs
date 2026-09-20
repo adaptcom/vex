@@ -2,22 +2,50 @@
 //! execute them on a worker; only the editor applies results after validating
 //! request and view state.
 
-use crate::{CommandContext, Editor, Error, Mode, SearchDirection};
+use crate::{CommandContext, Editor, Error, Mode};
 use std::{num::NonZeroUsize, sync::Arc};
 use vex_core::{
-    ByteOffset, CharOffset, DocumentId, Revision, Rope, Selection, SelectionSet, Snapshot,
-    grapheme, search::Literal,
+    DocumentId, Revision, SelectionSet, Snapshot,
+    regex::{Options, Regex},
 };
 
-/// An empty, pending, successful, or missing preview. Pending acceptance is
-/// completed when the matching result arrives; missing queries remain editable.
+/// Preview state, including invalid patterns. Pending acceptance completes when
+/// the matching result arrives; invalid and missing queries remain editable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchStatus {
+    Invalid,
     Empty,
     Pending,
     Match,
     NoMatch,
 }
+
+/// The operation requested by a regex prompt. Search uses the primary selection;
+/// selection operations restrict matching to the current ranges.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchPrompt {
+    Forward,
+    Backward,
+    Select,
+    Split,
+    Keep,
+    Remove,
+}
+
+impl SearchPrompt {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Forward => "/",
+            Self::Backward => "?",
+            Self::Select => "select: ",
+            Self::Split => "split: ",
+            Self::Keep => "keep: ",
+            Self::Remove => "remove: ",
+        }
+    }
+}
+
+mod matching;
 
 /// Cancellation shared by the editor and its search worker.
 pub type SearchCancellation = crate::background::Cancellation;
@@ -25,16 +53,21 @@ pub type SearchCancellation = crate::background::Cancellation;
 #[derive(Debug)]
 enum Pattern {
     Text(Arc<str>),
-    Compiled(Arc<Literal>),
+    Compiled(Arc<Regex>),
 }
 
 #[derive(Debug)]
 enum Work {
     Search {
         pattern: Pattern,
-        direction: SearchDirection,
+        operation: SearchPrompt,
         count: usize,
-        inclusive: bool,
+        extend: bool,
+        crlf: bool,
+    },
+    Remember {
+        boundaries: bool,
+        crlf: bool,
     },
     CopyLines {
         count: usize,
@@ -45,8 +78,9 @@ enum Work {
 
 #[derive(Debug)]
 enum Outcome {
-    Search(Arc<Literal>, Option<SelectionSet>),
+    Search(Arc<Regex>, Option<SelectionSet>),
     Selections(SelectionSet),
+    Remember(Arc<Regex>),
 }
 
 /// Owned, Send text-search or selection-scan work. No mutable editor state
@@ -80,38 +114,46 @@ impl SearchJob {
     }
 
     /// Compile and scan the snapshot. Cancelled jobs return no completion.
-    /// Cancellation is checked during compilation/scanning and between matches;
+    /// Cancellation is checked before/after compilation and during scanning;
     /// grapheme-boundary and individual display-column lookups are not preemptible.
     pub fn run(self) -> Option<SearchResult> {
         let cancelled = || self.cancellation.is_cancelled();
         if cancelled() {
             return None;
         }
-        let outcome = match self.work {
+        let outcome = (|| match self.work {
             Work::Search {
                 pattern,
-                direction,
+                operation,
                 count,
-                inclusive,
+                extend,
+                crlf,
             } => {
                 let pattern = match pattern {
-                    Pattern::Text(text) => Arc::new(Literal::new_cancellable(&text, cancelled)?),
+                    Pattern::Text(text) => compile(&text, crlf)?,
                     Pattern::Compiled(pattern) => pattern,
                 };
-                locate(
+                matching::apply(
                     self.snapshot.text(),
                     &self.origins,
                     &pattern,
-                    direction,
+                    operation,
                     count,
-                    inclusive,
+                    extend,
                     &cancelled,
                 )
                 .map(|selections| Outcome::Search(pattern, selections))
             }
+            Work::Remember { boundaries, crlf } => {
+                let query = matching::selection_pattern(
+                    self.snapshot.text(),
+                    &self.origins,
+                    boundaries,
+                    &cancelled,
+                )?;
+                compile(&query, crlf).map(Outcome::Remember)
+            }
             Work::CopyLines { count, down, tabs } => {
-                // The worker's document shares the snapshot rope; it has no edit
-                // history. Its bounded layout cache is local to this scan.
                 let document = vex_core::Document::from(self.snapshot.text().clone());
                 crate::selection::copy_lines(
                     &document,
@@ -123,7 +165,7 @@ impl SearchJob {
                 )
                 .map(Outcome::Selections)
             }
-        };
+        })();
         if cancelled() {
             return None;
         }
@@ -139,6 +181,7 @@ enum Kind {
     Preview { accept: bool },
     Repeat,
     CopyLines,
+    Remember,
 }
 
 #[derive(Debug)]
@@ -153,7 +196,7 @@ struct Pending {
 
 #[derive(Debug, Default)]
 pub(crate) struct Search {
-    accepted: Option<(Arc<Literal>, SearchDirection)>,
+    accepted: Option<Arc<Regex>>,
     pub preview: Option<Preview>,
     pub background: bool,
     pub outgoing: Option<SearchJob>,
@@ -168,7 +211,7 @@ impl Search {
         self.pending.as_ref().is_some_and(|p| {
             matches!(
                 p.kind,
-                Kind::Repeat | Kind::CopyLines | Kind::Preview { accept: true }
+                Kind::Repeat | Kind::CopyLines | Kind::Remember | Kind::Preview { accept: true }
             )
         })
     }
@@ -218,12 +261,13 @@ pub(crate) struct Preview {
     revision: Revision,
     mode: Mode,
     count: usize,
-    pattern: Option<Arc<Literal>>,
-    pub direction: SearchDirection,
+    pattern: Option<Arc<Regex>>,
+    pub operation: SearchPrompt,
+    pub error: Option<Error>,
     pub status: SearchStatus,
 }
 
-pub(crate) fn begin(ctx: &mut CommandContext<'_>, direction: SearchDirection) -> Result<(), Error> {
+pub(crate) fn begin(ctx: &mut CommandContext<'_>, operation: SearchPrompt) -> Result<(), Error> {
     let editor = &mut *ctx.editor;
     if editor.search.preview.is_some() {
         return Err(Error::SearchActive);
@@ -237,7 +281,8 @@ pub(crate) fn begin(ctx: &mut CommandContext<'_>, direction: SearchDirection) ->
         mode: editor.mode,
         count: ctx.count.get(),
         pattern: None,
-        direction,
+        operation,
+        error: None,
         status: SearchStatus::Empty,
     });
     Ok(())
@@ -274,6 +319,7 @@ pub(crate) fn update(editor: &mut Editor, query: &str) -> Result<(), Error> {
     editor.selections = preview.origin.clone();
     editor.preferred_columns = preview.columns.clone();
     preview.pattern = None;
+    preview.error = None;
     preview.status = if query.is_empty() {
         SearchStatus::Empty
     } else {
@@ -282,11 +328,11 @@ pub(crate) fn update(editor: &mut Editor, query: &str) -> Result<(), Error> {
     if query.is_empty() {
         return Ok(());
     }
-    let (direction, count) = (preview.direction, preview.count);
+    let (operation, count) = (preview.operation, preview.count);
     schedule(
         editor,
         Pattern::Text(Arc::from(query)),
-        direction,
+        operation,
         count,
         Kind::Preview { accept: false },
     )
@@ -295,7 +341,7 @@ pub(crate) fn update(editor: &mut Editor, query: &str) -> Result<(), Error> {
 fn schedule(
     editor: &mut Editor,
     pattern: Pattern,
-    direction: SearchDirection,
+    operation: SearchPrompt,
     count: usize,
     kind: Kind,
 ) -> Result<(), Error> {
@@ -303,9 +349,10 @@ fn schedule(
         editor,
         Work::Search {
             pattern,
-            direction,
+            operation,
             count,
-            inclusive: matches!(kind, Kind::Preview { .. }),
+            extend: editor.mode == Mode::Select,
+            crlf: editor.newline == "\r\n",
         },
         kind,
     )
@@ -381,13 +428,20 @@ pub(crate) fn apply_result(
     }
     let (pattern, selections) = match result.outcome {
         Ok(Outcome::Search(pattern, selections)) => (pattern, selections),
+        Ok(Outcome::Remember(pattern)) => {
+            editor.search.accepted = Some(pattern);
+            return Ok(SearchCompletion::Navigation);
+        }
         Ok(Outcome::Selections(selections)) => {
             editor.selections = selections;
             editor.preferred_columns = None;
             return Ok(SearchCompletion::Navigation);
         }
         Err(error) => {
-            editor.search.preview = None;
+            if let Some(preview) = editor.search.preview.as_mut() {
+                preview.status = SearchStatus::Invalid;
+                preview.error = Some(error.clone());
+            }
             return Err(error);
         }
     };
@@ -421,7 +475,7 @@ pub(crate) fn apply_result(
             editor.preferred_columns = None;
             Ok(SearchCompletion::Navigation)
         }
-        Kind::CopyLines => unreachable!("line-copy requests produce selections"),
+        Kind::CopyLines | Kind::Remember => unreachable!("handled above"),
     }
 }
 
@@ -439,10 +493,11 @@ pub(crate) fn accept(editor: &mut Editor) -> Result<(), Error> {
                 .kind = Kind::Preview { accept: true };
             Ok(())
         }
+        SearchStatus::Invalid => Err(preview.error.clone().expect("invalid preview error")),
         SearchStatus::NoMatch => Err(Error::NoMatch),
         SearchStatus::Match => {
             let preview = editor.search.preview.take().unwrap();
-            editor.search.accepted = Some((preview.pattern.unwrap(), preview.direction));
+            editor.search.accepted = preview.pattern;
             Ok(())
         }
     }
@@ -463,111 +518,59 @@ pub(crate) fn repeat(ctx: &mut CommandContext<'_>, reverse: bool) -> Result<(), 
         return Err(Error::SearchActive);
     }
     require_normal_or_select(editor)?;
-    let (pattern, direction) = editor.search.accepted.as_ref().ok_or(Error::NoSearch)?;
-    let direction = if reverse {
-        direction.reversed()
+    let pattern = Arc::clone(editor.search.accepted.as_ref().ok_or(Error::NoSearch)?);
+    let operation = if reverse {
+        SearchPrompt::Backward
     } else {
-        *direction
+        SearchPrompt::Forward
     };
-    let pattern = Arc::clone(pattern);
     editor.finish_undo_group();
     schedule(
         editor,
         Pattern::Compiled(pattern),
-        direction,
+        operation,
         ctx.count.get(),
         Kind::Repeat,
     )
 }
 
-fn locate(
-    text: &Rope,
-    origins: &SelectionSet,
-    pattern: &Literal,
-    direction: SearchDirection,
-    count: usize,
-    inclusive: bool,
-    cancelled: &impl Fn() -> bool,
-) -> Result<Option<SelectionSet>, Error> {
-    let mut selections = Vec::with_capacity(origins.ranges().len());
-    for origin in origins.ranges() {
-        if cancelled() {
-            return Ok(None);
-        }
-        let position = origin.start();
-        // Moving past the entire first grapheme prevents a match inside a
-        // combining sequence from repeatedly selecting that same grapheme.
-        let boundary = if inclusive == (direction == SearchDirection::Forward) {
-            position
-        } else {
-            grapheme::next(text, position, 1)?
-        };
-        let boundary = ByteOffset(text.char_to_byte(boundary.0));
-        let before = ByteOffset(0)..boundary;
-        let after = boundary..ByteOffset(text.len_bytes());
-        let (first, second) = if direction == SearchDirection::Forward {
-            (after, before)
-        } else {
-            (before, after)
-        };
-        let scan = || {
-            pattern
-                .matches_cancellable(text, first.clone(), direction, cancelled)
-                .chain(pattern.matches_cancellable(text, second.clone(), direction, cancelled))
-        };
-        // At most two document traversals even for usize::MAX counts. The
-        // common case stops at the requested nearby match without a full scan.
-        let mut seen = 0;
-        let mut last_start = None;
-        let mut wanted = count;
-        let mut selected = None;
-        for pass in 0..2 {
-            for found in scan() {
-                if cancelled() {
-                    return Ok(None);
-                }
-                let start = grapheme::floor(text, CharOffset(text.byte_to_char(found.start.0)))?;
-                if last_start == Some(start) {
-                    continue;
-                }
-                last_start = Some(start);
-                seen += 1;
-                if seen == wanted {
-                    let end = grapheme::ceil(text, CharOffset(text.byte_to_char(found.end.0)))?;
-                    selected = Some(if direction == SearchDirection::Forward {
-                        Selection::new(start, end)
-                    } else {
-                        Selection::new(end, start)
-                    });
-                    break;
-                }
-            }
-            if selected.is_some() || seen == 0 {
-                break;
-            }
-            if pass == 0 {
-                wanted = (count - 1) % seen + 1;
-                seen = 0;
-                last_start = None;
-            }
-        }
-        let Some(selected) = selected else {
-            return Ok(None);
-        };
-        selections.push(selected);
+fn compile(query: &str, crlf: bool) -> Result<Arc<Regex>, Error> {
+    Regex::new(
+        query,
+        Options {
+            case_insensitive: !query.chars().any(char::is_uppercase),
+            multi_line: true,
+            crlf,
+        },
+    )
+    .map(Arc::new)
+    .map_err(|error| Error::InvalidRegex(error.to_string()))
+}
+
+pub(crate) fn remember(ctx: &mut CommandContext<'_>, boundaries: bool) -> Result<(), Error> {
+    let editor = &mut *ctx.editor;
+    require_normal_or_select(editor)?;
+    if editor.search.preview.is_some() {
+        return Err(Error::SearchActive);
     }
-    Ok(Some(SelectionSet::new(
-        selections,
-        origins.primary_index(),
-    )?))
+    editor.finish_undo_group();
+    dispatch(
+        editor,
+        Work::Remember {
+            boundaries,
+            crlf: editor.newline == "\r\n",
+        },
+        Kind::Remember,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SearchDirection;
     use crate::{Key, KeyHandler, Keymap, commands};
     use proptest::prelude::*;
-    use vex_core::Document;
+    use vex_core::{CharOffset, Document, Selection};
 
     fn range(start: usize, end: usize) -> Selection {
         Selection::new(CharOffset(start), CharOffset(end))
@@ -713,6 +716,139 @@ mod tests {
     }
 
     #[test]
+    fn select_split_and_filter_preview_the_original_ranges_and_keep_text_untouched() {
+        let mut editor = Editor::new(Document::from("one, TWO; three\r\nfour"));
+        editor.execute("select_all", 1).unwrap();
+        let original = editor.selections.clone();
+        editor.execute("select_regex", 1).unwrap();
+        editor.update_search(r"\w+").unwrap();
+        assert_eq!(
+            editor.selections.ranges(),
+            &[range(0, 3), range(5, 8), range(10, 15), range(17, 21)]
+        );
+        editor.update_search("two").unwrap();
+        assert_eq!(editor.selections.ranges(), &[range(5, 8)]);
+        editor.update_search("Two").unwrap();
+        assert_eq!(editor.search_status(), Some(SearchStatus::NoMatch));
+        assert_eq!(editor.selections, original);
+        editor.execute("search_cancel", 1).unwrap();
+        editor.execute("split_selection", 1).unwrap();
+        editor.update_search(r"[,;\s]+").unwrap();
+        editor.execute("search_accept", 1).unwrap();
+        let words = editor.selections.clone();
+        assert_eq!(words.ranges().len(), 4);
+        editor.execute("keep_selections", 1).unwrap();
+        editor.update_search("o").unwrap();
+        assert_eq!(
+            editor.selections.ranges(),
+            &[range(0, 3), range(5, 8), range(17, 21)]
+        );
+        editor.update_search("z").unwrap();
+        assert_eq!(editor.selections, words);
+        assert_eq!(editor.execute("search_accept", 1), Err(Error::NoMatch));
+        editor.execute("search_cancel", 1).unwrap();
+        editor.execute("remove_selections", 1).unwrap();
+        editor.update_search("o").unwrap();
+        assert_eq!(editor.selections.ranges(), &[range(10, 15)]);
+        editor.execute("search_accept", 1).unwrap();
+        assert_eq!(editor.document.revision().get(), 0);
+        assert_eq!(editor.document.undo_depth(), 0);
+    }
+
+    #[test]
+    fn selection_regex_anchors_see_document_context_and_normalize_unicode() {
+        let mut editor = Editor::new(Document::from("xx e\u{301} yy\r\nlast\r\n"));
+        editor
+            .set_selections(SelectionSet::single(range(3, 8)))
+            .unwrap();
+        editor.execute("select_regex", 1).unwrap();
+        editor.update_search("^|$").unwrap();
+        assert_eq!(editor.search_status(), Some(SearchStatus::NoMatch));
+        editor.update_search(r"\p{M}").unwrap();
+        assert_eq!(editor.selections.primary(), range(3, 5));
+        editor.execute("search_cancel", 1).unwrap();
+        editor.execute("select_all", 1).unwrap();
+        editor.execute("select_regex", 1).unwrap();
+        editor.update_search("^.*$").unwrap();
+        assert_eq!(editor.selections.ranges(), &[range(0, 8), range(10, 14)]);
+        editor.execute("search_cancel", 1).unwrap();
+        editor.execute("split_selection", 1).unwrap();
+        editor.update_search(r"\r\n").unwrap();
+        assert_eq!(editor.selections.ranges(), &[range(0, 8), range(10, 14)]);
+    }
+
+    #[test]
+    fn invalid_patterns_keep_the_prompt_editable_even_after_early_acceptance() {
+        let mut editor = Editor::new(Document::from("one two one"));
+        accept(&mut editor, "one", false);
+        let original = editor.selections.clone();
+        editor.set_background_search(true);
+        editor.execute("select_regex", 1).unwrap();
+        editor.update_search("[").unwrap();
+        editor.execute("search_accept", 1).unwrap();
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        assert!(matches!(
+            editor.apply_search_result(result),
+            Err(Error::InvalidRegex(_))
+        ));
+        assert_eq!(editor.search_status(), Some(SearchStatus::Invalid));
+        assert_eq!(editor.search_prompt(), Some(SearchPrompt::Select));
+        assert_eq!(editor.selections, original);
+        assert!(!editor.search_waiting());
+        editor.update_search("[o]").unwrap();
+        editor.execute("search_accept", 1).unwrap();
+        let result = editor.take_search_job().unwrap().run().unwrap();
+        assert_eq!(
+            editor.apply_search_result(result).unwrap(),
+            SearchCompletion::Accepted
+        );
+        assert_eq!(editor.selections.primary(), range(8, 9));
+    }
+
+    #[test]
+    fn star_remembers_escaped_fragments_with_boundaries_without_moving() {
+        let mut editor = Editor::new(Document::from("cat catfish CAT cat a.b axb a.b"));
+        editor
+            .set_selections(SelectionSet::single(range(0, 3)))
+            .unwrap();
+        let original = editor.selections.clone();
+        let mut keys = KeyHandler::default();
+        keys.handle(&mut editor, Key::Char('*')).unwrap();
+        assert_eq!(editor.selections, original);
+        editor.execute("search_next", 1).unwrap();
+        assert_eq!(editor.selections.primary(), range(12, 15));
+        editor.execute("search_next", 1).unwrap();
+        assert_eq!(editor.selections.primary(), range(16, 19));
+        editor
+            .set_selections(SelectionSet::single(range(20, 23)))
+            .unwrap();
+        keys.handle(&mut editor, Key::Char('*')).unwrap();
+        editor.execute("search_next", 1).unwrap();
+        assert_eq!(editor.selections.primary(), range(28, 31));
+    }
+
+    #[test]
+    fn selection_queries_obey_the_same_mailbox_and_stale_result_rules() {
+        for command in ["select_regex", "split_selection", "keep_selections"] {
+            let mut editor = Editor::new(Document::from("one two three"));
+            editor.execute("select_all", 1).unwrap();
+            editor.set_background_search(true);
+            editor.execute(command, 1).unwrap();
+            editor.update_search(r"\w+").unwrap();
+            let old = editor.take_search_job().unwrap().run().unwrap();
+            editor.update_search("o").unwrap();
+            assert_eq!(
+                editor.apply_search_result(old).unwrap(),
+                SearchCompletion::Ignored
+            );
+            let job = editor.take_search_job().unwrap();
+            editor.execute("search_cancel", 1).unwrap();
+            assert!(job.run().is_none());
+            assert_eq!(editor.selections.primary(), range(0, 13));
+        }
+    }
+
+    #[test]
     fn previews_always_start_at_the_origin_and_cancel_restores_columns() {
         let mut editor = Editor::new(Document::from("x cat cater"));
         editor.preferred_columns = Some(vec![12]);
@@ -740,50 +876,50 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_matches_wrap_and_huge_counts_finish_in_two_scans() {
+    fn searches_start_past_selections_and_huge_counts_wrap_without_count_loops() {
         let mut editor = Editor::new(Document::from("ababa"));
         accept(&mut editor, "aba", false);
-        assert_eq!(editor.selections.primary(), range(0, 3));
-        editor.execute("search_next", 1).unwrap();
         assert_eq!(editor.selections.primary(), range(2, 5));
         editor.execute("search_next", 1).unwrap();
         assert_eq!(editor.selections.primary(), range(0, 3));
         editor.execute("search_next", usize::MAX).unwrap();
-        assert_eq!(editor.selections.primary(), range(2, 5));
-        editor.execute("search_previous", 2).unwrap();
-        assert_eq!(editor.selections.primary(), range(5, 2));
+        assert_eq!(editor.selections.primary(), range(0, 3));
+        editor.execute("search_previous", usize::MAX).unwrap();
+        assert_eq!(editor.selections.primary(), range(0, 3));
         assert_eq!(editor.document.revision().get(), 0);
         assert_eq!(editor.document.undo_depth(), 0);
     }
 
     #[test]
-    fn n_follows_the_accepted_direction_and_n_uppercase_reverses_it() {
+    fn n_always_searches_forward_and_n_uppercase_backward_preserving_direction() {
         let mut editor = Editor::new(Document::from("cat x cat x cat"));
         editor.execute("goto_file_end", 1).unwrap();
         accept(&mut editor, "cat", true);
-        assert_eq!(editor.selections.primary(), range(15, 12));
+        assert_eq!(editor.selections.primary(), range(12, 15));
         editor.execute("search_next", 1).unwrap();
-        assert_eq!(editor.selections.primary(), range(9, 6));
+        assert_eq!(editor.selections.primary(), range(0, 3));
         editor.execute("search_previous", 1).unwrap();
         assert_eq!(editor.selections.primary(), range(12, 15));
+        editor
+            .set_selections(SelectionSet::single(range(15, 12)))
+            .unwrap();
+        editor.execute("search_previous", 2).unwrap();
+        assert_eq!(editor.selections.primary(), range(3, 0));
         editor.execute("search_next", 3).unwrap();
-        assert_eq!(editor.selections.primary(), range(15, 12));
-        editor.execute("search_backward", 2).unwrap();
-        editor.update_search("cat").unwrap();
-        assert_eq!(editor.selections.primary(), range(9, 6));
+        assert_eq!(editor.selections.primary(), range(3, 0));
     }
 
     #[test]
     fn substring_matches_expand_to_graphemes_and_repeats_make_progress() {
         let mut editor = Editor::new(Document::from("e\u{301}\u{301} e\u{301} 🦀"));
         accept(&mut editor, "\u{301}", false);
-        assert_eq!(editor.selections.primary(), range(0, 3));
-        editor.execute("search_next", 1).unwrap();
         assert_eq!(editor.selections.primary(), range(4, 6));
-        editor.execute("search_next", 3).unwrap();
+        editor.execute("search_next", 1).unwrap();
         assert_eq!(editor.selections.primary(), range(0, 3));
+        editor.execute("search_next", 3).unwrap();
+        assert_eq!(editor.selections.primary(), range(4, 6));
         editor.execute("search_previous", 1).unwrap();
-        assert_eq!(editor.selections.primary(), range(6, 4));
+        assert_eq!(editor.selections.primary(), range(0, 3));
         accept(&mut editor, "🦀", false);
         assert_eq!(editor.selections.primary(), range(7, 8));
         editor.execute("search_next", usize::MAX).unwrap();
@@ -791,27 +927,26 @@ mod tests {
     }
 
     #[test]
-    fn multiple_selections_keep_the_primary_and_merge_collisions() {
+    fn normal_search_moves_only_primary_and_select_mode_adds_matches() {
         let mut editor = Editor::new(Document::from("x aa x aa x aa"));
         let original = SelectionSet::new(vec![range(1, 0), range(7, 8)], 1).unwrap();
-        editor.set_selections(original.clone()).unwrap();
-        editor.execute("select_mode", 1).unwrap();
+        editor.set_selections(original).unwrap();
         accept(&mut editor, "aa", false);
-        assert_eq!(editor.selections.ranges(), &[range(2, 4), range(7, 9)]);
-        assert_eq!(editor.selections.primary_index(), 1);
-        assert_eq!(editor.mode, Mode::Select);
+        assert_eq!(editor.selections.ranges(), &[range(1, 0), range(12, 14)]);
+        editor.execute("select_mode", 1).unwrap();
         editor.execute("search_next", 2).unwrap();
-        assert_eq!(editor.selections.ranges(), &[range(2, 4), range(12, 14)]);
-        assert_eq!(editor.selections.primary_index(), 0);
-        editor
-            .set_selections(SelectionSet::new(vec![range(0, 1), range(1, 2)], 1).unwrap())
-            .unwrap();
-        editor.execute("search_forward", 1).unwrap();
-        editor.update_search("aa").unwrap();
-        assert_eq!(editor.selections.ranges(), &[range(2, 4)]);
-        editor.execute("search_cancel", 1).unwrap();
-        assert_eq!(editor.selections.ranges(), &[range(0, 1), range(1, 2)]);
-        assert_eq!(editor.selections.primary_index(), 1);
+        assert_eq!(
+            editor.selections.ranges(),
+            &[range(1, 0), range(2, 4), range(7, 9), range(12, 14)]
+        );
+        assert_eq!(editor.selections.primary(), range(7, 9));
+        editor.execute("search_previous", 1).unwrap();
+        assert_eq!(editor.selections.ranges().len(), 4);
+        assert_eq!(editor.selections.primary(), range(2, 4));
+        assert_eq!(editor.mode, Mode::Select);
+        editor.execute("search_next", usize::MAX).unwrap();
+        assert_eq!(editor.selections.ranges().len(), 4);
+        assert_eq!(editor.selections.primary(), range(2, 4));
     }
 
     #[test]
@@ -824,12 +959,12 @@ mod tests {
         assert_eq!(editor.search_status(), Some(SearchStatus::Empty));
         editor.execute("search_accept", 1).unwrap();
         editor.execute("search_next", 1).unwrap();
-        assert_eq!(editor.selections.primary(), range(4, 5));
+        assert_eq!(editor.selections.primary(), range(0, 1));
         editor.execute("search_backward", 1).unwrap();
         editor.update_search("b").unwrap();
         editor.execute("search_cancel", 1).unwrap();
         editor.execute("search_next", 1).unwrap();
-        assert_eq!(editor.selections.primary(), range(0, 1));
+        assert_eq!(editor.selections.primary(), range(4, 5));
         let mut empty = Editor::new(Document::default());
         empty.execute("search_forward", 1).unwrap();
         empty.update_search("x").unwrap();
@@ -843,7 +978,7 @@ mod tests {
         accept(&mut editor, "cat", false);
         editor.execute("delete_selection", 1).unwrap();
         editor.execute("search_next", 1).unwrap();
-        assert_eq!(editor.selections.primary(), range(1, 4));
+        assert_eq!(editor.selections.primary(), range(0, 3));
         editor.execute("delete_selection", 1).unwrap();
         let selections = editor.selections.clone();
         assert_eq!(editor.execute("search_next", 1), Err(Error::NoMatch));
@@ -851,7 +986,7 @@ mod tests {
         editor.execute("undo", 2).unwrap();
         let snapshot = editor.document.snapshot();
         editor.execute("search_next", 1).unwrap();
-        assert_eq!(editor.selections.primary(), range(4, 7));
+        assert_eq!(editor.selections.primary(), range(0, 3));
         assert_eq!(editor.document.revision(), snapshot.revision());
         assert!(editor.document.text().is_instance(snapshot.text()));
         editor.execute("redo", 2).unwrap();
@@ -885,12 +1020,12 @@ mod tests {
             keys.handle(&mut editor, Key::Char(key)).unwrap();
         }
         editor.update_search("a").unwrap();
-        assert_eq!(editor.selections.primary(), range(4, 5));
+        assert_eq!(editor.selections.primary(), range(8, 9));
         editor.execute("search_accept", 1).unwrap();
         for key in "2n".chars() {
             keys.handle(&mut editor, Key::Char(key)).unwrap();
         }
-        assert_eq!(editor.selections.primary(), range(0, 1));
+        assert_eq!(editor.selections.primary(), range(4, 5));
         let mut map = Keymap::empty();
         map.bind(Mode::Normal, vec![Key::Char('s')], "search_backward")
             .unwrap();
@@ -902,9 +1037,10 @@ mod tests {
             commands::find("search_backward")
                 .unwrap()
                 .description()
-                .contains("literal")
+                .contains("regex")
         );
         editor.execute("search_cancel", 1).unwrap();
+        editor.execute("goto_file_start", 1).unwrap();
         editor.execute("insert_mode", 1).unwrap();
         for key in "/?nN".chars() {
             keys.handle(&mut editor, Key::Char(key)).unwrap();
@@ -914,28 +1050,34 @@ mod tests {
 
     proptest! {
         #[test]
-        fn counted_wrapping_navigation_agrees_with_flat_overlapping_matches(
+        fn counted_navigation_agrees_with_repeated_flat_searches(
             source in "[abc ]{0,100}", query in "[abc ]{1,5}",
-            position in any::<usize>(), count in 1usize..=usize::MAX, backward in any::<bool>(),
+            position in any::<usize>(), count in 1usize..200, backward in any::<bool>(),
         ) {
             let mut editor = Editor::new(Document::from(source.as_str()));
             let position = position % (source.len() + 1);
             editor.set_selections(SelectionSet::single(Selection::cursor(CharOffset(position)))).unwrap();
             let original = editor.selections.clone();
-            let matches: Vec<_> = source.as_bytes().windows(query.len()).enumerate()
-                .filter_map(|(i, text)| (text == query.as_bytes()).then_some(i)).collect();
-            let expected = |origin: usize, inclusive: bool| {
-                let mut positions = matches.clone();
-                positions.sort_by_key(|&i| if backward { (i > origin || (!inclusive && i == origin), usize::MAX - i) } else { (i < origin || (!inclusive && i == origin), i) });
-                if positions.is_empty() { None } else { Some(positions[(count - 1) % positions.len()]) }
-            };
+            let mut expected = original.primary();
+            let mut matched = false;
+            for _ in 0..count {
+                let found = if backward {
+                    source[..expected.start().0].match_indices(&query).last()
+                        .or_else(|| source.match_indices(&query).last())
+                        .map(|(i, _)| i)
+                } else {
+                    source[expected.end().0..].find(&query).map(|i| i + expected.end().0)
+                        .or_else(|| source.find(&query))
+                };
+                if let Some(at) = found {
+                    matched = true;
+                    expected = range(at, at + query.len());
+                } else { break; }
+            }
             editor.execute(if backward { "search_backward" } else { "search_forward" }, count).unwrap();
             editor.update_search(&query).unwrap();
-            if let Some(position) = expected(position, true) {
-                prop_assert_eq!(editor.selections.primary().start(), CharOffset(position));
-                editor.execute("search_accept", 1).unwrap();
-                editor.execute("search_next", count).unwrap();
-                prop_assert_eq!(editor.selections.primary().start(), CharOffset(expected(position, false).unwrap()));
+            if matched {
+                prop_assert_eq!(editor.selections.primary(), expected);
             } else {
                 prop_assert_eq!(editor.search_status(), Some(SearchStatus::NoMatch));
                 prop_assert_eq!(editor.selections(), &original);

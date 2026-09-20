@@ -4,7 +4,7 @@ A terminal text editor in Rust, inspired by Helix's selection-first editing mode
 
 `vex_core` provides rope-backed documents, directional multiple selections,
 atomic transactions, revision-checked snapshots, undo/redo, and grapheme-aware
-movement and streaming literal search. `vex_editor` adds normal/select/insert modes, documented command
+movement and streaming regex search. `vex_editor` adds normal/select/insert modes, documented command
 functions, configurable keybindings, and repeat counts. `vex_syntax` adds
 Tree-sitter parsing and a shared language registry. `vex_lsp` adds language-server
 integration over stdio with a small futures executor. These crates work without a
@@ -30,8 +30,10 @@ lines, and `[Space`/`]Space` to add blank lines. See the
 The interface includes line numbers, selection highlighting, cursor-following
 scrolling, a status line, and an editable command prompt. Unicode graphemes,
 wide characters, tabs, bracketed paste, and terminal resizing are supported.
-Use `/` or `?` for incremental literal search, Enter to accept, Escape to restore
-your selections and scroll position, and `n` / `N` to repeat. See [search behavior](docs/search.md).
+Use `/` or `?` for incremental regex search, Enter to accept, Escape to restore
+your selections and scroll position, and `n` / `N` to search forward/backward.
+Use `s` to select matches, `S` to split selections, `K` to filter, and `*` to
+remember selected text for search. Select mode accumulates navigation matches. See [search behavior](docs/search.md).
 Interactive search runs on a worker, with cancellation and revision checks.
 Rust, Markdown, Bash/shell, TypeScript/TSX, and JavaScript/JSX use syntax colors
 automatically, including in file previews. Use `:language NAME` to override

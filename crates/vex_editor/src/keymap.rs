@@ -194,6 +194,10 @@ impl Default for Keymap {
                 (vec![Char('c')], "change_selection"),
                 (vec![Char('u')], "undo"),
                 (vec![Char('U')], "redo"),
+                (vec![Char('s')], "select_regex"),
+                (vec![Char('S')], "split_selection"),
+                (vec![Char('K')], "keep_selections"),
+                (vec![Char('*')], "search_selection_detect_word_boundaries"),
                 (vec![Char('/')], "search_forward"),
                 (vec![Char('?')], "search_backward"),
                 (vec![Char('n')], "search_next"),
@@ -1240,6 +1244,11 @@ mod tests {
             let mut editor = Editor::new(Document::from("e\u{301} 👩\u{200d}💻\r\n日本語\nlast"));
             let mut input = KeyHandler::default();
             for key in keys {
+                // The frontend routes keys to a prompt while it is open. This
+                // key-dispatch fuzzer closes prompts before its next command.
+                if editor.search_prompt().is_some() {
+                    editor.execute("search_cancel", 1).unwrap();
+                }
                 let result = input.handle(&mut editor, key);
                 prop_assert!(result.is_ok() || result == Err(Error::CountOverflow));
                 let text = editor.document().text();

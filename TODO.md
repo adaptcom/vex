@@ -19,7 +19,7 @@ selections, and measure operations that could affect input latency.
    Add language indentation settings for indent/unindent.
 4. [x] Comments: `<space>c`, `<space>C`, and normal/select-mode Ctrl-c, with
    language-specific line/block delimiters. Pending commands retain cancellation.
-5. [ ] Multiple selections and search: `s`, `S`, `K`, `*`, regex `/`/`?`,
+5. [x] Multiple selections and search: `s`, `S`, `K`, `*`, regex `/`/`?`,
    and accumulating matches with `n`/`N` in select mode. `K` is reserved for
    selection filtering; hover uses `<space>k`. `C` now copies selections to
    following lines, with counts and cancellable background scans.

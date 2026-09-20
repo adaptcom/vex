@@ -34,13 +34,19 @@ Generated from command Rustdoc and the default keymap.
 | `goto_definition` | Normal: `gd`, Select: `gd` | Jump to the definition of the symbol at the primary cursor. |
 | `goto_next_diagnostic` | Normal: `]d`, Select: `]d` | Move to the next diagnostic, wrapping and honoring the repeat count. |
 | `goto_previous_diagnostic` | Normal: `[d`, Select: `[d` | Move to the previous diagnostic, wrapping and honoring the repeat count. |
-| `search_forward` | Normal: `/`, Select: `/` | Begin a forward literal search from each selection's start, including the current position; accepts a match count. Integrations should open a prompt and send search_update, search_accept, or search_cancel. |
-| `search_backward` | Normal: `?`, Select: `?` | Begin a backward literal search from each selection's start, including the current position; accepts a match count. Matches wrap at document boundaries. |
-| `search_update` |  | Preview the context's literal text from the original selections. Empty or unmatched text restores them; selections expand to whole graphemes in normal and select modes. |
-| `search_accept` |  | Accept a matching preview for n/N navigation, waiting for pending background work if needed. An empty query cancels; an unmatched query keeps the prompt open and preserves the previous accepted search. |
-| `search_cancel` |  | Cancel a search preview and restore its original selections and preferred columns. The terminal integration also restores its saved viewport. |
-| `search_next` | Normal: `n`, Select: `n` | Select the next literal match for each selection, following the accepted search direction and wrapping; accepts a count. Replaces ranges even in select mode. |
-| `search_previous` | Normal: `N`, Select: `N` | Select the previous literal match for each selection, opposite the accepted search direction and wrapping; accepts a count. Replaces ranges even in select mode. |
+| `search_forward` | Normal: `/`, Select: `/` | Begin a forward regex search after the primary selection. Matches wrap; counts select successive matches, and select mode adds them. |
+| `search_backward` | Normal: `?`, Select: `?` | Begin a backward regex search before the primary selection, wrapping at document boundaries. |
+| `select_regex` | Normal: `s`, Select: `s` | Select regex matches inside the current selections; lowercase queries ignore case. |
+| `split_selection` | Normal: `S`, Select: `S` | Split current selections on regex matches, excluding the matched separators. |
+| `keep_selections` | Normal: `K`, Select: `K` | Keep selections containing a regex match. |
+| `remove_selections` |  | Remove selections containing a regex match, retaining at least one selection. |
+| `search_selection_detect_word_boundaries` | Normal: `*`, Select: `*` | Remember selected text as a literal regex with detected word boundaries; use n/N to navigate. |
+| `search_selection` |  | Remember selected text as a literal regex, without adding word boundaries. |
+| `search_update` |  | Preview the context's regex from the original selections. Empty, invalid, or unmatched input restores them. |
+| `search_accept` |  | Accept a matching preview for n/N navigation, waiting for pending work if needed. Invalid or unmatched queries remain editable. |
+| `search_cancel` |  | Cancel a regex preview and restore its original selections and preferred columns. |
+| `search_next` | Normal: `n`, Select: `n` | Search forward from the primary selection; select mode adds matches. Counts wrap and selection direction is preserved. |
+| `search_previous` | Normal: `N`, Select: `N` | Search backward from the primary selection; select mode adds matches. This is independent of the last prompt direction. |
 | `move_right` | Normal: `l`, Normal: `<Right>`, Select: `l`, Select: `<Right>`, Insert: `<Right>` | Move right by graphemes, extending the selection in select mode. |
 | `move_left` | Normal: `h`, Normal: `<Left>`, Select: `h`, Select: `<Left>`, Insert: `<Left>` | Move left by graphemes, extending the selection in select mode. |
 | `move_down` | Normal: `j`, Normal: `<Down>`, Select: `j`, Select: `<Down>`, Insert: `<Down>` | Move down by logical lines, retaining each cursor's desired display column. |

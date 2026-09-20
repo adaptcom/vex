@@ -63,7 +63,7 @@ pub struct Chrome<'a> {
     pub pending: &'a str,
     pub message: &'a str,
     pub error: bool,
-    pub prompt: Option<(char, &'a str, usize)>,
+    pub prompt: Option<(&'a str, &'a str, usize)>,
 }
 
 /// Paint the document, selections, status, and command/message line.
@@ -426,7 +426,7 @@ pub(crate) fn paint_command_line(
     frame: &mut Frame,
     message: &str,
     error: bool,
-    prompt: Option<(char, &str, usize)>,
+    prompt: Option<(&str, &str, usize)>,
 ) {
     let width = usize::from(frame.width());
     let height = usize::from(frame.height());
@@ -436,24 +436,25 @@ pub(crate) fn paint_command_line(
     frame.fill_row((height - 1) as u16, Style::Text);
     let bottom = (height - 1) as u16;
     if let Some((prefix, prompt, caret)) = prompt {
-        frame.put(
+        let prefix_width = prefix.len().min(width);
+        frame.label(
             0,
             bottom,
-            prefix.encode_utf8(&mut [0; 4]),
+            prefix,
             if error { Style::Error } else { Style::Text },
         );
         let tabs = NonZeroUsize::new(4).unwrap();
         let prompt_column = prompt[..caret].graphemes(true).fold(0usize, |col, g| {
             col.saturating_add(display::width(g, col, tabs))
         });
-        let available = width.saturating_sub(1);
+        let available = width.saturating_sub(prefix_width);
         let left = prompt_column.saturating_add(1).saturating_sub(available);
         let mut column = 0;
         for cluster in prompt.graphemes(true) {
             let span = display::width(cluster, column, tabs);
             glyph(
                 frame,
-                1,
+                prefix_width,
                 usize::from(bottom),
                 cluster,
                 column,
@@ -468,7 +469,7 @@ pub(crate) fn paint_command_line(
             }
         }
         frame.cursor = Some(Cursor {
-            x: (1 + prompt_column.saturating_sub(left)).min(width - 1) as u16,
+            x: (prefix_width + prompt_column.saturating_sub(left)).min(width - 1) as u16,
             y: bottom,
             shape: CursorShape::Bar,
         });

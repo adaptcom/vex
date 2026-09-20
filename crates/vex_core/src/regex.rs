@@ -91,6 +91,11 @@ impl Regex {
         self.crosses_lf
     }
 
+    /// Whether a match can be empty (assertions may still restrict where).
+    pub fn can_match_empty(&self) -> bool {
+        self.nfa.has_empty()
+    }
+
     /// Find a leftmost-first match wholly within a byte span. Assertions see
     /// the entire supplied slice, so a span does not create artificial anchors.
     /// Empty matches occur only at UTF-8 boundaries. Cancellation returns None.

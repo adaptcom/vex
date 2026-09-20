@@ -18,6 +18,8 @@ pub enum Error {
     SearchActive,
     SearchChanged,
     NoMatch,
+    InvalidRegex(String),
+    SelectionLimit,
     InvalidCompletion,
     EmptyYankRegister,
 }
@@ -57,6 +59,11 @@ impl fmt::Display for Error {
             Self::SearchChanged => write!(
                 f,
                 "document or mode changed during search; search cancelled"
+            ),
+            Self::InvalidRegex(error) => write!(f, "invalid regex: {error}"),
+            Self::SelectionLimit => write!(
+                f,
+                "regex operation exceeds 100,000 selections or 64 KiB query"
             ),
             Self::NoMatch => write!(f, "no matches"),
             Self::InvalidCompletion => write!(

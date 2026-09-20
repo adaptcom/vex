@@ -386,10 +386,10 @@ def main():
             mark = terminal.send(b"n\x1b[I")
             terminal.expect_screen(b"3:7")
             mark = terminal.send(b"?cat\rn\x1b[I")
-            terminal.expect_screen(b"2:5")
+            terminal.expect_screen(b"3:7")
             mark = terminal.send(b"d:w\r")
             terminal.expect(b"wrote", mark)
-            assert search_path.read_text() == "start cat one\nmid  two\nend cat three\n"
+            assert search_path.read_text() == "start cat one\nmid cat two\nend  three\n"
             terminal.send(b":q\r")
             terminal.finish()
         print("PASS: search preview, accept, cancel, forward/backward repeats, and edit match")
@@ -406,6 +406,18 @@ def main():
             terminal.send(b":q\r")
             terminal.finish()
         print("PASS: early search acceptance and queued repeat/edit/save preserve key order")
+
+        selections_path = Path(directory) / "regex selections.txt"
+        selections_path.write_text("one two three")
+        with Terminal([binary, str(selections_path)]) as terminal:
+            terminal.start()
+            terminal.send(b"%s[a-z]+\rKo\rd:w\r")
+            terminal.expect_screen(b"wrote")
+            assert selections_path.read_text() == "  three"
+            terminal.send(b"u%S +\rd:wq\r")
+            terminal.finish()
+            assert selections_path.read_text() == "  "
+        print("PASS: regex select, filter, split, and ordered edits through the worker")
 
         burst_path = Path(directory) / "input burst.txt"
         burst_path.write_text("")

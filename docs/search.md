@@ -1,117 +1,103 @@
-# Literal search
+# Regex search and selections
+
+The bindings follow [Helix](https://docs.helix-editor.com/keymap.html).
+All commands are documented functions in the editor registry.
 
 | Input | Behavior in normal and select modes |
 |---|---|
-| `/` | Open a forward search prompt |
-| `?` | Open a backward search prompt |
-| Type or paste | Preview matches from the original selections |
-| Enter | Accept the preview and remember the query and direction |
-| Escape / Ctrl-c | Restore the original selections, preferred columns, and viewport |
-| `n` | Select the next match in the accepted search direction |
-| `N` | Select the next match in the opposite direction |
-| `3n`, `2?`, etc. | Apply a match count, wrapping as needed |
+| `/` / `?` | Preview a forward / backward regex search |
+| `n` / `N` | Search forward / backward, independently of the last prompt direction |
+| `s` | Select regex matches within the current selections |
+| `S` | Split selections on regex matches, excluding the separators |
+| `K` | Keep selections containing a regex match |
+| `*` | Remember selected text as escaped alternatives, adding detected word boundaries |
+| Enter | Accept the preview and remember its regex |
+| Escape / Ctrl-c | Restore original selections, preferred columns, and viewport |
+| `3n`, `2?`, etc. | Count successive matches, wrapping when necessary |
 
-Search is case-sensitive and literal: punctuation has no regex meaning, and
-escape sequences are not interpreted. Prompt editing uses grapheme boundaries,
-including arrows, Home/End, Backspace, and Delete. Paste cannot submit a search;
-the prompt removes control characters, including line breaks. The core and editor
-APIs can search literal line breaks and other valid UTF-8 text.
+Queries support character classes, alternation, repetitions, Unicode properties,
+and inline flags such as `(?i)` or `(?s)`. Lowercase queries ignore case; a query
+containing an uppercase character is case-sensitive unless overridden by flags.
+Multiline anchors are enabled, with CRLF handling based on the document's line
+ending. Lookaround and backreferences are not supported by the regex engine.
 
-Each preview starts at the beginning of each original selection and includes
-matches at that position. Typing more or backspacing reuses those same origins.
-`n` and `N` move strictly past the current selection's first grapheme in their
-direction, then wrap. Matches may overlap: searching `aba` in `ababa` visits
-both occurrences. EOF never joins to the beginning to form a match.
+Navigation starts after the primary selection for forward searches and before
+it for backward searches. Normal mode replaces only the primary selection;
+select mode adds each visited match and makes it primary. Selection direction is
+preserved. Intermediate merges affect subsequent counted searches, just as with
+repeated single commands. Matches do not join the end and start of the document.
+For example, `/aba` from the first character of `ababa` finds the second `aba`;
+`n` wraps to the first, then keeps wrapping to that first match because searches
+start after the selected range.
 
-Matches become selections, so `c` or `d` can immediately replace or delete them.
-Endpoints expand to whole graphemes when a query matches inside a combining
-sequence. Repeats skip additional matches starting in that same grapheme.
-Backward searches produce backward selections. In select mode, search replaces
-the ranges and preserves the mode. Each cursor searches independently; colliding
-selections merge and the primary selection follows the usual normalization rules.
-The primary match controls scrolling. Only the selected matches are highlighted.
+`s`, `S`, and `K` restrict matching to each selected range while keeping document
+context for anchors and word boundaries. Select/split results face forward and
+start with the first result primary; filtering preserves retained directions and
+makes the first retained selection primary. Match endpoints expand to whole
+Unicode graphemes. Empty selections become block cursors except at EOF. `s`
+excludes empty matches at a selection's exclusive right edge. `*` changes no
+selections; use `n`/`N` afterward. The unbound documented `search_selection` and
+`remove_selections` commands provide literal selection search without boundaries
+and inverse filtering, ready for the later Alt bindings.
 
-An empty query restores the original selections; Enter then closes the prompt
-without changing the previous accepted search. A missing query also restores the
-original selections and displays `no matches` in the status line with a red
-prompt prefix. Enter keeps that prompt open so it can be corrected. Cancellation
-always retains the previous accepted query and direction. If the terminal was
-resized, the restored viewport is adjusted as necessary to keep the cursor visible.
+Typing or backspacing always previews from the selections saved when the prompt
+opened. An empty, invalid, or unmatched query restores those selections. Enter
+cancels an empty prompt; invalid or unmatched prompts remain editable and preserve
+the previous accepted search. Cursor movement within an invalid prompt retains
+its error. Prompt editing follows grapheme boundaries; paste strips control
+characters and cannot submit the query.
 
-Search does not modify text, dirty state, revisions, or undo/redo history. Beginning
-search separates typing groups. Accepted queries remain available after edits,
-undo, and redo; each navigation reads the current document.
+Search changes neither document text nor revision, dirty state, or undo history.
+Beginning a search closes a typing undo group. Accepted queries are reusable after
+edits and undo; matches are computed against the current snapshot.
 
-Interactive previews and `n` / `N` run on a persistent worker. The status line
-shows `searching...` while a request is pending. Typing a newer query cancels the
-previous request; clearing or cancelling the prompt takes effect immediately.
-If Enter arrives before the result, acceptance waits for that result. Later keys
-remain in order: `/cat`, Enter, `n`, `d` finds the next match before deleting it.
-Resize and focus events still work while those keys wait. Escape or Ctrl-c cancels
-when it is the next key; it does not jump ahead of earlier queued edits.
+## Worker integration
 
-## API and implementation
+Regex compilation, matching, selection splitting/filtering, `*`, and `C` scans
+run on the shared search worker. Typing a newer query cancels the old request.
+Enter can arrive before a result; subsequent editing keys wait for completion.
+Resize/focus events continue to work. Escape or Ctrl-c cancels when it is the next
+queued key, preserving the order of preceding edits.
 
-`vex_core::search::Literal` compiles forward and reverse KMP failure tables. Its
-iterator seeks into Ropey's bytes and streams across chunks, including matches
-larger than a chunk. It copies only the query. Setup and retained memory are
-linear in query bytes; scanning is linear in bytes visited and stops at the
-requested match. Reverse search starts near its origin instead of scanning from
-the beginning. The public iterator accepts a range of candidate starting bytes.
+Standalone editors default to synchronous execution. Frontends enable
+`Editor::set_background_search(true)`, take `SearchJob`s with `take_search_job`,
+and deliver worker results through `apply_search_result`. Each job owns a shared
+rope snapshot, query, and selections. Results apply only if the request token,
+document identity, revision, mode, and selections still match. Moving away and
+back, or editing then undoing, still invalidates pending work.
 
-`vex_editor::commands` contains ordinary documented functions for `search_forward`,
-`search_backward`, `search_update`, `search_accept`, `search_cancel`, `search_next`,
-and `search_previous`. All appear in Rustdoc, runtime help, and the generated
-[command reference](commands.md). `/`, `?`, `n`, and `N` use the normal keymap and
-can be rebound.
+Frontends use `Editor::search_prompt()` to choose `/`, `?`, `select:`, `split:`,
+or `keep:` labels, and `update_search()` to preview input. `search_status()`
+distinguishes empty, pending, matched, missing, and invalid input; `search_error()`
+provides the error. `search_waiting()` identifies work whose result is required
+before subsequent input. The terminal owns viewport restoration separately.
 
-The editor owns the accepted pattern and a preview snapshot of selections,
-preferred columns, mode, and revision. Frontends observe `Editor::search_direction`,
-edit their own prompt, send text via `Editor::update_search`, and call accept or
-cancel. `Editor::search_status` distinguishes empty, pending, matching, and missing queries.
-The terminal saves the viewport separately. An intervening document revision or
-mode change invalidates a preview; updating, accepting, or cancelling it returns
-an error instead of installing stale coordinates.
+## Performance and limits
 
-The standalone editor defaults to synchronous execution. A frontend enables
-`Editor::set_background_search(true)`, takes work with `Editor::take_search_job`,
-and runs `SearchJob::run` on its worker. This job owns a cheap immutable document
-snapshot and copies only the query and selections. Query compilation and matching
-both happen on the worker. Accepted queries reuse the compiled pattern.
+`vex_core::regex::Regex` compiles with regex-automata, already used by the syntax
+dependencies. Vex drives its automata over rope chunks without flattening the
+buffer. Bounded DFAs handle common patterns; a prioritized NFA simulation handles
+Unicode word boundaries and other DFA fallbacks. Scratch space depends on the
+pattern, not file size. Inline tests compare both paths against the library's
+flat-string matcher, including chunk boundaries and Unicode assertions.
 
-Jobs and results carry a unique request token with a cancellation flag. Results
-are applied through `Editor::apply_search_result` only if the request, document
-identity, revision, mode, and selections still match. Commands that edit or move
-cancel pending work, including a move away and back or an edit followed by undo.
-Late results cannot overwrite current selections or newer messages.
+Reverse navigation scans nearby lines first when the compiled pattern cannot
+consume LF. Patterns that can span lines require a forward scan of the prefix
+to preserve regex match precedence. Single-selection navigation retains at most
+512 reverse matches; large counts use another pass and arithmetic wrapping.
+Reverse matches inside graphemes and zero-width matches use stepwise navigation
+with constant-space cycle detection, preserving the effect of grapheme expansion.
+Multiple-selection navigation applies intermediate merges in an ordered map,
+with cycle detection for huge counts. It does not sort or copy the entire set
+for each visited match.
 
-The same job mailbox handles `C` selection-copy scans, with `selecting...` progress.
-It shares snapshot validation and cancellation with search; copying selections
-does not overwrite the accepted search pattern. The worker uses a bounded local
-display-column cache and copies no document text. See [selection copying](terminal.md).
+Queries are limited to 64 KiB, NFA construction to 8 MiB, and DFA construction to
+separate bounded budgets. Regex operations producing more than 100,000 selections
+fail without applying partial results. Compilation is not preemptible but runs
+on the worker; scanning checks cancellation at byte/state intervals and between
+matches. Individual grapheme lookups, allocation, and final selection normalization
+are not preemptible. Missing queries, cross-line reverse searches, long lines,
+and very large selection sets can still delay results. See
+[measured costs](performance.md#rope-regex-engine).
 
-`Editor::search_waiting` identifies an early acceptance, repeat, or selection scan whose destination
-is still needed. The terminal defers subsequent keys until completion, then
-continues dispatching normal documented command functions. See the
-[event queue and worker lifecycle](terminal.md#event-queue-and-background-work).
-
-Navigation does not allocate a list of every match. Counts larger than the number
-of matches are reduced modulo that number after one traversal, followed by at
-most one more traversal per original selection. Cursor-only prompt movements do
-not rescan the document. Tests live alongside the core matcher, editor state,
-and terminal event handling; property tests compare with flat-text match models.
-
-## Current limits
-
-Missing queries still scan the entire buffer, but do so off the terminal thread.
-Cancellation is cooperative: compilation and scanning check at least every 4096
-bytes and during long KMP fallback chains, with additional checks between matches
-and selections. Individual allocations and grapheme-boundary calculations are
-not preemptible. Large files and counts can delay a result, and keys depending on
-that result wait for it. There is no hard real-time deadline.
-
-Regex mode, case folding, query history, and highlighting every visible occurrence
-are not implemented. The terminal runs syntax on its own worker; file opening,
-rendering, and cold layout indexing for ordinary cursor motions still run
-synchronously. See [measured search costs](performance.md#background-search)
-for the worker scheduling and terminal response baseline.
+Prompt history and highlighting every visible occurrence remain future work.

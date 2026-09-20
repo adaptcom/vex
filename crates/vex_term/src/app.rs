@@ -11,7 +11,7 @@ use crossterm::event::{Event, KeyCode, KeyEventKind};
 use std::{io, path::Path};
 use vex_core::Document;
 use vex_editor::{
-    ApplicationAction, Editor, Key, KeyHandler, Language, Mode, SearchCompletion, SearchDirection,
+    ApplicationAction, Editor, Key, KeyHandler, Language, Mode, SearchCompletion, SearchPrompt,
     SearchResult, SearchStatus,
 };
 
@@ -27,7 +27,7 @@ mod windows;
 enum PromptKind {
     Command,
     Search {
-        direction: SearchDirection,
+        operation: SearchPrompt,
         viewport: Viewport,
     },
 }
@@ -38,17 +38,10 @@ struct ActivePrompt {
 }
 
 impl ActivePrompt {
-    fn prefix(&self) -> char {
+    fn prefix(&self) -> &'static str {
         match self.kind {
-            PromptKind::Command => ':',
-            PromptKind::Search {
-                direction: SearchDirection::Forward,
-                ..
-            } => '/',
-            PromptKind::Search {
-                direction: SearchDirection::Backward,
-                ..
-            } => '?',
+            PromptKind::Command => ":",
+            PromptKind::Search { operation, .. } => operation.label(),
         }
     }
 }
@@ -126,7 +119,7 @@ impl App {
     pub fn handle_search_result(&mut self, result: SearchResult) -> bool {
         match self.editor.apply_search_result(result) {
             Ok(SearchCompletion::Ignored) => {
-                if self.editor.search_direction().is_none()
+                if self.editor.search_prompt().is_none()
                     && self
                         .prompt
                         .as_ref()
@@ -149,8 +142,14 @@ impl App {
             }
             Ok(SearchCompletion::Navigation) => self.clear_message(),
             Err(error) => {
-                if self.editor.search_direction().is_none() {
+                if self.editor.search_prompt().is_none() {
                     self.prompt = None;
+                } else if let Some(ActivePrompt {
+                    kind: PromptKind::Search { viewport, .. },
+                    ..
+                }) = &self.prompt
+                {
+                    self.viewport = *viewport;
                 }
                 self.fail(error);
             }
@@ -501,7 +500,7 @@ impl App {
     }
 
     fn open_search_prompt(&mut self) {
-        if self.editor.search_direction().is_none()
+        if self.editor.search_prompt().is_none()
             && self
                 .prompt
                 .as_ref()
@@ -510,13 +509,13 @@ impl App {
             self.prompt = None;
         }
         if self.prompt.is_none()
-            && let Some(direction) = self.editor.search_direction()
+            && let Some(operation) = self.editor.search_prompt()
         {
             self.keys.cancel();
             self.prompt = Some(ActivePrompt {
                 input: Prompt::default(),
                 kind: PromptKind::Search {
-                    direction,
+                    operation,
                     viewport: self.viewport,
                 },
             });
@@ -525,11 +524,11 @@ impl App {
 
     fn preview_search(&mut self, prompt: &ActivePrompt) {
         if let PromptKind::Search { viewport, .. } = prompt.kind {
+            self.viewport = viewport;
             if let Err(error) = self.editor.update_search(prompt.input.text()) {
                 self.fail(error);
                 return;
             }
-            self.viewport = viewport;
             if self.editor.search_status() == Some(SearchStatus::NoMatch) {
                 self.fail("no matches");
             }
@@ -567,7 +566,7 @@ impl App {
                         }
                         Err(error) => {
                             self.fail(error);
-                            if self.editor.search_direction().is_some() {
+                            if self.editor.search_prompt().is_some() {
                                 self.prompt = Some(prompt);
                             }
                         }
@@ -584,6 +583,8 @@ impl App {
                     && self.editor.search_status() == Some(SearchStatus::NoMatch)
                 {
                     self.fail("no matches");
+                } else if let Some(error) = self.editor.search_error().cloned() {
+                    self.fail(error);
                 }
                 self.prompt = Some(prompt);
             }
@@ -947,7 +948,7 @@ mod tests {
         assert!(frame.row_text(7).starts_with("/needle"));
         assert!(app.viewport.top_line > viewport.top_line);
         assert!(app.viewport.left_column > viewport.left_column);
-        assert_eq!(app.editor.selections().ranges().len(), 1);
+        assert_eq!(app.editor.selections().ranges().len(), 3);
         key(&mut app, KeyCode::Esc);
         draw(&mut app);
         assert_eq!(app.viewport, viewport);
@@ -964,20 +965,20 @@ mod tests {
         press(&mut app, "/cat");
         assert_eq!(
             app.editor.selections().primary().range(),
-            CharOffset(0)..CharOffset(3)
+            CharOffset(8)..CharOffset(11)
         );
         key(&mut app, KeyCode::Enter);
         press(&mut app, "2n");
-        assert_eq!(app.editor.selections().primary().start(), CharOffset(12));
+        assert_eq!(app.editor.selections().primary().start(), CharOffset(0));
         press(&mut app, "nN");
-        assert_eq!(app.editor.selections().primary().start(), CharOffset(12));
+        assert_eq!(app.editor.selections().primary().start(), CharOffset(0));
         press(&mut app, "?cat");
         assert!(draw(&mut app).row_text(7).starts_with("?cat"));
         key(&mut app, KeyCode::Enter);
         press(&mut app, "n");
-        assert_eq!(app.editor.selections().primary().start(), CharOffset(8));
+        assert_eq!(app.editor.selections().primary().start(), CharOffset(0));
         press(&mut app, "d");
-        assert_eq!(app.editor.document().text(), "cat bat  cat");
+        assert_eq!(app.editor.document().text(), " bat cat cat");
         press(&mut app, "u");
         assert!(!app.is_dirty());
     }
@@ -1066,7 +1067,7 @@ mod tests {
         let mut app = App::from_document(Document::from("one two one"), (40, 6));
         press(&mut app, ":search_backward");
         key(&mut app, KeyCode::Enter);
-        assert_eq!(app.prompt.as_ref().unwrap().prefix(), '?');
+        assert_eq!(app.prompt.as_ref().unwrap().prefix(), "?");
         key(&mut app, KeyCode::Esc);
         let mut map = Keymap::empty();
         map.bind(Mode::Normal, vec![Key::Char('s')], "search_forward")
@@ -1076,7 +1077,40 @@ mod tests {
         assert_eq!(app.editor.search_status(), Some(SearchStatus::Match));
         key(&mut app, KeyCode::Enter);
         app.execute("help search_next").unwrap();
-        assert!(app.message.contains("literal match"));
+        assert!(app.message.contains("Search forward"));
+    }
+
+    #[test]
+    fn selection_prompts_draw_labels_and_recover_from_invalid_regexes() {
+        let mut app = App::from_document(Document::from("one two three"), (40, 6));
+        press(&mut app, "%s[");
+        assert_eq!(app.editor.search_status(), Some(SearchStatus::Invalid));
+        assert!(draw(&mut app).row_text(5).starts_with("select: ["));
+        key(&mut app, KeyCode::Left);
+        assert!(app.error);
+        key(&mut app, KeyCode::Enter);
+        assert!(app.prompt.is_some());
+        key(&mut app, KeyCode::Delete);
+        press(&mut app, "\\w+");
+        assert!(!app.error);
+        assert_eq!(app.editor.selections().ranges().len(), 3);
+        for width in [1, 6, 9, 40] {
+            app.handle(Event::Resize(width, 6));
+            assert!(draw(&mut app).cursor.unwrap().x < width);
+        }
+        key(&mut app, KeyCode::Enter);
+        press(&mut app, "Ko");
+        assert!(draw(&mut app).row_text(5).starts_with("keep: o"));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.editor.selections().ranges().len(), 2);
+        press(&mut app, "d");
+        assert_eq!(app.editor.document().text(), "  three");
+        press(&mut app, "u%S ");
+        assert!(draw(&mut app).row_text(5).starts_with("split:  "));
+        assert_eq!(app.editor.selections().ranges().len(), 3);
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.editor.selections().ranges().len(), 1);
+        assert!(!app.is_dirty());
     }
 
     #[test]

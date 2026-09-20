@@ -369,6 +369,29 @@ preemptible and belongs on a worker. Inline tests compare both execution paths
 against regex-automata's string matcher, including arbitrary byte spans, empty
 matches, Unicode, and assertions crossing rope chunks.
 
+After connecting regex to the editor, the `search_next_previous` command pair
+measured **1.23 µs at 1 MiB** and **1.07 µs at 100 MiB**, using 30 samples,
+a 500 ms warmup, and a one-second target. This repeats the original `value`
+fixture with smart-case regex semantics; the earlier literal implementation
+measured 0.820 and 0.931 µs. Nearby reverse matches use LF-separated windows
+when the automaton cannot consume LF. Cross-line patterns still scan a prefix
+and are not represented by these nearby-match numbers.
+
+Scheduling two successive queries and cancelling them took **0.164 µs** and
+**0.166 µs**, versus the original 0.140 and 0.141 µs. Both measure request
+construction/destruction, excluding the worker and terminal. Reproduce with:
+
+```sh
+cargo bench -p vex_editor --bench commands --locked -- 'search_next_previous|background_search_schedule_cancel' --noplot
+```
+
+With the regex worker active on the 100 MiB missing-query PTY fixture, five runs
+measured medians of **0.232 ms for resize/redraw** and **0.176 ms for cancellation/
+redraw**. Ranges were 0.194–0.301 ms and 0.160–0.191 ms. Use the background-search
+benchmark command below. These timings end at PTY output; they exclude physical
+terminal display latency, do not instrument the worker's scheduling phase, and
+are not p95 guarantees.
+
 ## Background search
 
 Recorded on 2026-09-19 using the same machine and release profile:

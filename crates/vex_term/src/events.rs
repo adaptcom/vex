@@ -1094,6 +1094,45 @@ mod tests {
     }
 
     #[test]
+    fn regex_selection_and_star_finish_before_queued_edits() {
+        for keys in ["%s[a-z]+", "%S +"] {
+            let mut app = App::from_document(Document::from("one two three"), (40, 8));
+            app.editor.set_background_search(true);
+            press(&mut app, keys);
+            let result = app.editor.take_search_job().unwrap().run().unwrap();
+            app.handle(key(KeyCode::Enter));
+            let events = EventQueue::default();
+            events.terminal(key(KeyCode::Char('d')));
+            assert!(events.next(Duration::ZERO, app.input_waiting()).is_none());
+            events.background(BackgroundEvent::Search(result));
+            while let Some(event) = events.next(Duration::ZERO, app.input_waiting()) {
+                deliver(&mut app, event);
+            }
+            assert_eq!(app.editor.document().text(), "  ");
+        }
+        let mut app = App::from_document(Document::from("a a"), (40, 8));
+        app.editor.set_background_search(true);
+        press(&mut app, "*");
+        assert!(app.input_waiting());
+        let result = app.editor.take_search_job().unwrap().run().unwrap();
+        let events = EventQueue::default();
+        events.terminal(key(KeyCode::Char('n')));
+        events.terminal(key(KeyCode::Char('d')));
+        assert!(events.next(Duration::ZERO, true).is_none());
+        events.background(BackgroundEvent::Search(result));
+        while let Some(event) = events.next(Duration::ZERO, app.input_waiting()) {
+            deliver(&mut app, event);
+        }
+        assert_eq!(app.editor.document().text(), "a a");
+        let result = app.editor.take_search_job().unwrap().run().unwrap();
+        events.background(BackgroundEvent::Search(result));
+        while let Some(event) = events.next(Duration::ZERO, app.input_waiting()) {
+            deliver(&mut app, event);
+        }
+        assert_eq!(app.editor.document().text(), "a ");
+    }
+
+    #[test]
     fn picker_enter_holds_following_edits_until_the_selected_file_opens() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::create_dir(directory.path().join(".git")).unwrap();
