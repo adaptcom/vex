@@ -38,6 +38,7 @@ pub struct Options {
 pub struct Regex {
     nfa: NFA,
     dfa: Option<DfaRegex>,
+    crosses_lf: bool,
 }
 
 impl Regex {
@@ -76,7 +77,18 @@ impl Regex {
                     .ok()
             })
             .flatten();
-        Ok(Self { nfa, dfa })
+        let crosses_lf = can_consume_lf(&nfa);
+        Ok(Self {
+            nfa,
+            dfa,
+            crosses_lf,
+        })
+    }
+
+    /// Whether any reachable consuming transition accepts LF. False proves
+    /// matches stay within LF-delimited lines; true is conservative.
+    pub fn can_cross_lf(&self) -> bool {
+        self.crosses_lf
     }
 
     /// Find a leftmost-first match wholly within a byte span. Assertions see
@@ -197,6 +209,52 @@ impl Regex {
         }
         found
     }
+}
+
+fn can_consume_lf(nfa: &NFA) -> bool {
+    // Exclude the unanchored scan prefix, whose wildcard loop is not part of a
+    // match. This graph walk runs once during worker-side compilation.
+    let mut seen = vec![false; nfa.states().len()];
+    let mut stack = vec![nfa.start_anchored()];
+    while let Some(id) = stack.pop() {
+        if std::mem::replace(&mut seen[id.as_usize()], true) {
+            continue;
+        }
+        match nfa.state(id) {
+            State::ByteRange { trans } => {
+                if trans.matches_byte(b'\n') {
+                    return true;
+                }
+                stack.push(trans.next);
+            }
+            State::Sparse(trans) => {
+                if trans.matches_byte(b'\n').is_some() {
+                    return true;
+                }
+                stack.extend(trans.transitions.iter().map(|t| t.next));
+            }
+            State::Dense(trans) => {
+                if trans.matches_byte(b'\n').is_some() {
+                    return true;
+                }
+                stack.extend(
+                    trans
+                        .transitions
+                        .iter()
+                        .copied()
+                        .filter(|id| *id != StateID::ZERO),
+                );
+            }
+            State::Look { next, .. } | State::Capture { next, .. } => stack.push(*next),
+            State::Union { alternates } => stack.extend(alternates.iter().copied()),
+            State::BinaryUnion { alt1, alt2 } => {
+                stack.push(*alt1);
+                stack.push(*alt2);
+            }
+            State::Fail | State::Match { .. } => {}
+        }
+    }
+    false
 }
 
 /// Scratch memory depends on the pattern, not document length. Reusable across
@@ -467,6 +525,29 @@ mod tests {
     use proptest::prelude::*;
     use std::cell::Cell;
 
+    #[test]
+    fn line_crossing_analysis_excludes_only_the_unanchored_scan_prefix() {
+        for (pattern, crosses) in [
+            ("value", false),
+            (r"\b\w+\b", false),
+            ("(?m)^.*$", false),
+            (r"[^\n]+", false),
+            ("", false),
+            ("(?s:.)", true),
+            (r"\s+", true),
+            (r"a\r?\nb", true),
+            ("a|\\x0A", true),
+        ] {
+            assert_eq!(
+                Regex::new(pattern, Options::default())
+                    .unwrap()
+                    .can_cross_lf(),
+                crosses,
+                "{pattern}"
+            );
+        }
+    }
+
     fn compare(pattern: &str, source: &str, span: Range<usize>, options: Options) {
         let flat = regex_automata::meta::Regex::builder()
             .syntax(
@@ -495,6 +576,7 @@ mod tests {
         let regex = Regex {
             nfa: regex.nfa,
             dfa: None,
+            crosses_lf: regex.crosses_lf,
         };
         let found = regex
             .matches(
