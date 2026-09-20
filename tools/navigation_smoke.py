@@ -37,14 +37,19 @@ def main():
             terminal.expect_screen(b"INS")
             terminal.save_from_insert()
             assert path.read_text() == "alpha\n!beta\ngamma\n"
-            # Undo first so the return checkpoint's original scalar offset is
-            # valid even before lazy jump remapping is implemented.
-            terminal.send(b"u\x0fi?")
+            terminal.send(b"\x0fi?")  # The return checkpoint follows the earlier ! insertion.
             terminal.save_from_insert()
-            assert path.read_text() == "alpha\nbeta\n?gamma\n"
+            assert path.read_text() == "alpha\n!beta\n?gamma\n"
+            # A stored selection follows edits before it, including when the
+            # jump picker is reopened after those changes.
+            terminal.send(b"ggiprefix\n")
+            terminal.leave_insert()
+            terminal.send(b" jtext.txt:3 b\ri>")
+            terminal.save_from_insert()
+            assert path.read_text() == "prefix\nalpha\n!>beta\n?gamma\n"
             terminal.send(b":q\r")
             terminal.finish()
-        print("PASS: g. and jump picker destinations, queued edits, undo, jump origins, save, terminal cleanup")
+        print("PASS: g. and jump picker destinations, queued edits, remapped jump origins, save, terminal cleanup")
 
 
 if __name__ == "__main__":

@@ -2,28 +2,48 @@
 //! Checkpoints retain selections and document identities, never document text.
 
 use super::App;
-use std::{collections::VecDeque, io, sync::Arc};
-use vex_core::{CharOffset, DocumentId, Selection, SelectionSet};
-use vex_editor::Mode;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+use vex_core::{
+    Bookmark, CharOffset, Document, DocumentId, PositionResolver, Selection, SelectionSet,
+};
+use vex_editor::{Mode, background::Cancellation};
 
 const CAPACITY: usize = 32;
 
 #[derive(Clone, Debug)]
 pub(super) struct Jump {
+    pub identity: u64,
     pub document: DocumentId,
     pub selections: Arc<SelectionSet>,
+    pub bookmark: Bookmark,
 }
 
 impl Jump {
-    pub fn new(document: DocumentId, selections: &SelectionSet) -> Self {
+    pub fn new(document: &Document, selections: &SelectionSet) -> Self {
+        Self::shared(document, Arc::new(selections.clone()))
+    }
+
+    fn shared(document: &Document, selections: Arc<SelectionSet>) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
         Self {
-            document,
-            selections: Arc::new(selections.clone()),
+            identity: NEXT.fetch_add(1, Ordering::Relaxed),
+            document: document.id(),
+            bookmark: document.bookmark(),
+            selections,
         }
     }
 
-    fn matches(&self, document: DocumentId, selections: &SelectionSet) -> bool {
-        self.document == document && self.selections.as_ref() == selections
+    fn matches(&self, other: &Self) -> bool {
+        self.document == other.document
+            && self.bookmark.revision() == other.bookmark.revision()
+            && self.selections == other.selections
     }
 }
 
@@ -49,11 +69,7 @@ impl History {
     fn push(&mut self, jump: Jump) -> usize {
         self.entries.truncate(self.cursor);
         let mut removed = 0;
-        if !self
-            .entries
-            .back()
-            .is_some_and(|last| last.matches(jump.document, &jump.selections))
-        {
+        if !self.entries.back().is_some_and(|last| last.matches(&jump)) {
             if self.entries.len() == CAPACITY {
                 self.entries.pop_front();
                 removed = 1;
@@ -62,33 +78,6 @@ impl History {
         }
         self.cursor = self.entries.len();
         removed
-    }
-
-    fn backward(
-        &mut self,
-        document: DocumentId,
-        selections: &SelectionSet,
-        count: usize,
-    ) -> Option<&Jump> {
-        let mut target = self.cursor.checked_sub(count)?;
-        if self.cursor == self.entries.len() {
-            let removed = self.push(Jump::new(document, selections));
-            target = target.saturating_sub(removed);
-        }
-        if self.entries.get(target)?.matches(document, selections) {
-            target = target.checked_sub(1)?;
-        }
-        self.cursor = target;
-        self.entries.get(target)
-    }
-
-    fn forward(&mut self, count: usize) -> Option<&Jump> {
-        let target = self.cursor.checked_add(count)?;
-        if target >= self.entries.len() {
-            return None;
-        }
-        self.cursor = target;
-        self.entries.get(target)
     }
 
     pub fn remove(&mut self, document: DocumentId) {
@@ -103,9 +92,99 @@ impl History {
     }
 }
 
+#[derive(Default)]
+pub(super) struct State {
+    background: bool,
+    pending: Option<Pending>,
+    job: Option<Job>,
+}
+
+struct Pending {
+    origin: Jump,
+    window: u64,
+    mode: Mode,
+    cancellation: Cancellation,
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
+}
+
+pub(crate) struct Job {
+    history: History,
+    origin: Jump,
+    forward: bool,
+    count: usize,
+    resolvers: BTreeMap<DocumentId, PositionResolver>,
+    pub cancellation: Cancellation,
+}
+
+pub(crate) struct Result {
+    history: History,
+    destination: io::Result<Option<Jump>>,
+    cancellation: Cancellation,
+}
+
+impl Job {
+    pub fn run(mut self) -> Option<Result> {
+        let cancelled = || self.cancellation.is_cancelled();
+        let resolve = |jump: &mut Jump| -> io::Result<()> {
+            let resolver = self
+                .resolvers
+                .get(&jump.document)
+                .ok_or_else(|| io::Error::other("jump buffer is no longer open"))?;
+            if resolver.bookmark().revision() != jump.bookmark.revision()
+                && let Some(mapped) = resolver
+                    .resolve(&jump.bookmark, &jump.selections, cancelled)
+                    .map_err(io::Error::other)?
+            {
+                jump.selections = Arc::new(mapped);
+                jump.bookmark = resolver.bookmark().clone();
+            }
+            Ok(())
+        };
+        let destination = (|| {
+            let target = if self.forward {
+                self.history
+                    .cursor
+                    .checked_add(self.count)
+                    .filter(|&target| target < self.history.entries.len())
+            } else {
+                self.history.cursor.checked_sub(self.count)
+            };
+            let Some(mut target) = target else {
+                return Ok(None);
+            };
+            if !self.forward && self.history.cursor == self.history.entries.len() {
+                target = target.saturating_sub(self.history.push(self.origin.clone()));
+            }
+            let Some(jump) = self.history.entries.get_mut(target) else {
+                return Ok(None);
+            };
+            resolve(jump)?;
+            if !self.forward && jump.matches(&self.origin) {
+                let Some(previous) = target.checked_sub(1) else {
+                    return Ok(None);
+                };
+                target = previous;
+                resolve(&mut self.history.entries[target])?;
+            }
+            self.history.cursor = target;
+            Ok(Some(self.history.entries[target].clone()))
+        })();
+        (!cancelled()).then_some(Result {
+            history: self.history,
+            destination,
+            cancellation: self.cancellation,
+        })
+    }
+}
+
 impl App {
     pub(super) fn current_jump(&self) -> Jump {
-        Jump::new(self.editor.document().id(), self.editor.selections())
+        Jump::new(self.editor.document(), self.editor.selections())
     }
 
     pub(super) fn push_jump(&mut self, jump: Jump) {
@@ -117,27 +196,107 @@ impl App {
     }
 
     pub(super) fn record_jump_at(&mut self, selections: Arc<SelectionSet>) {
-        self.push_jump(Jump {
-            document: self.editor.document().id(),
-            selections,
-        });
+        self.push_jump(Jump::shared(self.editor.document(), selections));
     }
 
     pub(super) fn navigate_jump(&mut self, forward: bool, count: usize) -> io::Result<()> {
-        // Copy at most CAPACITY Arc handles. Commit the new history position
-        // only after navigation succeeds; failed requests keep their return path.
-        let mut history = self.jump_history().clone();
-        let destination = if forward {
-            history.forward(count)
-        } else {
-            history.backward(self.editor.document().id(), self.editor.selections(), count)
+        self.cancel_jump_navigation();
+        let history = self.jump_history().clone();
+        let origin = self.current_jump();
+        let mut resolvers = BTreeMap::new();
+        for jump in history.iter() {
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                resolvers.entry(jump.document)
+                && let Some(resolver) = self.resolver_for_buffer(jump.document)
+            {
+                entry.insert(resolver);
+            }
         }
-        .cloned();
-        let Some(jump) = destination else {
+        let cancellation = Cancellation::default();
+        self.jump_navigation.pending = Some(Pending {
+            origin: origin.clone(),
+            window: self.focused_window_id(),
+            mode: self.editor.mode(),
+            cancellation: cancellation.clone(),
+        });
+        let job = Job {
+            history,
+            origin,
+            resolvers,
+            forward,
+            count,
+            cancellation,
+        };
+        // Unchanged checkpoints need no scan. Keep ordinary navigation inline
+        // and wake the worker only when a retained revision needs remapping.
+        let background = self.jump_navigation.background
+            && job.history.iter().any(|jump| {
+                job.resolvers.get(&jump.document).is_some_and(|resolver| {
+                    resolver.bookmark().revision() != jump.bookmark.revision()
+                })
+            });
+        if background {
+            self.jump_navigation.job = Some(job);
+            self.message = "locating jump…".into();
+            Ok(())
+        } else {
+            self.apply_jump_navigation(job.run().expect("synchronous navigation"))
+        }
+    }
+
+    pub(crate) fn enable_jump_navigation(&mut self) {
+        self.jump_navigation.background = true;
+    }
+    pub(crate) fn take_jump_navigation(&mut self) -> Option<Job> {
+        self.jump_navigation.job.take()
+    }
+    pub(in crate::app) fn jump_navigation_waiting(&self) -> bool {
+        self.jump_navigation.pending.is_some()
+    }
+    pub(in crate::app) fn cancel_jump_navigation(&mut self) {
+        self.jump_navigation.pending = None;
+        self.jump_navigation.job = None;
+    }
+    pub(crate) fn handle_jump_navigation(&mut self, result: Result) -> bool {
+        if let Err(error) = self.apply_jump_navigation(result) {
+            self.fail(error);
+        }
+        true
+    }
+    fn apply_jump_navigation(&mut self, result: Result) -> io::Result<()> {
+        let Some(pending) = &self.jump_navigation.pending else {
             return Ok(());
         };
+        if !pending.cancellation.same_request(&result.cancellation)
+            || result.cancellation.is_cancelled()
+        {
+            return Ok(());
+        }
+        let pending = self.jump_navigation.pending.take().unwrap();
+        self.jump_navigation.job = None;
+        if pending.window != self.focused_window_id()
+            || pending.mode != self.editor.mode()
+            || pending.origin.document != self.editor.document().id()
+            || pending.origin.bookmark.revision() != self.editor.document().revision()
+            || pending.origin.selections.as_ref() != self.editor.selections()
+        {
+            self.clear_message();
+            return Ok(());
+        }
+        let Some(jump) = result.destination? else {
+            self.clear_message();
+            return Ok(());
+        };
+        if self
+            .snapshot_for_buffer(jump.document)
+            .is_none_or(|snapshot| snapshot.revision() != jump.bookmark.revision())
+        {
+            return Err(io::Error::other(
+                "jump buffer changed while locating the destination",
+            ));
+        }
         self.restore_jump(jump.document, &jump.selections)?;
-        *self.jump_history_mut() = history;
+        *self.jump_history_mut() = result.history;
         self.clear_message();
         Ok(())
     }
@@ -206,6 +365,139 @@ mod tests {
     }
     fn cursor(app: &App) -> usize {
         app.editor.selections().primary().start().0
+    }
+
+    #[test]
+    fn saved_ranges_follow_edits_grouped_undo_and_redo_with_direction_and_primary_intact() {
+        let mut app = App::from_document(Document::from("abcdefghijklmnop"), (80, 24));
+        let saved = SelectionSet::new(
+            vec![
+                Selection::new(CharOffset(1), CharOffset(3)),
+                Selection::new(CharOffset(8), CharOffset(6)),
+            ],
+            1,
+        )
+        .unwrap();
+        app.editor.set_selections(saved.clone()).unwrap();
+        app.record_jump();
+        at(&mut app, 0);
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.editor.insert_text("X").unwrap();
+        app.editor.insert_text("Y").unwrap();
+        app.editor.execute("normal_mode", 1).unwrap();
+        at(&mut app, 14);
+        app.editor.execute("select_mode", 1).unwrap();
+        app.navigate_jump(false, 1).unwrap();
+        assert_eq!(
+            app.editor.selections(),
+            &SelectionSet::new(
+                vec![
+                    Selection::new(CharOffset(3), CharOffset(5)),
+                    Selection::new(CharOffset(10), CharOffset(8)),
+                ],
+                1
+            )
+            .unwrap()
+        );
+        assert_eq!(app.editor.mode(), Mode::Select);
+        app.editor.execute("undo", 1).unwrap();
+        app.navigate_jump(true, 1).unwrap();
+        assert_eq!(cursor(&app), 12);
+        app.navigate_jump(false, 1).unwrap();
+        assert_eq!(app.editor.selections(), &saved);
+        app.editor.execute("redo", 1).unwrap();
+        app.navigate_jump(true, 1).unwrap();
+        assert_eq!(cursor(&app), 14);
+    }
+
+    #[test]
+    fn background_remapping_waits_cancels_and_rejects_stale_edits_without_advancing_history() {
+        let mut app = App::from_document(Document::from("abcdefghij"), (80, 24));
+        at(&mut app, 4);
+        app.record_jump();
+        at(&mut app, 0);
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.editor.insert_text("X").unwrap();
+        app.editor.execute("normal_mode", 1).unwrap();
+        let position = app.jump_history().cursor;
+        let origin = app.editor.selections().clone();
+        app.enable_jump_navigation();
+        app.navigate_jump(false, 1).unwrap();
+        assert!(app.input_waiting());
+        let cancelled = app.take_jump_navigation().unwrap();
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(cancelled.run().is_none());
+        assert!(!app.input_waiting());
+        assert_eq!(app.editor.selections(), &origin);
+        assert_eq!(app.jump_history().cursor, position);
+        app.navigate_jump(false, 1).unwrap();
+        let stale = app.take_jump_navigation().unwrap().run().unwrap();
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.editor.insert_text("Y").unwrap();
+        app.editor.execute("normal_mode", 1).unwrap();
+        let origin = app.editor.selections().clone();
+        app.handle_jump_navigation(stale);
+        assert!(!app.input_waiting());
+        assert_eq!(app.editor.selections(), &origin);
+        assert_eq!(app.jump_history().cursor, position);
+        app.navigate_jump(false, 1).unwrap();
+        let result = app.take_jump_navigation().unwrap().run().unwrap();
+        app.handle_jump_navigation(result);
+        assert_eq!(cursor(&app), 6);
+        assert!(!app.input_waiting());
+        app.navigate_jump(true, 1).unwrap();
+        assert!(!app.input_waiting()); // Current revisions need no worker round trip.
+        assert_eq!(app.editor.selections(), &origin);
+    }
+
+    #[test]
+    fn pending_cross_buffer_destination_is_revision_checked_before_switching() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("other.txt");
+        std::fs::write(&path, "other buffer").unwrap();
+        let mut app = App::from_document(Document::from("abcdefghij"), (120, 24));
+        let target = app.editor.document().id();
+        at(&mut app, 4);
+        app.record_jump();
+        at(&mut app, 0);
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.editor.insert_text("Z").unwrap();
+        app.editor.execute("normal_mode", 1).unwrap();
+        app.open_window_file(&path).unwrap();
+        let origin = app.editor.document().id();
+        let position = app.jump_history().cursor;
+        app.enable_jump_navigation();
+        app.navigate_jump(false, 1).unwrap();
+        let result = app.take_jump_navigation().unwrap().run().unwrap();
+        app.with_file_buffer_mut(target, |editor, _, _| {
+            editor.execute("insert_mode", 1).unwrap();
+            editor.insert_text("X").unwrap();
+            editor.execute("normal_mode", 1).unwrap();
+        })
+        .unwrap();
+        app.handle_jump_navigation(result);
+        assert_eq!(app.editor.document().id(), origin);
+        assert_eq!(app.jump_history().cursor, position);
+        assert!(!app.input_waiting());
+        assert!(app.message.contains("jump buffer changed"));
+    }
+
+    #[test]
+    fn backward_skips_the_current_checkpoint_only_after_remapping_it() {
+        for (current, expected) in [(4, 5), (5, 3)] {
+            let mut app = App::from_document(Document::from("abcdefghij"), (80, 24));
+            for start in [2, 4] {
+                at(&mut app, start);
+                app.record_jump();
+            }
+            at(&mut app, 0);
+            app.editor.execute("insert_mode", 1).unwrap();
+            app.editor.insert_text("X").unwrap();
+            app.editor.execute("normal_mode", 1).unwrap();
+            at(&mut app, current);
+            app.navigate_jump(false, 1).unwrap();
+            assert_eq!(cursor(&app), expected);
+        }
     }
 
     #[test]
@@ -359,7 +651,7 @@ mod tests {
         ));
         let missing = Document::from("missing");
         app.push_jump(Jump::new(
-            missing.id(),
+            &missing,
             &SelectionSet::single(Selection::cursor(CharOffset(0))),
         ));
         let position = app.jump_history().cursor;

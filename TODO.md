@@ -65,14 +65,15 @@ selections, and measure operations that could affect input latency.
   with debounced queries, bounded results, previews, and queued-input ordering.
   `<space>'` retains file/buffer/symbol/search queries, selected results, and scroll
   positions across acceptance/cancellation.
-- [ ] Bidirectional jump history: Ctrl-i, `<space>j`, and `g.` to return to the
+- [x] Bidirectional jump history: Ctrl-i, `<space>j`, and `g.` to return to the
   last modification. Ctrl-s records full selection checkpoints in normal/select
   mode; counted Ctrl-o/Ctrl-i traverse each pane's bounded history, including
   scratch buffers, and preserve a forward return path. `g.` locates the last
   undo group's primary change through cancellable background metadata composition.
   `<space>j` picks checkpoints from all panes with background filtering, previews,
-  and full selection restoration. Add lazy remapping of saved selections through edits/undo/reloads;
-  checkpoints currently retain scalar positions and clamp to valid text bounds.
+  and full selection restoration. Saved selections lazily follow edits, grouped
+  undo/redo, and reloads through a text-free journal. Navigation and picker
+  remapping are cancellable, preserve queued input, and reject stale revisions.
 - [ ] LSP references (`gr`), type definition (`gy`), implementation (`gi`), and
   reference selections (`<space>h`). Reuse pickers for multiple destinations.
 - [ ] LSP rename (`<space>r`), code actions (`<space>a`), and formatting (`=`).

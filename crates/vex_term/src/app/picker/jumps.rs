@@ -59,7 +59,12 @@ impl App {
         );
         active.view.matched = result.matched;
         active.view.total = result.total;
+        active.view.notice = result.notice;
         active.view.pending = false;
+        // Reopened rows keep their checkpoint identity while their mapped
+        // line/revision changes. Refresh even if the selected identity matches
+        // the provisional preview requested from the cached rows.
+        active.preview_target = None;
         if active.accept_pending {
             active.accept_pending = false;
             self.accept_picker();
@@ -274,5 +279,73 @@ mod tests {
         assert_ne!(current, old.document);
         assert!(app.accept_jump_location(old).is_err());
         assert_eq!(app.editor.document().id(), current);
+    }
+
+    #[test]
+    fn reopened_picker_remaps_selection_snippets_preview_lines_and_stable_identity() {
+        let mut app = App::from_document(Document::from("first\nneedle\nlast\n"), (120, 24));
+        app.editor
+            .set_selections(SelectionSet::single(Selection::new(
+                CharOffset(6),
+                CharOffset(12),
+            )))
+            .unwrap();
+        app.record_jump();
+        press(&mut app, " jneedle");
+        finish(&mut app);
+        let wanted = selected(&app);
+        app.handle(key(KeyCode::Esc));
+        app.editor.execute("goto_file_start", 1).unwrap();
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.editor.insert_text("prefix\n").unwrap();
+        app.editor.execute("normal_mode", 1).unwrap();
+        press(&mut app, " '");
+        finish(&mut app);
+        let updated = selected(&app);
+        assert_eq!(updated.identity, wanted.identity);
+        assert_eq!(updated.line, 2);
+        assert_eq!(
+            updated.selections.as_ref(),
+            &SelectionSet::single(Selection::new(CharOffset(13), CharOffset(19)))
+        );
+        assert!(
+            app.picker
+                .active
+                .as_ref()
+                .unwrap()
+                .view
+                .selected()
+                .unwrap()
+                .label
+                .contains("needle")
+        );
+        assert_eq!(app.take_preview_job().unwrap().position.unwrap().line, 2);
+        app.handle(key(KeyCode::Enter));
+        assert_eq!(app.editor.selections(), updated.selections.as_ref());
+    }
+
+    #[test]
+    fn external_prefix_reload_keeps_jump_on_its_original_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source.txt");
+        std::fs::write(&path, "first\nneedle\nlast\n").unwrap();
+        let mut app = App::open(Some(&path), (120, 24)).unwrap();
+        app.editor
+            .set_selections(SelectionSet::single(Selection::new(
+                CharOffset(6),
+                CharOffset(12),
+            )))
+            .unwrap();
+        app.record_jump();
+        press(&mut app, " jneedle");
+        finish(&mut app);
+        std::fs::write(&path, "prefix\nfirst\nneedle\nlast\n").unwrap();
+        app.reload_current_file(false).unwrap();
+        app.handle(key(KeyCode::Enter));
+        finish(&mut app);
+        assert_eq!(
+            app.editor.selections(),
+            &SelectionSet::single(Selection::new(CharOffset(13), CharOffset(19)))
+        );
     }
 }

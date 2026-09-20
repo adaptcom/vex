@@ -59,8 +59,9 @@ Tab still navigates results. `jump_back` remains an unbound command alias.
 Each pane has its own history, capped at 32 entries. A backward jump saves the
 live return location before leaving the newest entry, so Ctrl-i can return to
 it. Saving a new checkpoint after going backward discards the old forward
-branch. Consecutive identical checkpoints are deduplicated, and a backward
-jump skips a checkpoint equal to the current selection. Out-of-range counts
+branch. Consecutive identical checkpoints from the same revision are deduplicated,
+and a backward jump skips a checkpoint equal to the current selection after
+remapping. Out-of-range counts
 leave the location unchanged.
 
 History retains document identities and shared immutable selection sets;
@@ -68,8 +69,21 @@ it neither copies text nor retains undo snapshots. Hidden buffers and scratch
 buffers are valid destinations. Closing a buffer removes its checkpoints from
 every pane and adjusts the history position. Navigation retains normal/select
 mode, selection direction, and the primary selection. Language services are
-not needed. Saved scalar positions currently normalize to valid grapheme/text
-bounds when revisited; remapping them through intervening edits remains on TODO.md.
+not needed. Bookmarks lazily map saved selections through edits, grouped undo/redo,
+and external reloads. Selection starts/carets follow insertions at their edge;
+selection ends stay before them. Deleted/replaced text maps to the corresponding
+edit boundary, and restored selections normalize to whole graphemes.
+
+Remapping runs on the existing picker worker. It resolves the requested
+checkpoint, and the preceding one if needed to skip the current location.
+When all retained checkpoints already match their documents' revisions,
+navigation applies immediately without waking a worker.
+Later editing keys wait for the result; Escape/Ctrl-c cancel without moving
+the view or advancing history. Both the origin view and destination revision
+are checked before switching. The journal shares text-free position maps and
+does not walk saved selections while typing. Adjacent typing compacts until
+a bookmark/resolver captures a boundary. Journal retention follows live
+bookmarks, independently of undo-history eviction, and keeps no document text.
 
 Space-j (`jumplist_picker`) opens the [jump picker](pickers.md#jump-picker) for all
 panes. It previews unsaved text and restores full selection checkpoints in the
@@ -93,7 +107,8 @@ typing remains a compact map; large groups compose spans of original text and
 inserted lengths without reading the document's contents.
 
 `python3 tools/navigation_smoke.py` checks the release executable's `g.` and
-jump-picker destinations, queued edit ordering, and Ctrl-o return through a real
+jump-picker destinations, queued edit ordering, remapping across prefix edits,
+and Ctrl-o return through a real
 pseudo-terminal. Unit and property tests stay beside their Rust implementation.
 
 ## Different files

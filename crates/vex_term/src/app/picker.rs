@@ -385,6 +385,7 @@ impl App {
         );
         active.view.matched = result.matched;
         active.view.total = result.total;
+        active.view.notice = result.notice;
         active.view.pending = false;
         if active.accept_pending {
             active.accept_pending = false;
@@ -399,6 +400,7 @@ impl App {
     /// in the event queue. Escape and resize retain the search queue's behavior.
     pub(crate) fn input_waiting(&self) -> bool {
         self.editor.search_waiting()
+            || self.jump_navigation_waiting()
             || self.clipboard_waiting()
             || self.editor.repeat_pending()
             || self.completion_waiting()

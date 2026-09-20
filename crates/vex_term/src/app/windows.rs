@@ -80,7 +80,7 @@ impl State {
                     last_accessed: None,
                     last_modified: [None; 2],
                     jumps: super::jumps::History::new(super::jumps::Jump::new(
-                        editor.document().id(),
+                        editor.document(),
                         editor.selections(),
                     )),
                 },
@@ -96,6 +96,21 @@ impl State {
 }
 
 impl App {
+    pub(super) fn focused_window_id(&self) -> u64 {
+        self.windows.layout.active
+    }
+
+    pub(super) fn resolver_for_buffer(&self, id: DocumentId) -> Option<vex_core::PositionResolver> {
+        if id == self.editor.document().id() {
+            Some(self.editor.document().position_resolver())
+        } else {
+            self.windows
+                .buffers
+                .get(&id)
+                .map(|buffer| buffer.editor.document().position_resolver())
+        }
+    }
+
     pub(super) fn jump_history(&self) -> &super::jumps::History {
         &self.windows.panes[&self.windows.layout.active].jumps
     }
@@ -748,6 +763,7 @@ impl App {
                         entry
                             .insert(Arc::new(Document {
                                 snapshot: editor.document().snapshot(),
+                                resolver: editor.document().position_resolver(),
                                 label: self.commit_title(jump.document).unwrap_or_else(|| {
                                     files
                                         .path()
@@ -759,6 +775,8 @@ impl App {
                     }
                 };
                 captures.push(Capture {
+                    identity: jump.identity,
+                    bookmark: jump.bookmark.clone(),
                     document,
                     selections: jump.selections.clone(),
                     current: jump.document == pane.document,

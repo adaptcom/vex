@@ -3,7 +3,7 @@
 
 use super::{Entry, catalog};
 use std::sync::{Arc, OnceLock};
-use vex_core::{DocumentId, Revision, SelectionSet, Snapshot};
+use vex_core::{Bookmark, DocumentId, PositionResolver, Revision, SelectionSet, Snapshot};
 use vex_editor::background::Cancellation;
 
 const SNIPPET_CHARS: usize = 256;
@@ -11,17 +11,21 @@ const SNIPPET_RANGES: usize = 32;
 
 pub(crate) struct Document {
     pub snapshot: Snapshot,
+    pub resolver: PositionResolver,
     pub label: String,
 }
 
 pub(crate) struct Capture {
+    pub identity: u64,
     pub document: Arc<Document>,
     pub selections: Arc<SelectionSet>,
+    pub bookmark: Bookmark,
     pub current: bool,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct Location {
+    pub identity: u64,
     pub document: DocumentId,
     pub revision: Revision,
     pub selections: Arc<SelectionSet>,
@@ -32,7 +36,7 @@ pub(crate) struct Location {
 // Comparing picker rows must not walk a potentially huge selection set.
 impl PartialEq for Location {
     fn eq(&self, other: &Self) -> bool {
-        self.document == other.document && Arc::ptr_eq(&self.selections, &other.selections)
+        self.identity == other.identity
     }
 }
 impl Eq for Location {}
@@ -51,12 +55,15 @@ impl Catalog {
         }
     }
 
-    fn labels(&self, cancel: &Cancellation) -> Option<Arc<[catalog::CatalogEntry<Location>]>> {
+    fn labels(
+        &self,
+        cancel: &Cancellation,
+    ) -> Option<std::result::Result<Arc<[catalog::CatalogEntry<Location>]>, vex_core::Error>> {
         if cancel.is_cancelled() {
             return None;
         }
         if let Some(labels) = self.labels.get() {
-            return Some(labels.clone());
+            return Some(Ok(labels.clone()));
         }
         let mut labels = Vec::with_capacity(self.captures.len());
         for capture in &self.captures {
@@ -65,7 +72,20 @@ impl Catalog {
             }
             let snapshot = &capture.document.snapshot;
             let text = snapshot.text();
-            let primary = capture.selections.primary();
+            let selections = if capture.bookmark.revision() == snapshot.revision() {
+                capture.selections.clone()
+            } else {
+                match capture.document.resolver.resolve(
+                    &capture.bookmark,
+                    &capture.selections,
+                    || cancel.is_cancelled(),
+                ) {
+                    Ok(Some(mapped)) => Arc::new(mapped),
+                    Ok(None) => return None,
+                    Err(error) => return Some(Err(error)),
+                }
+            };
+            let primary = selections.primary();
             let cursor = primary
                 .head
                 .0
@@ -78,7 +98,7 @@ impl Catalog {
                 if capture.current { " *" } else { "" }
             );
             let mut remaining = SNIPPET_CHARS;
-            for (index, range) in capture.selections.ranges().iter().enumerate() {
+            for (index, range) in selections.ranges().iter().enumerate() {
                 if remaining == 0 || index == SNIPPET_RANGES {
                     label.push('…');
                     break;
@@ -106,9 +126,10 @@ impl Catalog {
                 entry: Arc::new(Entry {
                     label,
                     value: Location {
+                        identity: capture.identity,
                         document: snapshot.id(),
                         revision: snapshot.revision(),
-                        selections: capture.selections.clone(),
+                        selections,
                         line,
                     },
                 }),
@@ -117,7 +138,7 @@ impl Catalog {
         }
         let labels = Arc::from(labels);
         let _ = self.labels.set(Arc::clone(&labels));
-        Some(labels)
+        Some(Ok(labels))
     }
 }
 
@@ -133,7 +154,19 @@ pub(crate) type Result = catalog::Result<Location>;
 
 impl Job {
     pub fn run(self) -> Option<Result> {
-        let catalog = self.catalog.labels(&self.cancellation)?;
+        let catalog = match self.catalog.labels(&self.cancellation)? {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                return Some(Result {
+                    session: self.session,
+                    revision: self.revision,
+                    items: Vec::new(),
+                    matched: 0,
+                    total: self.catalog.captures.len(),
+                    notice: error.to_string(),
+                });
+            }
+        };
         catalog::Job {
             session: self.session,
             revision: self.revision,
@@ -157,6 +190,7 @@ mod tests {
         let length = document.text().len_chars();
         let shared = Arc::new(Document {
             snapshot: document.snapshot(),
+            resolver: document.position_resolver(),
             label: "source.rs".into(),
         });
         let large = Arc::new(SelectionSet::single(Selection::new(
@@ -174,11 +208,15 @@ mod tests {
         );
         let catalog = Arc::new(Catalog::new(vec![
             Capture {
+                identity: 1,
+                bookmark: document.bookmark(),
                 document: shared.clone(),
                 selections: large.clone(),
                 current: true,
             },
             Capture {
+                identity: 2,
+                bookmark: document.bookmark(),
                 document: shared,
                 selections: many.clone(),
                 current: false,

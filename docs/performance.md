@@ -1,5 +1,57 @@
 # Performance baselines
 
+## Lazy bookmarks
+
+On 2026-09-20, `cargo bench -p vex_core --bench editing --locked -- bookmarks --noplot`
+measured 64 adjacent single-caret insertions followed by grouped undo:
+
+| Document | No bookmark | Live bookmark |
+| --- | ---: | ---: |
+| 1 MiB | 31.9 µs | 32.1 µs |
+| 100 MiB | 39.8 µs | 40.1 µs |
+
+These Criterion central estimates use 30 samples, 500 ms warmup, and one second
+measurement. The tracked cases retain a bookmark from before typing. Setup
+clones a shared ASCII rope outside measurement; the timed batch includes edit
+construction, history, undo, and dropping the document/bookmark. It excludes
+selection restoration, workers, rendering, and terminal I/O. The measured
+tracking cost for this compact typing group was under 1% of the central estimate.
+
+An isolated comparison with the pre-journal binary also measured ordinary
+single-edit/undo cycles without retained bookmarks:
+
+| Document / carets | Before | After |
+| --- | ---: | ---: |
+| 1 MiB / 1 | 0.732 µs | 0.747 µs |
+| 100 MiB / 1 | 0.876 µs | 0.845 µs |
+| 1 MiB / 1,000 | 413 µs | 415 µs |
+| 100 MiB / 1,000 | 718 µs | 740 µs |
+
+This found a small cost in several measured cases, including 15 ns for the
+one-caret 1 MiB cycle. These local results are not latency bounds or evidence
+that every workload is faster. The journal retains text-free maps without
+walking checkpoint selections on edits. Adjacent typing compacts; capturing a
+new bookmark seals that boundary. Other changes retain a sequence proportional
+to edits since the oldest live bookmark. Retiring metadata costs proportional
+to the released nodes and uses iterative destruction to avoid stack growth.
+Undo-history eviction does not expire a live bookmark.
+
+Resolution runs on the navigation/picker worker, checks cancellation between
+changes and selections, and never scans unchanged document text. Mapping and
+normalization costs grow with changes and saved ranges. Final view restoration
+still normalizes selections on the UI thread; very large result normalization
+remains covered by the existing cancellation follow-up in TODO.md.
+
+With lazy bookmarks integrated, the `jump_history` terminal-app benchmark
+measured unchanged Ctrl-o/Ctrl-i round trips at **1.44 / 1.36 µs** for one
+selection and **0.504 / 0.633 ms** for 1,000 selections in 1 / 100 MiB documents.
+Opening the picker, entering a query, and cancelling measured **0.888 / 0.896 µs**
+for one selection per checkpoint and **0.906 / 0.871 µs** for 1,000. All cases
+use a full 32-entry history. They measure synchronous application work without
+intervening edits, worker wakeup, remapping, drawing, or terminal I/O. Compared
+with the earlier baseline below, small navigation requests now include journal
+capture and revision validation; large selection restoration remains dominant.
+
 ## Jump history
 
 On 2026-09-20, `cargo bench -p vex_term --bench rendering --locked -- jump_history --noplot`
@@ -17,7 +69,8 @@ checkpoints, document construction, drawing, physical terminal output, and
 switching buffers are excluded. Stored selections share immutable allocations;
 traversal copies at most 32 handles, then restores the selected entry. Costs
 scale with restored selections and grapheme lookups, without scanning document
-text or adding checkpoint work to ordinary typing.
+text. These pre-journal measurements establish the original navigation baseline;
+the lazy-bookmark costs are described above.
 
 Opening the jump picker, pasting a six-character query, and cancelling with 32
 checkpoints measured **0.767 / 0.755 µs** for one selection per checkpoint in

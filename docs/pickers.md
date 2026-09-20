@@ -124,8 +124,11 @@ Space-' retains the query, selected checkpoint, and scroll position. Reopening
 captures current snapshots; closed pickers release their captured document text.
 External reloads refresh rows and previews. Enter waits for refreshed results
 before releasing queued input, and revision checks reject stale destinations.
-Saved positions currently clamp to valid text bounds after edits; lazy remapping
-through intervening changes remains on TODO.md.
+The worker remaps saved positions through edits, undo/redo, and reloads before
+building snippets and preview lines. Checkpoint identities remain stable after
+remapping, preserving the selected row on reopening. Remapping checks cancellation
+between changes and selections; its cost grows with the intervening changes and
+saved ranges, independently of the size of unchanged document text.
 
 ## Workspace text search
 

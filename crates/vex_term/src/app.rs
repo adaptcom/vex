@@ -20,6 +20,7 @@ mod completion;
 mod git;
 mod git_write;
 mod jumps;
+pub(crate) use jumps::{Job as JumpNavigationJob, Result as JumpNavigationResult};
 mod language;
 mod picker;
 mod prompt;
@@ -82,6 +83,7 @@ pub struct App {
     status: status::State,
     git_write: git_write::State,
     reload: reload::State,
+    jump_navigation: jumps::State,
 }
 
 impl App {
@@ -121,6 +123,7 @@ impl App {
             status: status::State::default(),
             git_write: git_write::State::default(),
             reload: reload::State::default(),
+            jump_navigation: jumps::State::default(),
         }
     }
 
@@ -216,6 +219,15 @@ impl App {
     }
 
     fn handle_event_at(&mut self, event: Event, now: std::time::Instant) -> bool {
+        if self.jump_navigation_waiting()
+            && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release
+                && matches!(input::key(*key), Some(Key::Escape | Key::Ctrl('c'))))
+        {
+            self.cancel_jump_navigation();
+            self.keys.cancel(&mut self.editor);
+            self.clear_message();
+            return true;
+        }
         if self.clipboard_waiting()
             && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release
                 && matches!(input::key(*key), Some(Key::Escape | Key::Ctrl('c'))))

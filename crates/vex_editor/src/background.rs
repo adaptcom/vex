@@ -19,7 +19,8 @@ impl Cancellation {
         self.0.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn same_request(&self, other: &Self) -> bool {
+    /// Whether two handles identify the same request, including after cancellation.
+    pub fn same_request(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
 }

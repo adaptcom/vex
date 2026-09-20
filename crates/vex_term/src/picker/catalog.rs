@@ -27,6 +27,7 @@ pub(crate) struct Result<T> {
     pub items: Vec<Item<T>>,
     pub matched: usize,
     pub total: usize,
+    pub notice: String,
 }
 
 impl<T> Job<T> {
@@ -67,6 +68,7 @@ impl<T> Job<T> {
             items,
             matched,
             total: self.catalog.len(),
+            notice: String::new(),
         })
     }
 }

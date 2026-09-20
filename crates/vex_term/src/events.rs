@@ -37,6 +37,7 @@ pub(crate) enum BackgroundEvent {
     Symbols(SymbolResult),
     Buffers(BufferResult),
     Jumps(crate::picker::jumps::Result),
+    JumpNavigation(crate::app::JumpNavigationResult),
     Prompt(crate::prompt::Result),
     WorkspaceSearch(crate::picker::search::Result),
     Preview(PreviewResult),
@@ -114,6 +115,7 @@ impl EventQueue {
                 | BackgroundEvent::Symbols(_)
                 | BackgroundEvent::Buffers(_)
                 | BackgroundEvent::Jumps(_)
+                | BackgroundEvent::JumpNavigation(_)
                 | BackgroundEvent::Prompt(_)
                 | BackgroundEvent::WorkspaceSearch(_) => 2,
                 BackgroundEvent::Preview(_) => 3,
@@ -294,6 +296,7 @@ enum PickerJob {
     Symbols(SymbolJob),
     Buffers(BufferJob),
     Jumps(crate::picker::jumps::Job),
+    JumpNavigation(crate::app::JumpNavigationJob),
     Prompt(crate::prompt::Job),
     WorkspaceSearch(crate::picker::search::Job),
 }
@@ -305,6 +308,7 @@ impl Job for PickerJob {
             Self::Symbols(job) => job.cancellation.clone(),
             Self::Buffers(job) => job.cancellation.clone(),
             Self::Jumps(job) => job.cancellation.clone(),
+            Self::JumpNavigation(job) => job.cancellation.clone(),
             Self::Prompt(job) => job.cancellation.clone(),
             Self::WorkspaceSearch(job) => job.cancellation.clone(),
         }
@@ -557,6 +561,11 @@ impl Runtime {
                 file_state = FileWorker::default();
                 job.run().map(BackgroundEvent::Jumps)
             }
+            PickerJob::JumpNavigation(job) => {
+                workspace_search = crate::picker::search::Worker::default();
+                file_state = FileWorker::default();
+                job.run().map(BackgroundEvent::JumpNavigation)
+            }
             PickerJob::Prompt(job) => {
                 workspace_search = crate::picker::search::Worker::default();
                 job.run().map(BackgroundEvent::Prompt)
@@ -646,6 +655,12 @@ impl Runtime {
     }
     pub(crate) fn submit_jumps(&self, job: crate::picker::jumps::Job) {
         self.files.as_ref().unwrap().submit(PickerJob::Jumps(job));
+    }
+    pub(crate) fn submit_jump_navigation(&self, job: crate::app::JumpNavigationJob) {
+        self.files
+            .as_ref()
+            .unwrap()
+            .submit(PickerJob::JumpNavigation(job));
     }
     pub(crate) fn submit_prompt(&self, job: crate::prompt::Job) {
         self.files.as_ref().unwrap().submit(PickerJob::Prompt(job));
@@ -816,6 +831,9 @@ mod tests {
             }
             AppEvent::Background(BackgroundEvent::Jumps(result)) => {
                 app.handle_jump_result(result);
+            }
+            AppEvent::Background(BackgroundEvent::JumpNavigation(result)) => {
+                app.handle_jump_navigation(result);
             }
             AppEvent::Background(BackgroundEvent::Prompt(result)) => {
                 app.handle_prompt_completion(result);

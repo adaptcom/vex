@@ -125,6 +125,7 @@ pub fn run(app: &mut App) -> io::Result<()> {
     let _session = Session::enter()?;
     let runtime = Runtime::start()?;
     app.editor.set_background_search(true);
+    app.enable_jump_navigation();
     app.editor.set_background_syntax(true);
     app.editor.set_deferred_repeat(true);
     app.enable_lsp();
@@ -190,6 +191,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             if let Some(job) = app.take_jump_job() {
                 runtime.submit_jumps(job);
             }
+            if let Some(job) = app.take_jump_navigation() {
+                runtime.submit_jump_navigation(job);
+            }
             if let Some(job) = app.take_preview_job() {
                 runtime.submit_preview(job);
             }
@@ -248,6 +252,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Jumps(result)) => {
                     redraw |= app.handle_jump_result(result)
                 }
+                AppEvent::Background(BackgroundEvent::JumpNavigation(result)) => {
+                    redraw |= app.handle_jump_navigation(result)
+                }
                 AppEvent::Background(BackgroundEvent::Prompt(result)) => {
                     redraw |= app.handle_prompt_completion(result);
                 }
@@ -305,6 +312,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(job) = app.take_jump_job() {
                 runtime.submit_jumps(job);
+            }
+            if let Some(job) = app.take_jump_navigation() {
+                runtime.submit_jump_navigation(job);
             }
             if let Some(job) = app.take_workspace_search_job(Instant::now()) {
                 runtime.submit_workspace_search(job);
