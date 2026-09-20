@@ -138,9 +138,12 @@ selections, and measure operations that could affect input latency.
   remain observable; coalesce notifications through the background event queue.
 - [ ] Use finer-grained diffs for external reloads so cursors within several
   separated changes track nearby unchanged text more accurately.
-- [ ] View mode `z`/sticky `Z`: center/top/bottom alignment, horizontal centering,
-  and scrolling without moving selections. Add `gt`/`gc`/`gb` and Ctrl-b/Ctrl-f
-  page aliases; keep logical/visual line movement explicit if soft wrapping arrives.
+- [x] View mode `z`/sticky `Z`: center/top/bottom alignment, horizontal centering,
+  and counted scrolling. Like Helix, scrolling preserves selections until the
+  primary cursor must move to stay visible. Includes `gt`/`gc`/`gb`, Ctrl-b/Ctrl-f
+  and Page Up/Down aliases, pane dimensions, and persistent shortcut hints.
+- [ ] Keep logical/visual line movement explicit if soft wrapping arrives;
+  view commands currently operate on unwrapped logical lines.
 - [ ] Picker split-open (Ctrl-s/Ctrl-v), preview toggle (Ctrl-t), first/last result
   navigation, and `<space>F` for the working-directory file picker.
 - [ ] Command palette (`<space>?`) backed by the existing documented registry.

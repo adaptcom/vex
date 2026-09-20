@@ -7,7 +7,7 @@ use crate::{
     render::{self, Chrome, Viewport},
     screen::Frame,
 };
-use crossterm::event::{Event, KeyCode, KeyEventKind};
+use crossterm::event::{Event, KeyEventKind};
 use std::{io, path::Path};
 use vex_core::Document;
 use vex_editor::{
@@ -32,6 +32,7 @@ mod reload;
 mod rename;
 mod signature;
 mod status;
+mod view;
 mod windows;
 pub mod workspace;
 pub(crate) use workspace::{Job as WorkspaceEditJob, Result as WorkspaceEditResult};
@@ -347,26 +348,6 @@ impl App {
                 true
             }
             Event::Key(event) if event.kind != KeyEventKind::Release => {
-                if self.prompt.is_none()
-                    && self.keys.pending_keys().is_empty()
-                    && event.modifiers.is_empty()
-                    && matches!(event.code, KeyCode::PageUp | KeyCode::PageDown)
-                {
-                    self.clear_message();
-                    self.keys.cancel(&mut self.editor);
-                    let count = usize::from(self.active_size().1).saturating_sub(2).max(1);
-                    if let Err(error) = self.editor.execute(
-                        if event.code == KeyCode::PageDown {
-                            "move_down"
-                        } else {
-                            "move_up"
-                        },
-                        count,
-                    ) {
-                        self.fail(error);
-                    }
-                    return true;
-                }
                 let Some(key) = input::key(event) else {
                     return false;
                 };
@@ -637,6 +618,9 @@ impl App {
                 .map_err(io::Error::other),
             Some(ApplicationAction::HalfPageDown(count)) => {
                 self.scroll_half_page(true, count).map_err(io::Error::other)
+            }
+            Some(ApplicationAction::View(action, count)) => {
+                self.view_action(action, count).map_err(io::Error::other)
             }
             Some(ApplicationAction::Window(action, count)) => self.window_action(action, count),
             None => Ok(()),
@@ -1062,7 +1046,7 @@ commands! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEvent, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     pub(super) fn press(app: &mut App, text: &str) {
         for ch in text.chars() {

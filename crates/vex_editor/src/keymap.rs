@@ -82,7 +82,13 @@ pub struct Binding<'a> {
 #[derive(Debug)]
 pub struct Keymap {
     bindings: BTreeMap<(Mode, Vec<Key>), &'static Command>,
-    groups: BTreeMap<(Mode, Vec<Key>), String>,
+    groups: BTreeMap<(Mode, Vec<Key>), Group>,
+}
+
+#[derive(Debug)]
+struct Group {
+    title: String,
+    sticky: bool,
 }
 
 /// Available continuations of a prefix, with descriptions from command Rustdoc.
@@ -148,7 +154,25 @@ impl Keymap {
         {
             return Err(Error::ConflictingBinding);
         }
-        self.groups.insert((mode, prefix), title.into());
+        self.groups.insert(
+            (mode, prefix),
+            Group {
+                title: title.into(),
+                sticky: false,
+            },
+        );
+        Ok(())
+    }
+
+    /// Name a prefix whose commands remain active until explicitly cancelled.
+    pub fn name_sticky_group(
+        &mut self,
+        mode: Mode,
+        prefix: Vec<Key>,
+        title: &str,
+    ) -> Result<(), Error> {
+        self.name_group(mode, prefix.clone(), title)?;
+        self.groups.get_mut(&(mode, prefix)).unwrap().sticky = true;
         Ok(())
     }
 
@@ -167,7 +191,7 @@ impl Keymap {
             } else {
                 self.groups
                     .get(&(mode, keys[..prefix.len() + 1].to_vec()))
-                    .map_or("More commands", String::as_str)
+                    .map_or("More commands", |group| group.title.as_str())
             };
             entries.insert(key, description);
         }
@@ -175,7 +199,7 @@ impl Keymap {
             title: self
                 .groups
                 .get(&(mode, prefix.to_vec()))
-                .map_or("Keys", String::as_str),
+                .map_or("Keys", |group| group.title.as_str()),
             entries: entries.into_iter().collect(),
         })
     }
@@ -194,6 +218,8 @@ impl Default for Keymap {
                 (vec![Char('k')], "move_up"),
                 (vec![Ctrl('u')], "page_cursor_half_up"),
                 (vec![Ctrl('d')], "page_cursor_half_down"),
+                (vec![Ctrl('b')], "page_up"),
+                (vec![Ctrl('f')], "page_down"),
                 (vec![Char('w')], "move_word_forward"),
                 (vec![Char('b')], "move_word_backward"),
                 (vec![Char('e')], "move_word_end"),
@@ -305,10 +331,41 @@ impl Default for Keymap {
                 (vec![Char('g'), Char('e')], "goto_file_end"),
                 (vec![Char('g'), Char('h')], "goto_line_start"),
                 (vec![Char('g'), Char('l')], "goto_line_end"),
+                (vec![Char('g'), Char('t')], "goto_window_top"),
+                (vec![Char('g'), Char('c')], "goto_window_center"),
+                (vec![Char('g'), Char('b')], "goto_window_bottom"),
             ] {
                 keymap
                     .bind(mode, keys, command)
                     .expect("valid default binding");
+            }
+            for prefix in [Char('z'), Char('Z')] {
+                for (key, command) in [
+                    (Char('z'), "align_view_center"),
+                    (Char('c'), "align_view_center"),
+                    (Char('t'), "align_view_top"),
+                    (Char('b'), "align_view_bottom"),
+                    (Char('m'), "align_view_middle"),
+                    (Char('j'), "scroll_down"),
+                    (Down, "scroll_down"),
+                    (Char('k'), "scroll_up"),
+                    (Up, "scroll_up"),
+                    (Ctrl('f'), "page_down"),
+                    (PageDown, "page_down"),
+                    (Ctrl('b'), "page_up"),
+                    (PageUp, "page_up"),
+                    (Ctrl('u'), "page_cursor_half_up"),
+                    (Ctrl('d'), "page_cursor_half_down"),
+                ] {
+                    keymap.bind(mode, vec![prefix, key], command).unwrap();
+                }
+                if prefix == Char('Z') {
+                    keymap
+                        .name_sticky_group(mode, vec![prefix], "View (sticky)")
+                        .unwrap();
+                } else {
+                    keymap.name_group(mode, vec![prefix], "View").unwrap();
+                }
             }
             for prefix in [vec![Ctrl('w')], vec![Char(' '), Char('w')]] {
                 for (key, command) in [
@@ -365,6 +422,8 @@ impl Default for Keymap {
                 (Down, "move_down"),
                 (Home, "goto_line_start"),
                 (End, "goto_line_end"),
+                (PageUp, "page_up"),
+                (PageDown, "page_down"),
                 (Escape, "normal_mode"),
             ] {
                 keymap
@@ -415,6 +474,7 @@ pub enum Dispatch {
 pub struct KeyHandler {
     keymap: Keymap,
     pending: Vec<Key>,
+    sticky: Vec<Key>,
     count: Option<usize>,
     mode: Option<Mode>,
     character_command: Option<&'static Command>,
@@ -432,6 +492,7 @@ impl KeyHandler {
         Self {
             keymap,
             pending: Vec::new(),
+            sticky: Vec::new(),
             count: None,
             mode: None,
             character_command: None,
@@ -578,7 +639,11 @@ impl KeyHandler {
                 ],
             });
         }
-        self.keymap.hints(self.mode?, &self.pending)
+        let mut hints = self.keymap.hints(self.mode?, &self.pending)?;
+        if !self.sticky.is_empty() {
+            hints.entries.push((Key::Escape, "Exit sticky mode"));
+        }
+        Some(hints)
     }
 
     /// Cancel input and restore any active surround preview.
@@ -589,7 +654,12 @@ impl KeyHandler {
     }
 
     fn reset(&mut self) {
-        self.pending.clear();
+        self.sticky.clear();
+        self.reset_sequence();
+    }
+
+    fn reset_sequence(&mut self) {
+        self.pending.clone_from(&self.sticky);
         self.count = None;
         self.character_command = None;
         self.register_hints.clear();
@@ -643,7 +713,7 @@ impl KeyHandler {
             return self.invoke(editor, command, Some(character));
         }
         if editor.mode() != Mode::Insert
-            && self.pending.is_empty()
+            && self.pending == self.sticky
             && let Key::Char(ch @ '0'..='9') = key
             && (ch != '0' || self.count.is_some())
         {
@@ -684,7 +754,20 @@ impl KeyHandler {
             .keys()
             .any(|(mode, keys)| *mode == editor.mode() && keys.starts_with(&self.pending))
         {
+            if self
+                .keymap
+                .groups
+                .get(&(editor.mode(), self.pending.clone()))
+                .is_some_and(|group| group.sticky)
+            {
+                self.sticky.clone_from(&self.pending);
+            }
             return Ok(Dispatch::Pending);
+        }
+        if !self.sticky.is_empty() {
+            // An unbound key must not fall through to editing or exit sticky mode.
+            self.reset_sequence();
+            return Ok(Dispatch::Ignored);
         }
         let single = self.pending.len() == 1;
         self.cancel(editor);
@@ -710,12 +793,15 @@ impl KeyHandler {
         let count = self.count;
         let continuation = (command.input == crate::CommandInput::SurroundReplace)
             .then(|| std::mem::take(&mut self.pending));
-        self.reset();
+        self.reset_sequence();
         let mut context = crate::CommandContext::new(editor);
         context.count = std::num::NonZeroUsize::new(count.unwrap_or(1)).unwrap();
         context.count_given = count.is_some();
         context.character = character;
         (command.run)(&mut context)?;
+        if self.mode != Some(editor.mode()) {
+            self.reset();
+        }
         if command.input == crate::CommandInput::RegisterSelect {
             self.count = count;
         }
@@ -739,6 +825,77 @@ mod tests {
         for key in keys.chars() {
             handler.handle(editor, Key::Char(key)).unwrap();
         }
+    }
+
+    #[test]
+    fn view_prefixes_are_one_shot_or_sticky_and_cancel_without_editing() {
+        use crate::{ApplicationAction, ViewAction};
+        for mode in [Mode::Normal, Mode::Select] {
+            let mut editor = Editor::new(Document::from("one\ntwo\nthree"));
+            if mode == Mode::Select {
+                editor.execute("select_mode", 1).unwrap();
+            }
+            let mut keys = KeyHandler::default();
+            let before = editor.selections().clone();
+            press(&mut keys, &mut editor, "3z");
+            assert_eq!(keys.hints().unwrap().title, "View");
+            press(&mut keys, &mut editor, "j");
+            assert_eq!(
+                editor.take_application_action(),
+                Some(ApplicationAction::View(ViewAction::ScrollDown, 3))
+            );
+            assert!(keys.hints().is_none());
+            assert!(keys.pending_keys().is_empty());
+            assert_eq!(editor.selections(), &before);
+
+            press(&mut keys, &mut editor, "2Zk");
+            assert_eq!(
+                editor.take_application_action(),
+                Some(ApplicationAction::View(ViewAction::ScrollUp, 2))
+            );
+            assert_eq!(keys.hints().unwrap().title, "View (sticky)");
+            press(&mut keys, &mut editor, "10j");
+            assert_eq!(
+                editor.take_application_action(),
+                Some(ApplicationAction::View(ViewAction::ScrollDown, 10))
+            );
+            press(&mut keys, &mut editor, "j");
+            assert_eq!(
+                editor.take_application_action(),
+                Some(ApplicationAction::View(ViewAction::ScrollDown, 1))
+            );
+            // Unbound editing keys do not leak into the underlying mode.
+            press(&mut keys, &mut editor, "di:");
+            assert_eq!(editor.mode(), mode);
+            assert_eq!(editor.document().text().to_string(), "one\ntwo\nthree");
+            assert_eq!(editor.selections(), &before);
+            assert!(keys.hints().is_some());
+            keys.handle(&mut editor, Key::Escape).unwrap();
+            assert!(keys.hints().is_none());
+            assert_eq!(editor.mode(), mode);
+            press(&mut keys, &mut editor, "j");
+            assert_ne!(editor.selections(), &before);
+            assert!(editor.take_application_action().is_none());
+        }
+    }
+
+    #[test]
+    fn sticky_groups_are_remappable_and_reset_on_mode_changes() {
+        let mut map = Keymap::empty();
+        map.bind(
+            Mode::Normal,
+            vec![Key::Char('q'), Key::Char('i')],
+            "insert_mode",
+        )
+        .unwrap();
+        map.name_sticky_group(Mode::Normal, vec![Key::Char('q')], "Custom")
+            .unwrap();
+        let mut keys = KeyHandler::new(map);
+        let mut editor = Editor::new(Document::from("text"));
+        press(&mut keys, &mut editor, "qiZz");
+        assert!(keys.pending_keys().is_empty());
+        assert!(keys.hints().is_none());
+        assert_eq!(editor.document().text().to_string(), "Zztext");
     }
 
     #[test]
@@ -1420,17 +1577,17 @@ mod tests {
     #[test]
     fn custom_bindings_resolve_to_the_same_documented_function() {
         let mut map = Keymap::default();
-        map.bind(Mode::Normal, vec![Key::Char('z')], "move_word_forward")
+        map.bind(Mode::Normal, vec![Key::Char('h')], "move_word_forward")
             .unwrap();
         let binding = map
             .bindings()
-            .find(|b| b.mode == Mode::Normal && b.keys == [Key::Char('z')])
+            .find(|b| b.mode == Mode::Normal && b.keys == [Key::Char('h')])
             .unwrap();
         assert_eq!(binding.command.name, "move_word_forward");
         assert!(binding.command.description().contains("next word start"));
         let mut editor = Editor::new(Document::from("hello world"));
         let mut keys = KeyHandler::new(map);
-        keys.handle(&mut editor, Key::Char('z')).unwrap();
+        keys.handle(&mut editor, Key::Char('h')).unwrap();
         assert_eq!(
             editor.selections().primary().range(),
             CharOffset(0)..CharOffset(6)

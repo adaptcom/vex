@@ -193,10 +193,10 @@ use vex_editor::{Editor, Key, KeyHandler, Keymap};
 fn main() -> Result<(), vex_editor::Error> {
     let mut editor = Editor::new(Document::from("hello world"));
     let mut keymap = Keymap::default();
-    keymap.bind(vex_editor::Mode::Normal, vec![Key::Char('z')], "move_word_forward")?;
+    keymap.bind(vex_editor::Mode::Normal, vec![Key::Char('h')], "move_word_forward")?;
     let mut input = KeyHandler::new(keymap);
 
-    input.handle(&mut editor, Key::Char('z'))?;
+    input.handle(&mut editor, Key::Char('h'))?;
     editor.execute("delete_selection", 1)?;
     assert_eq!(editor.document().text(), "world");
     Ok(())
@@ -206,11 +206,14 @@ fn main() -> Result<(), vex_editor::Error> {
 `Keymap::default()` supplies Vex's Helix-inspired defaults; `Keymap::empty()` starts
 a custom map. Bindings can be a key or a sequence such as `gg`. Conflicting prefix
 bindings are rejected, so dispatch needs no timeout. Prefixes show available
-commands; `Keymap::name_group` gives custom groups a title. Escape cancels pending
-input while preserving the mode, or enters normal mode when no input is pending.
+commands; `Keymap::name_group` gives custom groups a title, and
+`Keymap::name_sticky_group` keeps a group's shortcuts active until cancelled.
+Escape cancels pending input while preserving the mode, or enters normal mode
+when no input is pending.
 Digits build a repeat count outside insert mode; overflow
 returns an error and clears the count. An unbound sequence also clears pending
-input. Insert mode treats unbound printable characters as text; Enter is bound to
+input; sticky groups keep their prefix active. Insert mode treats unbound printable
+characters as text; Enter is bound to
 `insert_newline`, which uses the loaded line ending (LF by default) and copies
 the current line's indentation before the caret. Tab inserts a literal tab.
 Text events call `Editor::insert_text`; paste events call `Editor::insert_paste`
@@ -229,6 +232,8 @@ clipboard I/O and paste preparation on a background worker.
 The implemented commands cover `hjkl`, arrows, `w`/`b`/`e`, `W`/`B`/`E`,
 cross-line `f`/`F`/`t`/`T`, `gs`, counted `gg`/`G` and `g|`, line/document bounds,
 `Ctrl-u`/`Ctrl-d` for half-page movement and scrolling in normal/select mode,
+`Ctrl-b`/`Ctrl-f` and Page Up/Down for full pages, `gt`/`gc`/`gb` for visible-window
+jumps, and `z`/sticky `Z` for [view alignment and scrolling](docs/terminal.md#view-mode),
 line selection, mode changes, deletion/change, insertion, `o`/`O` to open lines
 below/above selections, insert-mode Backspace/`Ctrl-h`, and undo/redo.
 Open-line commands copy leading tabs and spaces; a count creates a caret on each
@@ -239,7 +244,9 @@ language-specific indentation changes are not inferred yet. Direct text and past
 events preserve literal newlines without adding indentation.
 Normal-mode character movements place a block cursor; select-mode movements retain
 the anchor, including when crossing it. Word movements select the traversed text.
-All selections participate in a command. Vertical motion uses logical lines,
+Editing and cursor movements normally act on all selections. View scrolling
+preserves them until the primary cursor must move to stay visible.
+Vertical motion uses logical lines,
 accounts for tabs and Unicode display width, and retains desired columns through
 short lines. A merge of cursors clears their retained columns.
 

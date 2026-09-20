@@ -1,5 +1,29 @@
 # Performance baselines
 
+## View mode
+
+The release-mode `benchmark_sticky_view_dispatch_and_paint` source test measured
+1,000 samples with a 1 MB ASCII buffer (200,001 logical lines), one selection,
+and a 100×40 pane:
+
+| Operation | Median | p95 |
+| --- | ---: | ---: |
+| Sticky `j`/`k` input dispatch, per key | 729 ns | 771 ns |
+| Repaint visible text and shortcut helper | 81.542 µs | 84.708 µs |
+
+Dispatch samples average a down/up pair that keeps the cursor inside the scroll
+margin. Painting resets and reuses the frame grid. Measurements exclude document
+construction, cold layout, syntax processing, background workers, physical
+terminal output, and primary-selection adjustment at the scroll margin. They
+describe this local workload, not a latency bound for arbitrary selections or
+long lines. Alignment stamps contain only document identity/revision, the primary
+selection, mode, and text height; they do not clone text or all selections on
+background redraws. Horizontal alignment uses the existing display-column cache.
+
+```sh
+cargo test -p vex_term --release --lib benchmark_sticky_view_dispatch_and_paint --locked -- --ignored --nocapture
+```
+
 ## Lazy bookmarks
 
 On 2026-09-20, `cargo bench -p vex_core --bench editing --locked -- bookmarks --noplot`

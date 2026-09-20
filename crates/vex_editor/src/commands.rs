@@ -312,6 +312,12 @@ fn goto_counted_line(ctx: &mut CommandContext<'_>) -> Result<(), Error> {
     })
 }
 
+fn view_action(ctx: &mut CommandContext<'_>, action: crate::ViewAction) -> Result<(), Error> {
+    ctx.editor
+        .request_application_action(crate::ApplicationAction::View(action, ctx.count.get()));
+    Ok(())
+}
+
 /// Preserve the exact whitespace prefix, independent of language or tab width.
 fn leading_indent(text: vex_core::RopeSlice<'_>) -> String {
     text.chars()
@@ -943,6 +949,39 @@ commands! {
 
     /// Move up by logical lines, retaining each cursor's desired display column.
     fn move_up(ctx) { vertical(ctx, false) }
+
+    /// Align the primary cursor's line to the top of the visible text area without changing selections.
+    fn align_view_top(ctx) { view_action(ctx, crate::ViewAction::AlignTop) }
+
+    /// Center the primary cursor's line vertically without changing selections.
+    fn align_view_center(ctx) { view_action(ctx, crate::ViewAction::AlignCenter) }
+
+    /// Align the primary cursor's line to the bottom of the visible text area without changing selections.
+    fn align_view_bottom(ctx) { view_action(ctx, crate::ViewAction::AlignBottom) }
+
+    /// Center the primary cursor horizontally using display columns, including tabs and wide graphemes.
+    fn align_view_middle(ctx) { view_action(ctx, crate::ViewAction::AlignMiddle) }
+
+    /// Scroll up by the counted number of lines. Preserve selections until the primary cursor must move to stay in view; select mode retains its anchor.
+    fn scroll_up(ctx) { view_action(ctx, crate::ViewAction::ScrollUp) }
+
+    /// Scroll down by the counted number of lines. Preserve selections until the primary cursor must move to stay in view; select mode retains its anchor.
+    fn scroll_down(ctx) { view_action(ctx, crate::ViewAction::ScrollDown) }
+
+    /// Scroll up one visible text height, moving only the primary cursor when needed to keep it visible. Counts are ignored, as in Helix.
+    fn page_up(ctx) { view_action(ctx, crate::ViewAction::PageUp) }
+
+    /// Scroll down one visible text height, moving only the primary cursor when needed to keep it visible. Counts are ignored, as in Helix.
+    fn page_down(ctx) { view_action(ctx, crate::ViewAction::PageDown) }
+
+    /// Move to the top visible line inside the scroll margin, plus count minus one lines. Select mode extends selections.
+    fn goto_window_top(ctx) { view_action(ctx, crate::ViewAction::WindowTop) }
+
+    /// Move to the center visible line. Select mode extends selections; counts are ignored.
+    fn goto_window_center(ctx) { view_action(ctx, crate::ViewAction::WindowCenter) }
+
+    /// Move to the bottom visible line inside the scroll margin, minus count minus one lines. Select mode extends selections.
+    fn goto_window_bottom(ctx) { view_action(ctx, crate::ViewAction::WindowBottom) }
 
     /// Move cursors and scroll up by half the visible text height, retaining desired columns and extending selections in select mode. Counts multiply the distance; the frontend supplies the current viewport size.
     fn page_cursor_half_up(ctx) {

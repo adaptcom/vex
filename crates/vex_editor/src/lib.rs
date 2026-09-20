@@ -98,7 +98,24 @@ pub enum ApplicationAction {
     DiagnosticPicker(bool),
     HalfPageUp(usize),
     HalfPageDown(usize),
+    View(ViewAction, usize),
     Window(WindowAction, usize),
+}
+
+/// Viewport operations whose dimensions are supplied by the frontend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewAction {
+    AlignTop,
+    AlignCenter,
+    AlignBottom,
+    AlignMiddle,
+    ScrollUp,
+    ScrollDown,
+    PageUp,
+    PageDown,
+    WindowTop,
+    WindowCenter,
+    WindowBottom,
 }
 
 /// System clipboard operations interpreted by a frontend's background service.

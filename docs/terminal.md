@@ -33,8 +33,10 @@ and calls that existing dispatcher.
 | `gs` | First non-whitespace grapheme on the current line |
 | `<count>g\|` | Go to the one-based grapheme column, defaulting to 1 |
 | Home, End | Start/end of logical line |
-| Page Up, Page Down | Move by roughly one viewport of logical lines |
+| Ctrl-b / Page Up, Ctrl-f / Page Down | Scroll up/down one visible text height, keeping the primary cursor visible |
 | Ctrl-u, Ctrl-d | Move cursors and scroll half a page up/down in normal/select mode; counts multiply the distance |
+| `z`, `Z` | Enter view mode / sticky view mode; Escape exits |
+| `gt`, `gc`, `gb` | Move to the top/center/bottom visible line, respecting scroll margins; select mode extends |
 | `i`, `a` | Insert before/after the selection |
 | `I`, `A` | Insert at the first non-whitespace character / end of each cursor's line |
 | `r<char>` | Replace each selected grapheme with a character; Enter and Tab also work |
@@ -218,6 +220,38 @@ then to the line start on another press, then joins with the preceding line.
 Ctrl-k deletes to the line end, then removes the line ending on another press.
 These commands handle CRLF as one unit, merge overlapping deletions, and leave
 the yank register unchanged.
+
+## View mode
+
+`z` runs one view command. `Z` keeps the same shortcuts active, with the boxed
+shortcut helper visible, until Escape or Ctrl-c. Both work in normal/select
+mode; leaving the helper retains that mode. Unbound keys in sticky mode are
+ignored. Commands remain ordinary documented functions that can be remapped.
+
+| Key after `z` or `Z` | Action |
+|---|---|
+| `z`, `c` | Center the cursor's line vertically |
+| `t`, `b` | Put the cursor's line at the top/bottom of the text area |
+| `m` | Center the cursor horizontally, accounting for tabs and wide characters |
+| `j` / Down, `k` / Up | Scroll down/up by one line |
+| Ctrl-f / Page Down, Ctrl-b / Page Up | Scroll down/up one full page |
+| Ctrl-d, Ctrl-u | Move cursors and scroll down/up half a page |
+
+Counts apply to line scrolling and half pages: `5zj`, or `Z5j` while sticky.
+Full pages and alignment ignore counts. Alignment leaves selections unchanged;
+line/page scrolling preserves them until the primary cursor must move to stay
+inside the scroll margin, extending its selection in select mode. Other cursors
+stay in place. Half-page commands move all cursors as usual.
+
+Each command uses the active pane's text dimensions, excluding its status line
+and the shared command line. Explicit alignment survives background redraws;
+moving the cursor, editing, changing mode or resizing restores normal cursor
+following. Horizontal centering uses the existing display-column cache.
+
+Outside view mode, `gt`/`gc`/`gb` move to the top/center/bottom visible line.
+Top/bottom respect the scroll margin; counts move further inward, clamped to
+that visible region. Select mode extends selections. All these movements use
+logical lines while soft wrapping is unavailable.
 
 ## Command prompt
 

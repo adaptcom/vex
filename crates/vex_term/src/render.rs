@@ -12,6 +12,107 @@ use vex_editor::{Editor, Mode};
 pub struct Viewport {
     pub top_line: usize,
     pub left_column: usize,
+    alignment: Option<Alignment>,
+}
+
+/// A small stamp lets explicit alignment survive background redraws. Ordinary
+/// cursor movement, edits, mode changes and resizing restore the scroll margin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Alignment {
+    document: vex_core::DocumentId,
+    revision: vex_core::Revision,
+    selection: vex_core::Selection,
+    mode: Mode,
+    height: usize,
+}
+
+impl Alignment {
+    fn new(editor: &Editor, height: usize) -> Self {
+        Self {
+            document: editor.document().id(),
+            revision: editor.document().revision(),
+            selection: editor.selections().primary(),
+            mode: editor.mode(),
+            height,
+        }
+    }
+}
+
+impl Viewport {
+    pub(crate) fn hold(&mut self, editor: &Editor, height: usize) {
+        self.alignment = Some(Alignment::new(editor, height));
+    }
+
+    /// Apply cursor following without painting, including between batched keys.
+    pub(crate) fn ensure_visible(
+        &mut self,
+        editor: &Editor,
+        width: usize,
+        height: usize,
+    ) -> Result<(), vex_core::Error> {
+        let primary = primary_cursor(editor)?;
+        let column = editor.display_column(primary)?;
+        let body_width = width - gutter(width, editor.document().text().len_lines()).width;
+        self.follow(editor, primary, column, (body_width, height))
+    }
+
+    fn follow(
+        &mut self,
+        editor: &Editor,
+        primary: CharOffset,
+        column: usize,
+        (width, height): (usize, usize),
+    ) -> Result<(), vex_core::Error> {
+        if height == 0 || width == 0 {
+            return Ok(());
+        }
+        let text = editor.document().text();
+        let row = text.char_to_line(primary.0);
+        let cursor_span = if editor.mode() != Mode::Insert && primary.0 < text.len_chars() {
+            let end = grapheme::next(text, primary, 1)?;
+            let slice = text.slice(primary.0..end.0);
+            let owned;
+            let cluster = match slice.as_str() {
+                Some(cluster) => cluster,
+                None => {
+                    owned = slice.to_string();
+                    &owned
+                }
+            };
+            display::width(cluster, column, editor.tab_width()).min(width)
+        } else {
+            1
+        };
+        let margin = if self.alignment == Some(Alignment::new(editor, height)) {
+            0
+        } else {
+            self.alignment = None;
+            scroll_margin(height)
+        };
+        if row < self.top_line.saturating_add(margin) {
+            self.top_line = row.saturating_sub(margin);
+        } else if row >= self.top_line.saturating_add(height - margin) {
+            self.top_line = row.saturating_add(margin + 1).saturating_sub(height);
+        }
+        if column < self.left_column {
+            self.left_column = column;
+        } else if column.saturating_add(cursor_span) > self.left_column.saturating_add(width) {
+            self.left_column = column.saturating_add(cursor_span).saturating_sub(width);
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn scroll_margin(height: usize) -> usize {
+    3.min(height.saturating_sub(1) / 2)
+}
+
+pub(crate) fn primary_cursor(editor: &Editor) -> Result<CharOffset, vex_core::Error> {
+    if editor.mode() == Mode::Insert {
+        Ok(editor.selections().primary().head)
+    } else {
+        motion::cursor(editor.document().text(), editor.selections().primary())
+    }
 }
 
 pub(crate) struct Gutter {
@@ -95,49 +196,14 @@ pub(crate) fn paint_view(
         return Ok(());
     }
     let text = editor.document().text();
-    let primary = if editor.mode() == Mode::Insert {
-        editor.selections().primary().head
-    } else {
-        motion::cursor(text, editor.selections().primary())?
-    };
+    let primary = primary_cursor(editor)?;
     let row = text.char_to_line(primary.0);
     let column = editor.display_column(primary)?;
     let body_height = height.saturating_sub(1 + usize::from(reserved_bottom));
     let columns = gutter(width, text.len_lines());
     let gutter = columns.width;
     let body_width = width - gutter;
-    if body_height > 0 {
-        let cursor_span = if editor.mode() != Mode::Insert && primary.0 < text.len_chars() {
-            let end = grapheme::next(text, primary, 1)?;
-            let slice = text.slice(primary.0..end.0);
-            let owned;
-            let cluster = match slice.as_str() {
-                Some(cluster) => cluster,
-                None => {
-                    owned = slice.to_string();
-                    &owned
-                }
-            };
-            display::width(cluster, column, editor.tab_width()).min(body_width)
-        } else {
-            1
-        };
-        let margin = 3.min((body_height - 1) / 2);
-        if row < viewport.top_line.saturating_add(margin) {
-            viewport.top_line = row.saturating_sub(margin);
-        } else if row >= viewport.top_line.saturating_add(body_height - margin) {
-            viewport.top_line = row.saturating_add(margin + 1).saturating_sub(body_height);
-        }
-        if column < viewport.left_column {
-            viewport.left_column = column;
-        } else if column.saturating_add(cursor_span)
-            > viewport.left_column.saturating_add(body_width)
-        {
-            viewport.left_column = column
-                .saturating_add(cursor_span)
-                .saturating_sub(body_width);
-        }
-    }
+    viewport.follow(editor, primary, column, (body_width, body_height))?;
     let cursors = editor
         .selections()
         .ranges()

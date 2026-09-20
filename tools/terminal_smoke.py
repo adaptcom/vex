@@ -205,13 +205,15 @@ class Terminal:
                 break
         raise AssertionError(f"missing screen {needle!r}; terminal tail: {bytes(self.output[-2000:])!r}")
 
-    def expect_screen_idle(self, needle):
+    def expect_screen_idle(self, needle, *, row=None):
         """Wait for actual displayed text without sending focus or input events."""
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             self.drain()
             visible = displayed_text(self.output)
-            if needle in visible:
+            rows = visible.splitlines()
+            target = visible if row is None else (rows[row] if row < len(rows) else "")
+            if needle in target:
                 return
             if self.poll() is not None:
                 break
@@ -352,6 +354,35 @@ def main():
             terminal.finish()
         assert pages.read_text() == page_source
         print("PASS: Ctrl-u/Ctrl-d half-page movement, counts, resize, and clean quit")
+
+        with Terminal([binary, str(pages)]) as terminal:
+            terminal.start()
+            terminal.resize(100, 30)
+            terminal.send(b"40jzt")
+            terminal.expect_screen_idle("41:1")
+            terminal.expect_screen_idle("row 040", row=0)
+            terminal.send(b"zb")
+            terminal.expect_screen_idle("row 013", row=0)
+            terminal.send(b"zzZ")
+            terminal.expect_screen_idle("View (sticky)")
+            terminal.send(b"2j")
+            terminal.expect_screen_idle("row 029", row=0)
+            terminal.send(b"k")
+            terminal.expect_screen_idle("row 028", row=0)
+            assert "View (sticky)" in displayed_text(terminal.output)
+            terminal.send(b"\x1b")
+            # The helper covers the status position until dismissed. Verify that
+            # scrolling retained the cursor, and separate Escape from later input.
+            terminal.expect_screen_idle("41:1")
+            assert "View (sticky)" not in displayed_text(terminal.output)
+            terminal.send(b"j")
+            terminal.expect_screen_idle("42:1")
+            terminal.send(b"zt\x06")
+            terminal.expect_screen_idle("73:1")  # Full page uses all 28 text rows.
+            terminal.send(b":q\r")
+            terminal.finish()
+        assert pages.read_text() == page_source
+        print("PASS: z/Z alignment, sticky hints, counted scrolling, Escape, and full-page alias")
 
         copied_path = Path(directory) / "copied selections.txt"
         copied_path.write_text("a1\nb2\nc3\n")
