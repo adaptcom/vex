@@ -1794,7 +1794,10 @@ while True:
             )),
         });
         assert!(
-            matches!(until(&receiver, |event| matches!(event, Event::Answer { id: 2, .. })), Event::Answer { result: Ok(Answer::Locations(Navigation::Definition, locations)), .. } if locations.items[0].path == doc.path)
+            matches!(until(&receiver, |event| matches!(event, Event::Answer { id: 2, .. })), Event::Answer { result: Ok(Answer::Locations(Navigation::Definition, locations)), .. }
+                if locations.items[0].path == doc.path
+                    && locations.items[0].range.start == Position { line: 0, character: 3 }
+                    && locations.items[0].range.end == Position { line: 0, character: 4 })
         );
         for (id, kind) in [
             (20, Navigation::TypeDefinition),
@@ -2048,7 +2051,12 @@ while True:
         let path = fs::canonicalize(directory.path())
             .unwrap()
             .join("src/main.rs");
-        let source = "fn answer() -> u32 { 42 }\nfn main() { let _: bool = answer(); }\n";
+        let source = "fn answer() -> u32 { 42 }\nenum Highlight { Keyword, Type }\nfn main() { let mut my_var = Highlight::Keyword; my_var = Highlight::Type; let _: bool = answer(); }\n";
+        let definitions = [
+            ("answer", 0, 3, 9),
+            ("Highlight", 1, 5, 14),
+            ("my_var", 2, 20, 26),
+        ];
         fs::write(&path, source).unwrap();
         let text = TextDocument::from(source);
         let doc = document(path.clone(), &text);
@@ -2062,9 +2070,12 @@ while True:
             request: None,
         });
         let deadline = Instant::now() + Duration::from_secs(45);
-        let (mut hover, mut definition, mut diagnostic) = (false, false, false);
+        let (mut hover, mut diagnostic) = (false, false);
+        let mut found = [false; 3];
         let mut id = 0;
-        while Instant::now() < deadline && !(hover && definition && diagnostic) {
+        while Instant::now() < deadline
+            && !(hover && found.iter().all(|found| *found) && diagnostic)
+        {
             match receiver.recv_timeout(Duration::from_millis(500)) {
                 Ok(Event::Status {
                     failed: true,
@@ -2083,27 +2094,42 @@ while True:
                     ..
                 }) => {
                     // The server can return no destinations while indexing.
-                    definition |= locations
-                        .items
-                        .iter()
-                        .any(|location| location.path == path && location.range.start.line == 0);
+                    for (index, &(_, line, start, end)) in definitions.iter().enumerate() {
+                        found[index] |= locations.items.iter().any(|location| {
+                            location.path == path
+                                && location.range.start
+                                    == Position {
+                                        line,
+                                        character: start,
+                                    }
+                                && location.range.end
+                                    == Position {
+                                        line,
+                                        character: end,
+                                    }
+                        });
+                    }
                 }
                 _ => {}
             }
             id += 1;
-            let kind = if hover {
-                RequestKind::Navigation(Navigation::Definition)
+            let (kind, name) = if hover {
+                let next = found.iter().position(|found| !found).unwrap_or(0);
+                (
+                    RequestKind::Navigation(Navigation::Definition),
+                    definitions[next].0,
+                )
             } else {
-                RequestKind::Hover
+                (RequestKind::Hover, "answer")
             };
             service.update(Update {
                 document: Some(doc.clone()),
-                request: Some(request(id, kind, source.rfind("answer").unwrap())),
+                request: Some(request(id, kind, source.rfind(name).unwrap())),
             });
         }
         assert!(
-            hover && definition && diagnostic,
-            "hover={hover}, definition={definition}, diagnostic={diagnostic}"
+            hover && found.iter().all(|found| *found) && diagnostic,
+            "hover={hover}, definitions={found:?}, diagnostic={diagnostic}"
         );
     }
 }

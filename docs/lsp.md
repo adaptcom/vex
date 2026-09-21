@@ -59,6 +59,11 @@ protocol failures, and request errors leave editing and saving available.
 These keys apply in normal and select modes. Each editing action is an ordinary
 documented command function in `vex_editor`, available to custom keymaps.
 
+Definition, type-definition, and implementation links select the symbol name
+using the server's `targetSelectionRange`. If unavailable, navigation uses
+`targetRange`; plain locations use their `range`. This keeps `gd` on an enum name
+from selecting its entire declaration when the server supplies a name range.
+
 Hover uses a cursor-anchored box with the same border and bold title as other
 popups. Markdown replies render headings, emphasis, links, lists, quotations,
 tables, and code blocks; plaintext replies remain literal. Code is styled but

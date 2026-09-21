@@ -125,6 +125,7 @@ def main():
             terminal.expect_screen(b"fn answer()")
             terminal.send(b"gd")  # The first key dismisses hover and dispatches normally.
             terminal.expect_screen(b"other.rs")
+            terminal.expect_screen(b"1:8")  # The function name, not `pub fn`.
             terminal.send(b" D")
             terminal.expect_screen(b"Workspace diagnostics")
             terminal.expect_screen(b"main.rs:")

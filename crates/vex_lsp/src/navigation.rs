@@ -95,8 +95,14 @@ pub(crate) fn locations(value: &Value, cancellation: &Cancellation) -> Result<Lo
                 .get("uri")
                 .or_else(|| value.get("targetUri"))?
                 .as_str()?;
-            // Helix selects the complete target range for LocationLink replies.
-            let range = range(value.get("targetRange").or_else(|| value.get("range"))?)?;
+            // LocationLink separates the declaration's full extent from the
+            // symbol to select. Plain Location replies only provide `range`.
+            let range = range(
+                value
+                    .get("targetSelectionRange")
+                    .or_else(|| value.get("targetRange"))
+                    .or_else(|| value.get("range"))?,
+            )?;
             Some(Destination {
                 path: file_path(uri).ok()?,
                 range,
@@ -213,12 +219,28 @@ mod tests {
     }
 
     #[test]
-    fn locations_preserve_all_ranges_deduplicate_and_skip_invalid_entries() {
+    fn locations_prefer_symbol_ranges_deduplicate_and_skip_invalid_entries() {
         let a = json!({"uri":"file:///tmp/a.rs", "range":span(2, 4)});
         let link = json!({"targetUri":"file:///tmp/b.rs", "targetRange":span(0, 9), "targetSelectionRange":span(3, 4)});
         let result = locations(&json!([a, link, a, {"uri":"https://example.com/a", "range":span(0, 1)}, {"uri":"file:///tmp/a.rs","range":span(3, 1)}]), &Cancellation::default()).unwrap();
         assert_eq!(result.items.len(), 2);
-        assert_eq!(result.items[1].range.end.character, 9);
+        assert_eq!(
+            result.items[0].range,
+            serde_json::from_value(span(2, 4)).unwrap()
+        );
+        assert_eq!(
+            result.items[1].range,
+            serde_json::from_value(span(3, 4)).unwrap()
+        );
+        let fallback = locations(
+            &json!({"targetUri":"file:///tmp/b.rs", "targetRange":span(0, 9)}),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            fallback.items[0].range,
+            serde_json::from_value(span(0, 9)).unwrap()
+        );
         assert_eq!(result.skipped, 2);
         assert_eq!(
             locations(&a, &Cancellation::default()).unwrap().items.len(),
@@ -241,6 +263,46 @@ mod tests {
         .unwrap();
         assert!(result.limited);
         assert_eq!(result.items.len(), 1);
+    }
+
+    #[test]
+    fn definition_links_select_the_enum_name_instead_of_its_declaration() {
+        let mut editor = Editor::new(Document::from(
+            "/// 🦀\npub enum Highlight {\n    Keyword,\n    Type,\n}\n",
+        ));
+        let cancellation = Cancellation::default();
+        let result = locations(
+            &json!([{
+                "targetUri": "file:///tmp/highlight.rs",
+                "targetRange": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 4, "character": 1}
+                },
+                "targetSelectionRange": {
+                    "start": {"line": 1, "character": 9},
+                    "end": {"line": 1, "character": 18}
+                }
+            }]),
+            &cancellation,
+        )
+        .unwrap();
+        let selection = destination_selection(
+            &editor.document().snapshot(),
+            result.items[0].range,
+            &cancellation,
+        )
+        .unwrap();
+        assert!(editor.apply_prepared_selections(selection));
+        let selection = editor.selections().primary();
+        assert_eq!(selection, Selection::new(CharOffset(24), CharOffset(15)));
+        assert_eq!(
+            editor
+                .document()
+                .text()
+                .slice(selection.start().0..selection.end().0)
+                .to_string(),
+            "Highlight",
+        );
     }
 
     #[test]
