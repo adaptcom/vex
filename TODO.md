@@ -152,7 +152,7 @@ selections, and measure operations that could affect input latency.
   share the chosen spaces/tabs; explicit buffer overrides survive reloads.
 - [ ] User/project indentation configuration (including EditorConfig), including
   a way to override or disable automatic detection without rewriting text.
-- [ ] Use language/buffer tab widths in file-picker and Git diff previews, which
+- [ ] Use language/buffer tab widths in file-picker previews, which
   currently display tabs at four-column stops.
 - [ ] Language-aware joining that removes repeated comment prefixes. `J`
   currently joins whitespace only and preserves comment markers literally.
@@ -196,15 +196,12 @@ selections, and measure operations that could affect input latency.
   syntax expansion/siblings, non-yanking deletion, motion repeat, and related
   picker/insert/prompt variants.
 
-## Developer tool integrations
+## Developer tool integrations (deferred)
 
-Extend the pattern established by the Git view: each tool gets a pane,
-documented commands, contextual keymaps, and a background service. Keep tool
-integrations separate from the editor core and build on the existing event queue.
-
-Start with a small GitHub PR/checks view, extract shared pieces as that second
-integration needs them, then add Codex as a persistent session. Let concrete
-integrations shape the interfaces before designing a full plugin system.
+Focus on the editor experience first. These ideas remain deferred; Git support
+is limited to background diffs and gutter markers. If tool integrations resume,
+keep them separate from the editor core and build on the existing event queue.
+Let concrete integrations shape the interfaces before designing a plugin system.
 
 ### GitHub
 
@@ -219,9 +216,10 @@ References: [PR listing](https://cli.github.com/manual/gh_pr_list) and
 
 ### Shared integration infrastructure
 
-- [ ] Generalize pane handling beyond document and Git-specific content.
+- [ ] Generalize pane handling for tool content when an integration requires it.
 - [ ] Give each tool pane its own state, commands, and keymap.
-- [ ] Reuse lists, expandable sections, output logs, and editable drafts.
+- [ ] Build shared lists, expandable sections, output logs, and editable drafts
+  as concrete integrations need them.
 - [ ] Make service delivery rules explicit: replaceable snapshots, ordered
   operations, or ongoing event streams.
 - [ ] Define service lifetimes independently of whether their pane is visible.
@@ -233,7 +231,7 @@ References: [PR listing](https://cli.github.com/manual/gh_pr_list) and
 - [ ] Add a conversation pane with session creation and resumption.
 - [ ] Send selected code and relevant diagnostics or task failures as context.
 - [ ] Display streamed responses, tool activity, and approval requests from Codex.
-- [ ] Connect resulting file changes to the existing Git review workflow.
+- [ ] Provide a way to review resulting file changes.
 - [x] Detect external file edits and reload clean buffers (visible panes, every
   two seconds; background reads, with protection for unsaved text).
 - [ ] Reconcile external changes with unsaved editor text before replacing it.
@@ -241,7 +239,8 @@ References: [PR listing](https://cli.github.com/manual/gh_pr_list) and
 Reference: [Codex App Server](https://learn.chatgpt.com/docs/app-server).
 
 Example workflow: open a failing PR check → jump to the relevant code → send the
-selection and failure to Codex → review its changes in the Git pane.
+selection and failure to Codex → review its changes in the editor and external
+Git tools.
 
 ### Build and test tools
 

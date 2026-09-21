@@ -52,7 +52,6 @@ Generated from command Rustdoc and the default keymap.
 | `goto_next_buffer` | Normal: `gn`, Select: `gn` | Switch to the next loaded buffer in opening order, wrapping; accepts a count. |
 | `goto_previous_buffer` | Normal: `gp`, Select: `gp` | Switch to the previous loaded buffer in opening order, wrapping; accepts a count. |
 | `goto_file` | Normal: `gf`, Select: `gf` | Open filenames in the selections in the current pane. Paths are relative to the current file; earlier buffers remain loaded. |
-| `git_status` | Normal: `<Space>g`, Select: `<Space>g` | Open the repository status view with expandable staged and unstaged diffs. |
 | `symbol_picker` | Normal: `<Space>s`, Select: `<Space>s` | Open a searchable picker of symbols in the current document using its language server. |
 | `diagnostics_picker` | Normal: `<Space>d`, Select: `<Space>d` | Open a searchable picker of cached diagnostics for the current document. |
 | `workspace_diagnostics_picker` | Normal: `<Space>D`, Select: `<Space>D` | Open a searchable picker of cached diagnostics across files and language sessions. |

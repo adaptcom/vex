@@ -61,7 +61,7 @@ terminal resizing until a divider is dragged again.
 
 Mouse support is enabled by default. `:mouse off` returns mouse handling to the
 terminal; `:mouse on` enables it again, and `:mouse` reports the session setting.
-Wheel scrolling targets the document or Git pane under the pointer without
+Wheel scrolling targets the document pane under the pointer without
 changing focus or its selected position. The cursor may leave the visible area;
 keyboard navigation or editing resumes cursor following. See
 [mouse input](terminal.md#mouse-input) for popup behavior and current scope.

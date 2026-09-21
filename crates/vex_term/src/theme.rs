@@ -1,5 +1,5 @@
 //! Terminal palette and style attributes. All colors use the terminal defaults
-//! or its base 16 ANSI slots. Documents, previews, and diffs share these styles.
+//! or its base 16 ANSI slots. Documents and previews share these styles.
 
 use crossterm::style::Color;
 use vex_syntax::{Highlight, markup::Attributes};

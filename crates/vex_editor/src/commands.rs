@@ -817,15 +817,6 @@ commands! {
         Ok(())
     }
 
-    /// Git status
-    ///
-    /// Open the repository status view with expandable staged and unstaged diffs.
-    fn git_status(ctx) {
-        ctx.editor.finish_undo_group();
-        ctx.editor.request_application_action(crate::ApplicationAction::GitStatus);
-        Ok(())
-    }
-
     /// Document symbols
     ///
     /// Open a searchable picker of symbols in the current document using its language server.

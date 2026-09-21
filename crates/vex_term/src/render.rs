@@ -195,12 +195,9 @@ pub(crate) fn gutter(width: usize, lines: usize) -> Gutter {
 #[derive(Clone, Copy)]
 pub struct Chrome<'a> {
     pub filename: &'a str,
-    /// Descriptive buffer titles retain their beginning when space is tight;
-    /// file paths retain the filename at their end.
-    pub title: bool,
     pub dirty: bool,
     pub pending: &'a str,
-    /// Lower-priority status that yields space to pending input and buffer titles.
+    /// Lower-priority status that yields space to pending input and filenames.
     pub lsp: &'a str,
     pub message: &'a str,
     pub error: bool,
@@ -479,9 +476,8 @@ fn paint_status(
     // Pending work stays visible in narrow panes even when the filename must
     // give way. A modified file still keeps room for its indicator.
     let minimum_filename = if chrome.dirty { 8 } else { 1 };
-    // Keep descriptive titles such as "Git commit" recognizable before adding
-    // routine language-service status. Pending input/work takes precedence too.
-    let lsp_reserve = field_width(pending) + if chrome.title { 16 } else { minimum_filename };
+    // Pending input and the filename take precedence over language-service status.
+    let lsp_reserve = field_width(pending) + minimum_filename;
     for (field, reserve) in [
         (chrome.lsp.trim(), lsp_reserve),
         (pending, minimum_filename),
@@ -508,7 +504,7 @@ fn paint_status(
     } else {
         chrome.filename
     };
-    let name = status_text(name, available - suffix.len() - 1, !error && !chrome.title);
+    let name = status_text(name, available - suffix.len() - 1, !error);
     frame.label(
         start as u16,
         row,
@@ -673,7 +669,6 @@ mod tests {
                     Mode::Normal,
                     Chrome {
                         filename: "a/very/long/path/filename.rs",
-                        title: false,
                         dirty,
                         pending: "",
                         lsp: "LSP:down",
@@ -698,7 +693,6 @@ mod tests {
             viewport,
             Chrome {
                 filename: "test",
-                title: false,
                 dirty: false,
                 pending: "",
                 lsp: "",

@@ -291,7 +291,6 @@ impl Default for Keymap {
                 (vec![Char(' '), Char('j')], "jumplist_picker"),
                 (vec![Char(' '), Char('\'')], "last_picker"),
                 (vec![Char(' '), Char('/')], "global_search"),
-                (vec![Char(' '), Char('g')], "git_status"),
                 (vec![Char(' '), Char('s')], "symbol_picker"),
                 (vec![Char(' '), Char('d')], "diagnostics_picker"),
                 (vec![Char(' '), Char('D')], "workspace_diagnostics_picker"),

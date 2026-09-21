@@ -437,7 +437,6 @@ impl App {
                 }
                 self.invalidate_completion();
                 self.refresh_git();
-                self.refresh_status();
                 self.observe_buffer_revision();
                 self.message = if count == 0 {
                     "no workspace changes".into()

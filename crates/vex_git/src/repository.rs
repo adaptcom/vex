@@ -20,7 +20,7 @@ impl Drop for Running {
     }
 }
 
-pub(crate) fn output(
+fn output(
     directory: &Path,
     arguments: &[&OsStr],
     limit: usize,
@@ -89,7 +89,7 @@ fn bounded_output(
     (bytes.len() <= limit).then_some(bytes)
 }
 
-pub(crate) fn path(bytes: Vec<u8>) -> Option<PathBuf> {
+fn path(bytes: Vec<u8>) -> Option<PathBuf> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt;

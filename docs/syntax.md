@@ -51,8 +51,7 @@ These use the regular ANSI color slots except for comments and attributes. The t
 palette determines the actual shades, without RGB or extended palette colors.
 Markdown headings and strong emphasis are bold, emphasis is italic, and links
 are underlined. Link text is blue; URLs inherit the default foreground. Cursor
-cells preserve these syntax attributes. The same palette applies to file
-previews and Git diff text.
+cells preserve these syntax attributes. The same palette applies to file previews.
 
 ### Style definitions
 

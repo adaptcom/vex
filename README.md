@@ -52,9 +52,6 @@ when the server supports range formatting; `:format`/`:fmt` formats the file. Us
 `Ctrl-o` to jump back, `]d` / `[d` for next/previous diagnostics, and `[D` / `]D` for first/last. See [language services and setup](docs/lsp.md).
 Tracked files show live Git gutter markers, including unsaved changes, with
 Helix-style bars and deletion overlines. See [Git gutter behavior](docs/git.md).
-Space-g opens a persistent repository status pane with expandable, syntax-highlighted
-diffs, file navigation, staging/unstaging, and commit-message buffers.
-See [repository status](docs/git-status.md).
 See [terminal usage and architecture](docs/terminal.md).
 
 Use `miw`/`miW` to select words/WORDs and `mip` to select paragraphs; `ma` includes
@@ -98,8 +95,6 @@ cargo build --release -p vex_term --locked
 python3 tools/terminal_smoke.py
 python3 tools/picker_smoke.py
 python3 tools/git_smoke.py # Requires Git.
-python3 tools/git_status_smoke.py # Requires Git.
-python3 tools/git_write_smoke.py # Writes only to its temporary Git repository.
 python3 tools/lsp_smoke.py # Requires rust-analyzer and a Rust toolchain.
 python3 tools/languages_smoke.py # Requires typescript-language-server and TypeScript.
 python3 tools/background_search_benchmark.py

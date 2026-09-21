@@ -20,11 +20,6 @@ use std::{
 use vex_core::{DocumentId, Revision};
 use vex_editor::{BufferAction, Editor, Language, ViewId, WindowAction};
 
-enum Content {
-    Document,
-    Git(PathBuf),
-}
-
 #[derive(Clone, Copy)]
 struct SavedView {
     view: ViewId,
@@ -32,8 +27,6 @@ struct SavedView {
 }
 
 struct Pane {
-    // The document stays owned by the pane while an auxiliary view is shown.
-    content: Content,
     document: DocumentId,
     view: ViewId,
     viewport: Viewport,
@@ -74,7 +67,6 @@ impl State {
             panes: BTreeMap::from([(
                 0,
                 Pane {
-                    content: Content::Document,
                     document: editor.document().id(),
                     view: editor.active_view(),
                     viewport: Viewport::default(),
@@ -126,168 +118,6 @@ impl App {
             .jumps
     }
 
-    pub(super) fn open_commit_draft(
-        &mut self,
-        root: PathBuf,
-        status_key: PathBuf,
-    ) -> io::Result<()> {
-        let existing = self
-            .git_write
-            .drafts
-            .iter()
-            .find(|(_, draft)| draft.root == root)
-            .map(|(id, _)| *id);
-        if let Some(id) = existing
-            && let Some(window) = self
-                .windows
-                .panes
-                .iter()
-                .find(|(_, pane)| pane.document == id && matches!(pane.content, Content::Document))
-                .map(|(id, _)| *id)
-        {
-            self.focus_window(window);
-        } else {
-            if existing.is_none() && self.git_write.drafts.len() >= 16 {
-                return Err(io::Error::other(
-                    "too many retained commit drafts (16 repository limit)",
-                ));
-            }
-            // A split retains the original document and status pane. Horizontal
-            // fallback also permits composing on narrow terminals.
-            if self.split_window(Axis::Vertical).is_err() {
-                self.split_window(Axis::Horizontal)?;
-            }
-            let prepared = if let Some(id) = existing {
-                Prepared::Existing(id)
-            } else {
-                let document = vex_core::Document::default();
-                let files = FileState::scratch(&document);
-                let mut editor = Editor::with_session(document, self.editor.session());
-                editor.set_background_search(true);
-                editor.set_deferred_repeat(true);
-                editor.execute("insert_mode", 1).map_err(io::Error::other)?;
-                self.git_write.drafts.insert(
-                    editor.document().id(),
-                    super::git_write::Draft {
-                        root,
-                        status_key,
-                        committed: None,
-                    },
-                );
-                Prepared::New(Box::new(Buffer {
-                    editor,
-                    files,
-                    automatic_language: false,
-                }))
-            };
-            self.replace_window_buffer(prepared)?;
-        }
-        let id = self.editor.document().id();
-        if self.git_write.drafts[&id].committed == Some(self.editor.document().revision()) {
-            // Insert mode normalizes selections to insertion cursors. Leave it
-            // before selecting the completed message for removal.
-            self.editor
-                .execute("normal_mode", 1)
-                .map_err(io::Error::other)?;
-            self.editor
-                .set_selections(vex_core::SelectionSet::single(vex_core::Selection::new(
-                    vex_core::CharOffset(0),
-                    vex_core::CharOffset(self.editor.document().text().len_chars()),
-                )))
-                .map_err(io::Error::other)?;
-            self.editor
-                .execute("delete_selection_without_yank", 1)
-                .map_err(io::Error::other)?;
-            self.editor.finish_undo_group();
-            self.files = FileState::scratch(self.editor.document());
-            self.editor
-                .execute("insert_mode", 1)
-                .map_err(io::Error::other)?;
-            self.git_write.drafts.get_mut(&id).unwrap().committed = None;
-        }
-        Ok(())
-    }
-
-    pub(super) fn leave_commit_draft(&mut self, status_key: &Path) -> io::Result<()> {
-        if self.windows.panes.len() > 1 {
-            self.close_window(true)?;
-        }
-        if let Some(window) = self
-            .windows
-            .panes
-            .iter()
-            .find(|(_, pane)| matches!(&pane.content, Content::Git(key) if key == status_key))
-            .map(|(id, _)| *id)
-        {
-            self.focus_window(window);
-        } else {
-            self.set_git_view(Some(status_key.into()));
-        }
-        Ok(())
-    }
-
-    pub(super) fn commit_draft_revision(
-        &self,
-        id: DocumentId,
-        text: &str,
-    ) -> Option<vex_core::Revision> {
-        let editor = if self.editor.document().id() == id {
-            &self.editor
-        } else {
-            &self.windows.buffers.get(&id)?.editor
-        };
-        (editor.document().text() == text).then_some(editor.document().revision())
-    }
-
-    pub(super) fn active_git_view(&self) -> Option<&PathBuf> {
-        match &self.windows.panes[&self.windows.layout.active].content {
-            Content::Git(key) => Some(key),
-            Content::Document => None,
-        }
-    }
-    pub(super) fn set_git_view(&mut self, key: Option<PathBuf>) {
-        self.windows
-            .panes
-            .get_mut(&self.windows.layout.active)
-            .unwrap()
-            .content = key.map_or(Content::Document, Content::Git);
-    }
-    pub(super) fn git_view_keys(&self) -> Vec<PathBuf> {
-        let mut keys: Vec<_> = self
-            .windows
-            .panes
-            .values()
-            .filter_map(|pane| match &pane.content {
-                Content::Git(key) => Some(key.clone()),
-                Content::Document => None,
-            })
-            .collect();
-        keys.sort();
-        keys.dedup();
-        keys
-    }
-    pub(super) fn remap_git_view(&mut self, from: &Path, to: &Path) {
-        for pane in self.windows.panes.values_mut() {
-            if matches!(&pane.content,Content::Git(key) if key==from) {
-                pane.content = Content::Git(to.into());
-            }
-        }
-    }
-    pub(super) fn unsaved_paths(&self) -> Vec<PathBuf> {
-        let mut paths: Vec<_> = std::iter::once((&self.editor, &self.files))
-            .chain(
-                self.windows
-                    .buffers
-                    .values()
-                    .map(|buffer| (&buffer.editor, &buffer.files)),
-            )
-            .filter(|(editor, files)| files.is_dirty(editor.document()))
-            .filter_map(|(_, files)| files.target().map(Path::to_path_buf))
-            .collect();
-        paths.sort();
-        paths
-    }
-
     fn visible_documents(&self) -> Vec<DocumentId> {
         let mut documents: Vec<_> = self
             .windows
@@ -297,8 +127,7 @@ impl App {
             .into_iter()
             .filter_map(|(id, rect)| {
                 let pane = &self.windows.panes[&id];
-                (rect.width > 0 && rect.height > 0 && matches!(pane.content, Content::Document))
-                    .then_some(pane.document)
+                (rect.width > 0 && rect.height > 0).then_some(pane.document)
             })
             .collect();
         documents.sort_unstable();
@@ -333,11 +162,7 @@ impl App {
             .into_iter()
             .filter_map(|(id, rect)| {
                 let pane = &self.windows.panes[&id];
-                if rect.width == 0
-                    || rect.height == 0
-                    || !matches!(pane.content, Content::Document)
-                    || !documents.insert(pane.document)
-                {
+                if rect.width == 0 || rect.height == 0 || !documents.insert(pane.document) {
                     return None;
                 }
                 if pane.document == self.editor.document().id() {
@@ -480,8 +305,6 @@ impl App {
         self.windows.layout.active = id;
         self.record_buffer_access();
         self.keys.cancel(&mut self.editor);
-        self.git_write.prefix = None;
-        self.git_write.status_prefix = None;
         self.prompt = None;
     }
 
@@ -516,7 +339,6 @@ impl App {
 
     fn replace_window_buffer(&mut self, prepared: Prepared) -> io::Result<()> {
         if matches!(&prepared, Prepared::Existing(id) if *id == self.editor.document().id()) {
-            self.set_git_view(None);
             return Ok(());
         }
         self.dismiss_language_help();
@@ -567,7 +389,6 @@ impl App {
         self.windows.buffers.insert(old_id, old);
         self.viewport = viewport;
         let pane = self.windows.panes.get_mut(&window).unwrap();
-        pane.content = Content::Document;
         pane.document = self.editor.document().id();
         pane.view = self.editor.active_view();
         pane.viewport = viewport;
@@ -663,9 +484,6 @@ impl App {
                 "unsaved changes; save the buffer or use :bc! to discard",
             ));
         }
-        if self.git_write.drafts.contains_key(&closing) {
-            self.check_git_writes_finished()?;
-        }
         let active = self.windows.layout.active;
         let replacement = self.windows.panes[&active]
             .last_accessed
@@ -697,12 +515,7 @@ impl App {
             .collect();
         for id in other_panes {
             self.focus_window(id);
-            let content = std::mem::replace(
-                &mut self.windows.panes.get_mut(&id).unwrap().content,
-                Content::Document,
-            );
             self.open_buffer(replacement)?;
-            self.windows.panes.get_mut(&id).unwrap().content = content;
         }
         self.focus_window(active);
         for pane in self.windows.panes.values_mut() {
@@ -719,7 +532,6 @@ impl App {
         }
         self.windows.buffers.remove(&closing);
         self.windows.accessed.remove(&closing);
-        self.git_write.drafts.remove(&closing);
         Ok(())
     }
 
@@ -766,12 +578,10 @@ impl App {
                             .insert(Arc::new(Document {
                                 snapshot: editor.document().snapshot(),
                                 resolver: editor.document().position_resolver(),
-                                label: self.commit_title(jump.document).unwrap_or_else(|| {
-                                    files
-                                        .path()
-                                        .map(|path| crate::paths::display(path).to_string())
-                                        .unwrap_or_else(|| "[scratch]".into())
-                                }),
+                                label: files
+                                    .path()
+                                    .map(|path| crate::paths::display(path).to_string())
+                                    .unwrap_or_else(|| "[scratch]".into()),
                             }))
                             .clone()
                     }
@@ -801,12 +611,10 @@ impl App {
             )
             .map(|(editor, files)| {
                 let id = editor.document().id();
-                let mut label = self.commit_title(id).unwrap_or_else(|| {
-                    files
-                        .path()
-                        .map(|path| crate::paths::display(path).to_string())
-                        .unwrap_or_else(|| "[scratch]".into())
-                });
+                let mut label = files
+                    .path()
+                    .map(|path| crate::paths::display(path).to_string())
+                    .unwrap_or_else(|| "[scratch]".into());
                 let dirty = files.is_dirty(editor.document());
                 if dirty || id == current {
                     label.push_str("  [");
@@ -1116,7 +924,6 @@ impl App {
         self.windows.panes.insert(
             id,
             Pane {
-                content: Content::Document,
                 document: self.editor.document().id(),
                 view,
                 viewport: self.viewport,
@@ -1190,17 +997,13 @@ impl App {
     }
 
     pub(super) fn quit_all(&mut self, force: bool) -> io::Result<()> {
-        self.check_git_writes_finished()?;
         if !force
-            && ((self.is_dirty()
-                && !self
-                    .git_write
-                    .drafts
-                    .contains_key(&self.editor.document().id()))
-                || self.windows.buffers.iter().any(|(id, buffer)| {
-                    !self.git_write.drafts.contains_key(id)
-                        && buffer.files.is_dirty(buffer.editor.document())
-                }))
+            && (self.is_dirty()
+                || self
+                    .windows
+                    .buffers
+                    .values()
+                    .any(|buffer| buffer.files.is_dirty(buffer.editor.document())))
         {
             return Err(io::Error::other(
                 "unsaved changes; save the buffers or use :qa! to discard",
@@ -1368,13 +1171,6 @@ impl App {
             if id == self.windows.layout.active {
                 self.paint_current_window(&mut local, 0)?;
                 self.remember_viewport();
-            } else if let Content::Git(key) = &self.windows.panes[&id].content {
-                self.status
-                    .views
-                    .get_mut(key)
-                    .unwrap()
-                    .paint(&mut local, 0, false);
-                local.inactive();
             } else {
                 let pane = self.windows.panes.get_mut(&id).unwrap();
                 let (editor, files) = if pane.document == self.editor.document().id() {
@@ -1383,22 +1179,10 @@ impl App {
                     let buffer = self.windows.buffers.get_mut(&pane.document).unwrap();
                     (&mut buffer.editor, &buffer.files)
                 };
-                let filename = self
-                    .git_write
-                    .drafts
-                    .get(&pane.document)
-                    .map(|draft| {
-                        format!(
-                            "Git commit · {}",
-                            draft.root.file_name().unwrap_or_default().to_string_lossy()
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        files
-                            .path()
-                            .map(|path| crate::paths::display(path).to_string())
-                            .unwrap_or_else(|| "[scratch]".into())
-                    });
+                let filename = files
+                    .path()
+                    .map(|path| crate::paths::display(path).to_string())
+                    .unwrap_or_else(|| "[scratch]".into());
                 let dirty = files.is_dirty(editor.document());
                 let git = self.git.gutter_diff(editor.document().id(), files.target());
                 editor
@@ -1409,7 +1193,6 @@ impl App {
                             &mut pane.viewport,
                             Chrome {
                                 filename: &filename,
-                                title: self.git_write.drafts.contains_key(&pane.document),
                                 dirty,
                                 pending: "",
                                 lsp: "",

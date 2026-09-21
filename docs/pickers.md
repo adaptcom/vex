@@ -104,8 +104,8 @@ the picker open.
 ## Buffer picker
 
 Space-b (`:buffer_picker`) uses the same floating boxes and navigation keys to
-choose a loaded buffer. Entries include hidden files, scratch buffers, and commit
-drafts. `*` marks the current buffer and `+` marks unsaved edits. An empty query
+choose a loaded buffer, including hidden files and scratch buffers.
+`*` marks the current buffer and `+` marks unsaved edits. An empty query
 orders entries by recent access; fuzzy scores take priority for a nonempty query.
 
 The picker captures labels and identities once on opening. Query changes share
@@ -126,7 +126,7 @@ waits for the current query before dispatching subsequent editing keys.
 
 Space-j (`:jumplist_picker`) lists saved locations from every pane, newest first
 within each pane, following [Helix's jump picker](https://github.com/helix-editor/helix/blob/master/helix-term/src/commands.rs).
-Rows show the path (or scratch/draft name), primary cursor line, and selected
+Rows show the path (or scratch name), primary cursor line, and selected
 text. `*` marks the buffer that is current in the checkpoint's source pane.
 Filtering matches paths and snippets. Enter restores the entire selection set
 in the focused pane, including direction and primary selection, and records

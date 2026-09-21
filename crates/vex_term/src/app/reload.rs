@@ -121,7 +121,6 @@ impl App {
             self.open_search_prompt();
         }
         self.refresh_git();
-        self.refresh_status();
     }
 
     pub(super) fn reload_current_file(&mut self, force: bool) -> io::Result<()> {
@@ -285,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn poll_only_visible_documents_and_skip_git_panes_scratch_and_hidden_splits() {
+    fn poll_only_visible_documents_and_skip_scratch_and_hidden_splits() {
         let dir = tempfile::tempdir().unwrap();
         let first = dir.path().join("one.txt");
         let second = dir.path().join("two.txt");
@@ -315,8 +314,6 @@ mod tests {
             assert!(!files.is_dirty(editor.document()));
         })
         .unwrap();
-        app.set_git_view(Some(dir.path().into()));
-        assert_eq!(app.visible_file_probes().len(), 1);
         let mut scratch = App::from_document(Document::default(), (80, 24));
         scratch.enable_file_polling(Instant::now());
         assert!(

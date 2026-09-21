@@ -19,7 +19,6 @@ mod clipboard;
 mod completion;
 mod formatting;
 mod git;
-mod git_write;
 mod jumps;
 pub(crate) use jumps::{Job as JumpNavigationJob, Result as JumpNavigationResult};
 mod actions;
@@ -31,7 +30,6 @@ mod prompt;
 mod reload;
 mod rename;
 mod signature;
-mod status;
 mod view;
 mod windows;
 pub mod workspace;
@@ -95,8 +93,6 @@ pub struct App {
     windows: windows::State,
     mouse: windows::MouseState,
     git: git::State,
-    status: status::State,
-    git_write: git_write::State,
     reload: reload::State,
     jump_navigation: jumps::State,
     navigation: navigation::State,
@@ -142,8 +138,6 @@ impl App {
             windows,
             mouse: windows::MouseState::default(),
             git: git::State::default(),
-            status: status::State::default(),
-            git_write: git_write::State::default(),
             reload: reload::State::default(),
             jump_navigation: jumps::State::default(),
             navigation: navigation::State::default(),
@@ -267,11 +261,6 @@ impl App {
         if let Event::Mouse(event) = event {
             return self.handle_mouse(event, 1);
         }
-        if self.prompt.is_none()
-            && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
-        {
-            self.resume_git_mouse_scroll();
-        }
         if self.workspace_edit_waiting()
             && matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release
                 && matches!(input::key(*key), Some(Key::Escape | Key::Ctrl('c'))))
@@ -310,15 +299,8 @@ impl App {
         }
         if matches!(event, Event::FocusGained) {
             self.refresh_git();
-            self.refresh_status();
         }
         if let Some(redraw) = self.handle_picker_input(&event) {
-            return redraw;
-        }
-        if let Some(redraw) = self.handle_commit_input(&event) {
-            return redraw;
-        }
-        if let Some(redraw) = self.handle_status_input(&event) {
             return redraw;
         }
         if let Some(redraw) = self.handle_code_action_input(&event) {
@@ -440,39 +422,6 @@ impl App {
         let force = name.ends_with('!');
         let name = name.strip_suffix('!').unwrap_or(name);
         let argument = argument.trim();
-        if self.active_git_view().is_some()
-            && !matches!(
-                name,
-                "git_status"
-                    | "git_toggle"
-                    | "git_visit"
-                    | "git_refresh"
-                    | "git_close"
-                    | "git_stage"
-                    | "git_unstage"
-                    | "git_commit"
-                    | "vsplit"
-                    | "vs"
-                    | "hsplit"
-                    | "hs"
-                    | "split"
-                    | "sp"
-                    | "only"
-                    | "quit"
-                    | "q"
-                    | "quit-all"
-                    | "qa"
-                    | "qall"
-                    | "help"
-                    | "h"
-                    | "mouse"
-                    | "equalize_splits"
-            )
-        {
-            return Err(io::Error::other(
-                "Git status cannot edit the retained document; q returns to it",
-            ));
-        }
         if let Some(command) = COMMANDS
             .iter()
             .find(|c| c.name == name || c.aliases.contains(&name))
@@ -496,11 +445,7 @@ impl App {
         self.refresh_diagnostics();
         self.open_search_prompt();
         self.paint_windows(frame)?;
-        let diagnostic = if self.active_git_view().is_some() {
-            String::new()
-        } else {
-            self.diagnostic_message()
-        };
+        let diagnostic = self.diagnostic_message();
         render::paint_command_line(
             frame,
             if self.message.is_empty() {
@@ -521,22 +466,11 @@ impl App {
 
     fn paint_current_window(&mut self, frame: &mut Frame, reserved_bottom: u16) -> io::Result<()> {
         self.mouse.completion = None;
-        if let Some(key) = self.active_git_view().cloned() {
-            self.status
-                .views
-                .get_mut(&key)
-                .unwrap()
-                .paint(frame, reserved_bottom, true);
-            return Ok(());
-        }
         let filename = self
-            .commit_title(self.editor.document().id())
-            .unwrap_or_else(|| {
-                self.files
-                    .path()
-                    .map(|p| crate::paths::display(p).to_string())
-                    .unwrap_or_else(|| "[scratch]".into())
-            });
+            .files
+            .path()
+            .map(|path| crate::paths::display(path).to_string())
+            .unwrap_or_else(|| "[scratch]".into());
         let mut pending = format!(
             "{}{}",
             self.keys.count().map(|n| n.to_string()).unwrap_or_default(),
@@ -551,14 +485,6 @@ impl App {
             pending.push_str(progress);
         }
         let lsp = self.language_status();
-        if self
-            .git_write
-            .drafts
-            .get(&self.editor.document().id())
-            .is_some_and(|draft| self.git_operation_for(&draft.root))
-        {
-            pending.push_str(" Git busy");
-        }
         let diagnostic = self.diagnostic_message();
         render::paint_view(
             frame,
@@ -566,10 +492,6 @@ impl App {
             &mut self.viewport,
             Chrome {
                 filename: &filename,
-                title: self
-                    .git_write
-                    .drafts
-                    .contains_key(&self.editor.document().id()),
                 dirty: self.files.is_dirty(self.editor.document()),
                 pending: &pending,
                 lsp: &lsp,
@@ -618,7 +540,6 @@ impl App {
                 Ok(())
             }
             Some(ApplicationAction::Jump { forward, count }) => self.navigate_jump(forward, count),
-            Some(ApplicationAction::GitStatus) => self.open_git_status(),
             Some(ApplicationAction::FilePicker) => {
                 self.open_file_picker();
                 Ok(())
@@ -914,56 +835,6 @@ commands! {
         app.editor.execute("format_document", 1).map_err(io::Error::other)
     }
 
-    /// Stage the selected whole file from disk. Save unsaved buffers first; hunk staging is not yet supported.
-    fn git_stage(app, argument, force) ["git_stage"] {
-        if !argument.is_empty() || force { return Err(io::Error::other("git_stage takes no arguments")); }
-        app.change_git_index(true)
-    }
-    /// Unstage the selected whole file, preserving working files.
-    fn git_unstage(app, argument, force) ["git_unstage"] {
-        if !argument.is_empty() || force { return Err(io::Error::other("git_unstage takes no arguments")); }
-        app.change_git_index(false)
-    }
-    /// Open or resume this repository's commit message in an editor pane. Ctrl-c Ctrl-c submits; Ctrl-c Ctrl-k returns and retains the draft.
-    fn git_commit(app, argument, force) ["git_commit"] {
-        if !argument.is_empty() || force { return Err(io::Error::other("git_commit takes no arguments")); }
-        app.begin_git_commit()
-    }
-    /// Commit the current index using the active commit message. Hooks and signing follow Git configuration; failures retain the draft.
-    fn git_commit_submit(app, argument, force) ["git_commit_submit"] {
-        if !argument.is_empty() || force { return Err(io::Error::other("git_commit_submit takes no arguments")); }
-        app.submit_git_commit()
-    }
-    /// Return to Git status, retaining this commit draft and undo history for the session. An already submitted commit continues in the background.
-    fn git_commit_cancel(app, argument, force) ["git_commit_cancel"] {
-        if !argument.is_empty() || force { return Err(io::Error::other("git_commit_cancel takes no arguments")); }
-        app.cancel_git_commit()
-    }
-    /// Open the repository status view, preserving the document behind it.
-    fn git_status(app, argument, force) ["git_status"] {
-        if !argument.is_empty() || force { return Err(io::Error::other("git_status takes no arguments")); }
-        app.open_git_status()
-    }
-    /// Expand or collapse the selected Git section, file, or hunk.
-    fn git_toggle(app, argument, force) ["git_toggle"] {
-        if !argument.is_empty() || force { return Err(io::Error::other("git_toggle takes no arguments")); }
-        app.toggle_git_section()
-    }
-    /// Open the selected Git file at the reviewed change, protecting unsaved buffers.
-    fn git_visit(app, argument, force) ["git_visit"] {
-        if !argument.is_empty() || force { return Err(io::Error::other("git_visit takes no arguments")); }
-        app.visit_git_change()
-    }
-    /// Refresh visible repository status views in the background, preserving navigation and folds.
-    fn git_refresh(app, argument, force) ["git_refresh"] {
-        if !argument.is_empty() || force { return Err(io::Error::other("git_refresh takes no arguments")); }
-        app.refresh_status(); Ok(())
-    }
-    /// Return from Git status to the document retained in this pane.
-    fn git_close(app, argument, force) ["git_close"] {
-        if !argument.is_empty() || force { return Err(io::Error::other("git_close takes no arguments")); }
-        app.close_git_status(); Ok(())
-    }
     /// Split vertically, optionally opening PATH in the new right-hand window.
     fn vertical_split(app, argument, force) ["vsplit", "vs"] complete Path {
         if force { return Err(io::Error::other("vsplit does not accept !")); }
@@ -1003,9 +874,6 @@ commands! {
 
     /// Write the buffer atomically. Accepts an optional path; ! permits overwriting external changes or an existing destination.
     fn write_file(app, argument, force) ["write", "w"] complete Path {
-        if app.git_write.drafts.contains_key(&app.editor.document().id()) {
-            return Err(io::Error::other("commit drafts are retained in memory; Ctrl-c Ctrl-c commits, Ctrl-c Ctrl-k returns"));
-        }
         app.check_save_target(argument)?;
         app.editor.finish_undo_group();
         let bytes = app.files.save(app.editor.document(), if argument.is_empty() { None } else { Some(Path::new(argument)) }, force)?;
@@ -1018,7 +886,6 @@ commands! {
         app.language.saved += 1;
         app.language.saved_snapshot = Some(app.editor.document().snapshot());
         app.refresh_git();
-        app.refresh_status();
         Ok(())
     }
 

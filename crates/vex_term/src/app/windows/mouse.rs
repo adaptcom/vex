@@ -1,7 +1,7 @@
 //! Pointer routing uses the same pane rectangles as drawing. Reading an
 //! inactive view never changes focus, undo grouping, or its selections.
 
-use super::{App, Content, layout};
+use super::{App, layout};
 use crate::documentation::Area;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
@@ -45,17 +45,6 @@ impl App {
     pub(in crate::app) fn mouse_focus(&mut self, focused: bool) {
         self.mouse.focused = focused;
         self.cancel_mouse_drag();
-    }
-
-    pub(in crate::app) fn resume_git_mouse_scroll(&mut self) {
-        if let Some(key) = self.active_git_view().cloned() {
-            self.status
-                .views
-                .get_mut(&key)
-                .unwrap()
-                .list
-                .resume_following();
-        }
     }
 
     /// `count` combines only adjacent wheel events at identical coordinates.
@@ -129,13 +118,6 @@ impl App {
         };
         if y >= rect.y + rect.height.saturating_sub(1) {
             return false;
-        }
-        if let Content::Git(key) = &self.windows.panes[&id].content {
-            return self.status.views.get_mut(key).unwrap().list.scroll(
-                down,
-                lines,
-                usize::from(rect.height.saturating_sub(1)),
-            );
         }
         let result = if id == self.windows.layout.active {
             self.viewport.scroll(&self.editor, down, lines, rect.size())

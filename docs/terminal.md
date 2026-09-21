@@ -80,7 +80,6 @@ and calls that existing dispatcher.
 | Space-a | Open the code-action menu; Enter applies, Escape cancels |
 | `=` | Format one selection using the language server |
 | `:format`, `:fmt` | Format the active file; changes remain unsaved and undoable |
-| Space-g | Open the [repository status view](git-status.md) |
 | Ctrl-w, Space-w | Enter [window mode](windows.md) to split, focus, swap, and close panes |
 | Escape | Cancel a prefix/picker/prompt; otherwise enter normal mode |
 | `:` in normal/select mode | Open the command prompt |
@@ -270,7 +269,7 @@ Disabling capture lets the terminal handle mouse gestures normally.
 
 - Wheel/trackpad vertical scrolling moves the pane under the pointer by three
   logical lines per reported step. Keyboard focus, selections, and insert undo
-  groups stay unchanged. Git status scrolls without moving its selected row.
+  groups stay unchanged.
 - The cursor may go offscreen while browsing. Background redraws retain that
   position; keyboard navigation or editing resumes cursor following.
 - Drag a vertical divider to adjust widths. Drag the status line separating
@@ -471,22 +470,17 @@ File discovery/matching and previews use that mailbox implementation with two
 additional latest-result slots. The file index stays on its worker, and each
 completion is a bounded snapshot rather than a batch of new paths.
 
-Git uses another latest-result slot and batches all open buffers together, with
+Git uses another latest-result slot and batches visible buffers together, with
 cached HEAD baselines and hunks shared across views. Edit debounce and periodic
 repository refresh use event-loop deadlines. See [Git architecture and limits](git.md).
-The repository status view has its own query worker and latest-result slot,
-including lazy diffs and background syntax colors. See [repository status](git-status.md).
-Stage, unstage, and commit use a separate ordered write worker and a reliable
-FIFO of completion events. Commit drafts are normal editor buffers retained for
-the session; status remains visible in the adjacent pane.
 
 File polling has a separate worker and latest-result slot. Every two seconds,
 the UI snapshots file-backed documents shown in visible panes, deduplicating
 shared buffers. Only one batch runs at a time; metadata checks, reads, comparisons,
 and reload edit preparation happen off the UI thread. Results validate the document,
-revision, path, and save generation before applying. Hidden splits and documents
-covered by a Git pane are excluded; temporary picker/help overlays do not hide
-their underlying document from polling.
+revision, path, and save generation before applying. Hidden buffers and splits
+are excluded; temporary picker/help overlays do not hide their underlying
+document from polling.
 
 `BackgroundEvent` carries search, syntax, picker, preview, Git, and file-poll results. LSP has a separate typed
 event variant and a FIFO of up to 128 events with producer backpressure, preserving
@@ -509,8 +503,6 @@ failures wake the main loop and unwind through cleanup. Input polling has a
 100 ms while idle. Cancellation is cooperative; service limits and remaining
 synchronous work are documented in [search](search.md), [syntax](syntax.md), and
 [language services](lsp.md), and [Git](git.md).
-Git writes finish in order during teardown; quit commands report busy while a
-write is pending, including long-running hooks and signing.
 
 ## Files and current limits
 

@@ -89,7 +89,6 @@ pub enum ApplicationAction {
     SaveSelection,
     RecordJump(std::sync::Arc<SelectionSet>),
     Jump { forward: bool, count: usize },
-    GitStatus,
     FilePicker,
     BufferPicker,
     JumpPicker,

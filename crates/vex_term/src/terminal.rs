@@ -185,9 +185,6 @@ pub fn run(app: &mut App) -> io::Result<()> {
         if let Some(batch) = app.take_git_batch(Instant::now()) {
             runtime.submit_git(batch);
         }
-        if let Some(batch) = app.take_status_batch(Instant::now()) {
-            runtime.submit_status(batch);
-        }
         if let Some(batch) = app.take_file_poll(Instant::now()) {
             runtime.submit_file_poll(batch);
         }
@@ -196,9 +193,6 @@ pub fn run(app: &mut App) -> io::Result<()> {
         }
         if let Some(job) = app.take_prompt_completion_job() {
             runtime.submit_prompt(job);
-        }
-        while let Some(job) = app.take_git_write() {
-            runtime.submit_git_write(job);
         }
         if redraw {
             let (width, height) = app.size();
@@ -255,7 +249,6 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 .chain(app.workspace_search_deadline())
                 .chain(app.picker_animation_deadline())
                 .chain(app.git_deadline())
-                .chain(app.status_deadline())
                 .chain(app.file_poll_deadline())
                 .min()
                 .map_or(Duration::from_millis(100), |deadline| {
@@ -323,9 +316,6 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Git(result)) => {
                     redraw |= app.handle_git_result(result);
                 }
-                AppEvent::Background(BackgroundEvent::GitStatus(result)) => {
-                    redraw |= app.handle_status_result(result);
-                }
                 AppEvent::Background(BackgroundEvent::FilePoll(result)) => {
                     redraw |= app.handle_file_poll(result, Instant::now());
                 }
@@ -333,7 +323,6 @@ pub fn run(app: &mut App) -> io::Result<()> {
                     redraw |= app.handle_clipboard_result(result);
                 }
                 AppEvent::Lsp(event) => redraw |= app.handle_lsp_event(event),
-                AppEvent::GitWrite(result) => redraw |= app.handle_git_write(result),
                 AppEvent::Failed(error) => return Err(error),
             }
             if let Some(job) = app.editor.take_search_job() {
@@ -353,12 +342,6 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(batch) = app.take_git_batch(Instant::now()) {
                 runtime.submit_git(batch);
-            }
-            if let Some(batch) = app.take_status_batch(Instant::now()) {
-                runtime.submit_status(batch);
-            }
-            while let Some(job) = app.take_git_write() {
-                runtime.submit_git_write(job);
             }
             if let Some(job) = app.take_picker_job() {
                 runtime.submit_picker(job);

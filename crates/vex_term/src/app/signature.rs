@@ -93,7 +93,6 @@ impl App {
         if self.signature_options().is_none()
             || self.prompt.is_some()
             || self.picker_query_stamp().is_some()
-            || self.active_git_view().is_some()
             || self.editor.repeat_pending()
         {
             self.signature.dismiss();

@@ -1,6 +1,7 @@
 # Git gutter
 
-For repository-wide review, Space-g opens the [Git status view](git-status.md).
+Git integration is read-only: background diffs and gutter markers. Use an
+external Git client for repository status, staging, and commits.
 
 Named, tracked UTF-8 files show changes against their committed contents in
 `HEAD`. The comparison uses the current buffer, including unsaved edits, so both
@@ -30,7 +31,7 @@ are supported. Missing Git and unavailable baselines quietly leave an empty gutt
 ## Background work
 
 `vex_git` owns a cached committed baseline and a bounded Myers line diff for each
-open buffer. It uses read-only Git plumbing for repository discovery and blob
+visible buffer. It uses read-only Git plumbing for repository discovery and blob
 loading, then compares rope snapshots in memory. Editing and drawing never run
 Git. No external dependencies were added; the crate uses the workspace's existing
 snapshot, cancellation, and temporary-file support.
@@ -48,7 +49,7 @@ per repository in a batch; unchanged blobs and document revisions reuse cached
 data. Ordinary edits use the cached baseline without starting Git.
 
 One persistent worker uses the existing cancellable, replaceable mailbox and a
-dedicated result slot in the event queue. Requests and results batch all open
+dedicated result slot in the event queue. Requests and results batch visible
 buffers; panes sharing a buffer share its diff. Request generation, document
 identity, revision, and path checks reject stale results. Rendering only looks
 up markers for visible lines. Hunks retain old and new line ranges for future
