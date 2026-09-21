@@ -1,14 +1,13 @@
 # Vex
 
-![Vex editing Rust code](images/vex.png)
-
 A modal text editor inspired by [Helix](https://github.com/helix-editor/helix)
-with a smattering of stuff I like from Vim and Emacs.
-
-Text interaction is "noun" then "verb" (as opposed to Vim's "verb" then "noun").
+with a smattering of stuff I like from Vim and Emacs. Text interaction is "noun"
+then "verb" (as opposed to Vim's "verb" then "noun").
 
 Treesitter and LSP are the backbone of syntax highlighting and code
 intelligence.
+
+![Vex editing Rust code](images/vex.png)
 
 ## LLM disclosure
 
