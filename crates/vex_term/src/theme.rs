@@ -149,7 +149,8 @@ fn syntax_color(highlight: Highlight) -> Color {
         BuiltinType | Constant | Escape | Raw | String | Operator | Property | Link => {
             Color::DarkBlue
         }
-        Function | Constructor | Heading => Color::DarkMagenta,
+        Function | Constructor => Color::DarkMagenta,
+        Heading => Color::DarkCyan,
         Tag => Color::DarkGreen,
         Comment => Color::DarkGrey,
         Attribute => Color::Yellow,
