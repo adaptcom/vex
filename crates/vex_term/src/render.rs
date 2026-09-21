@@ -432,7 +432,7 @@ pub(crate) fn paint_view(
 }
 
 /// Status occupies the pane's existing bottom row; its rule also separates
-/// horizontal splits. Labels leave the terminal's background untouched.
+/// horizontal splits. Bold reverse-video labels sit inside the rule.
 fn paint_status(
     frame: &mut Frame,
     row: u16,

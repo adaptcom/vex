@@ -72,7 +72,10 @@ impl Style {
     }
 
     pub(crate) fn reversed(self) -> bool {
-        matches!(self, Self::PrimaryCursor(_))
+        matches!(
+            self,
+            Self::PrimaryCursor(_) | Self::StatusLine | Self::InactiveStatus
+        )
     }
 
     pub(crate) fn underlined(self) -> bool {

@@ -31,9 +31,10 @@ different pane ends the current typing group. Half-page and Page Up/Down movemen
 use the focused pane's dimensions.
 
 The command/search prompt and message line appear once, across the bottom of the
-terminal. Each pane's status is embedded in a thin grey border on the normal
-terminal background, with bold labels in all panes and dim grey labels in
-inactive panes. Horizontal splits meet at that status border, with no extra row.
+terminal. Each pane's status is embedded in a thin grey border, with bold
+reverse-video labels in all panes. Active labels swap the terminal's default
+foreground and background; inactive labels use a muted grey background.
+Horizontal splits meet at that status border, with no extra row.
 The border connects to vertical pane dividers with box-drawing junctions. Long
 paths are shortened from the left, and a selection count appears only for
 multiple selections. Only the

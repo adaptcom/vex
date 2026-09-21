@@ -13,8 +13,8 @@ document in the new pane, leaving Git visible beside it. Multiple panes showing
 the same repository currently share status selection and fold state.
 
 Status content fills the pane without an outer box. The bottom status rule shows
-`Git · repository`, with the same bold title and muted inactive style as document
-panes. Shortcut help remains a boxed popup above the status line.
+`Git · repository`, with the same bold reverse-video title and muted inactive
+style as document panes. Shortcut help remains a boxed popup above the status line.
 
 ## Contents and controls
 

@@ -295,7 +295,7 @@ impl View {
                         group.title(),
                         files.len()
                     ),
-                    Style::StatusLine,
+                    Style::Markup(vex_syntax::markup::Attributes::STRONG),
                 );
                 if self.collapsed.contains(&group) {
                     continue;

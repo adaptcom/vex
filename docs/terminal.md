@@ -424,11 +424,12 @@ secondary-cursor backgrounds; unfocused panes remove it. The insert bar preserve
 the underlying text's syntax colors. Other
 cursors and selected ranges use cell styles. The status line shows mode, unsaved
 changes (`[+]`), pending keys/count, path, primary position, and a count for multiple
-selections. Labels sit within a thin grey border on the normal terminal
-background; all labels are bold, with inactive labels dimmed. Long paths are
-shortened from the left to keep the cursor position visible. Status borders join vertical pane dividers
-with box-drawing junctions. The
-bottom line shows messages, errors, or the prompt. This line is global across all
+selections. Bold reverse-video labels sit within a thin grey border. Active
+labels swap the terminal's default foreground and background; inactive labels
+use a muted grey background. Long paths are shortened from the left to keep the
+cursor position visible. Status borders join vertical pane dividers with
+box-drawing junctions. The bottom line shows messages, errors, or the prompt.
+This line is global across all
 splits; each pane has only its own status line.
 
 Displayed absolute paths inside the current user's home directory use `~`,
