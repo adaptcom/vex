@@ -53,7 +53,7 @@ impl Job {
                     entry: Arc::new(Entry {
                         label: format!(
                             "{}:{}:{}",
-                            path.display(),
+                            crate::paths::display(path),
                             u64::from(destination.range.start.line) + 1,
                             u64::from(destination.range.start.character) + 1
                         ),

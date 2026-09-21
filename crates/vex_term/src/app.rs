@@ -534,7 +534,7 @@ impl App {
             .unwrap_or_else(|| {
                 self.files
                     .path()
-                    .map(|p| p.display().to_string())
+                    .map(|p| crate::paths::display(p).to_string())
                     .unwrap_or_else(|| "[scratch]".into())
             });
         let mut pending = format!(

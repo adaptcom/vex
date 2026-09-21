@@ -769,7 +769,7 @@ impl App {
                                 label: self.commit_title(jump.document).unwrap_or_else(|| {
                                     files
                                         .path()
-                                        .map(|path| path.display().to_string())
+                                        .map(|path| crate::paths::display(path).to_string())
                                         .unwrap_or_else(|| "[scratch]".into())
                                 }),
                             }))
@@ -804,7 +804,7 @@ impl App {
                 let mut label = self.commit_title(id).unwrap_or_else(|| {
                     files
                         .path()
-                        .map(|path| path.display().to_string())
+                        .map(|path| crate::paths::display(path).to_string())
                         .unwrap_or_else(|| "[scratch]".into())
                 });
                 let dirty = files.is_dirty(editor.document());
@@ -1396,7 +1396,7 @@ impl App {
                     .unwrap_or_else(|| {
                         files
                             .path()
-                            .map(|path| path.display().to_string())
+                            .map(|path| crate::paths::display(path).to_string())
                             .unwrap_or_else(|| "[scratch]".into())
                     });
                 let dirty = files.is_dirty(editor.document());

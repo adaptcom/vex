@@ -135,7 +135,7 @@ impl Workspace {
             if doc.snapshot.text().len_bytes() > crate::MAX_DOCUMENT_BYTES {
                 return Err(format!(
                     "buffer exceeds the 8 MiB LSP limit: {}",
-                    doc.path.display()
+                    vex_editor::paths::display(&doc.path)
                 ));
             }
             if self.documents.get(&doc.path).is_some_and(|current| {
@@ -144,7 +144,7 @@ impl Workspace {
             }) {
                 return Err(format!(
                     "workspace capture is out of date: {}",
-                    doc.path.display()
+                    vex_editor::paths::display(&doc.path)
                 ));
             }
             bytes = bytes.saturating_add(doc.snapshot.text().len_bytes());

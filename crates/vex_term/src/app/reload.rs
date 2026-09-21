@@ -66,7 +66,7 @@ impl App {
                 continue;
             }
             let id = result.document;
-            let path = result.path.display().to_string();
+            let path = crate::paths::display(&result.path).to_string();
             let accepted = self.with_file_buffer_mut(id, |editor, files, automatic_language| -> io::Result<Option<(bool, String)>> {
                 if !files.accepts(&result, editor.document()) { return Ok(None); }
                 let notice = match result.outcome {
@@ -147,7 +147,7 @@ impl App {
             }
         }
         self.after_reload(self.editor.document().id());
-        self.message = format!("reloaded {}", path.display());
+        self.message = format!("reloaded {}", crate::paths::display(&path));
         Ok(())
     }
 }

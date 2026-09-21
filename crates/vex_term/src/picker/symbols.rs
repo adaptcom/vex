@@ -64,7 +64,7 @@ impl SymbolJob {
                 format!(
                     "{name}  [{}]  {}:{}",
                     symbol.kind_name(),
-                    symbol.location.path.display(),
+                    crate::paths::display(&symbol.location.path),
                     u64::from(symbol.location.position.line) + 1
                 )
             } else {

@@ -27,6 +27,7 @@ mod editing;
 mod error;
 mod indentation;
 mod keymap;
+pub mod paths;
 mod prepared_selection;
 mod register;
 mod repeat;

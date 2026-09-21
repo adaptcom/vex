@@ -82,6 +82,8 @@ impl FileState {
         self.path.as_deref()
     }
 
+    /// Literal filename for the `%` register, which can be pasted into commands
+    /// or document text. UI labels use `paths::display` separately.
     pub fn display_name(&self) -> std::sync::Arc<str> {
         self.path().map_or_else(
             || "[scratch]".into(),

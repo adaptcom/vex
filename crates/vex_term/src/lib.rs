@@ -15,3 +15,5 @@ mod sections;
 pub mod terminal;
 pub mod theme;
 mod ui;
+
+pub(crate) use vex_editor::paths;

@@ -168,7 +168,7 @@ impl Index {
                     contents.push_str(&text);
                     contents.push('\n');
                 }
-                Err(error) => self.notice = format!("{}: {error}", file.display()),
+                Err(error) => self.notice = format!("{}: {error}", crate::paths::display(&file)),
             }
         }
         Arc::new(Rules::new(path.into(), &contents, parent))

@@ -567,7 +567,7 @@ impl App {
         {
             return false;
         }
-        active.view.title = format!("Files · {}", result.root.display());
+        active.view.title = format!("Files · {}", crate::paths::display(&result.root));
         let replaced = active.view.replace_incremental(
             result
                 .items

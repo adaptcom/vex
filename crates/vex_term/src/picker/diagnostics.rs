@@ -120,7 +120,7 @@ impl Worker {
                     } else {
                         format!(
                             "{}:{}:{}",
-                            path.strip_prefix(&job.cwd).unwrap_or(&path).display(),
+                            crate::paths::display(path.strip_prefix(&job.cwd).unwrap_or(&path)),
                             u64::from(diagnostic.range.start.line) + 1,
                             u64::from(diagnostic.range.start.character) + 1
                         )

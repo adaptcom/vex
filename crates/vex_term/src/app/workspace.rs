@@ -156,7 +156,7 @@ impl Job {
                         if open.dirty {
                             return Err(io::Error::other(format!(
                                 "language server has not synchronized unsaved buffer {}",
-                                path.display()
+                                crate::paths::display(&path)
                             )));
                         }
                         if !std::fs::metadata(&path)?.is_file() {

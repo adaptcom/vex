@@ -36,7 +36,7 @@ impl App {
             let _ = self.editor.execute("search_cancel", 1);
         }
         self.picker.next_session += 1;
-        let mut view = Picker::new(format!("Search · {}", root.display()));
+        let mut view = Picker::new(format!("Search · {}", crate::paths::display(&root)));
         view.noun = "files";
         self.picker.active = Some(Active {
             view,
@@ -123,7 +123,7 @@ impl App {
         {
             return false;
         }
-        active.view.title = format!("Search · {}", result.root.display());
+        active.view.title = format!("Search · {}", crate::paths::display(&result.root));
         let replaced = active.view.replace_incremental(
             result
                 .items

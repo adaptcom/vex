@@ -431,6 +431,12 @@ with box-drawing junctions. The
 bottom line shows messages, errors, or the prompt. This line is global across all
 splits; each pane has only its own status line.
 
+Displayed absolute paths inside the current user's home directory use `~`,
+including pane status lines, picker titles and entries, and file notices.
+The home directory is discovered from the operating system once per session.
+Project-relative labels stay relative; file operations and the `%` filename
+register retain the original paths.
+
 Movement and rendering share display-width conventions in `vex_core::display`.
 Control characters and standalone zero-width clusters appear as replacement
 cells; file contents and paths cannot inject terminal escape sequences. A wide
