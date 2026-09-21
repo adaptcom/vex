@@ -130,6 +130,15 @@ selections, and measure operations that could affect input latency.
 
 ## Later editing and interface work
 
+- [x] Consistent popup presentation: compact shortcut summaries and columns,
+  foreground selection markers, adaptive picker footers, visible match context
+  in clipped Unicode labels, overflow positions, and resize-safe scrolling.
+  Keep status/command lines and narrow-pane unsaved indicators visible.
+- [ ] Render completion documentation using the prepared Markdown path used by
+  hover/signatures, with cached wrapping and scrolling. Parse on the worker.
+- [ ] Retain completed insert/command-completion suggestions during refreshes,
+  with shared busy indicators. Old suggestions must stay display-only until a
+  response for the current document or prompt revision arrives.
 - [x] Detect existing indentation on open/reload with bounded sampling and
   language defaults for ambiguous files. Tab, indent/unindent, and formatting
   share the chosen spaces/tabs; explicit buffer overrides survive reloads.

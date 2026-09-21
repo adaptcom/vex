@@ -1,8 +1,9 @@
 //! Cached wrapping and visible-row painting for prepared documentation.
 
 use crate::{
-    picker::{label, paint_box},
+    picker::paint_box,
     screen::{Frame, Style},
+    ui::Label,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -257,13 +258,24 @@ impl Popup {
             }
         }
         if self.rows.len() > self.visible {
-            let footer = format!(" {}/{} ", self.top + 1, self.rows.len());
-            label(
+            let range = format!(
+                "{}–{}/{}",
+                self.top + 1,
+                (self.top + self.visible).min(self.rows.len()),
+                self.rows.len()
+            );
+            let footer = format!(" Ctrl-u/d · {range} ");
+            let footer = if footer.width() <= usize::from(width - 4) {
+                footer
+            } else {
+                format!(" {range} ")
+            };
+            let room = (footer.width().min(usize::from(width - 4))) as u16;
+            Label::new(&footer).paint(
                 frame,
-                x + width.saturating_sub(footer.len() as u16 + 2),
+                x + width - 2 - room,
                 y + height - 1,
-                width - 4,
-                &footer,
+                room,
                 Style::Gutter,
             );
         }

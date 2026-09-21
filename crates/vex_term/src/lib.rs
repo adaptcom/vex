@@ -13,3 +13,4 @@ pub mod render;
 pub mod screen;
 mod sections;
 pub mod terminal;
+mod ui;

@@ -1136,6 +1136,12 @@ are never held by the menu. These measurements exclude background parsing,
 frame reset, file drawing, ANSI encoding, and terminal output; they are local
 samples, not latency guarantees.
 
+With the popup elision and selection-marker changes, the same 256-label fixture
+measured **51.416 µs median / 55.791 µs p95** for cached redraw. Menu installation
+measured 167.417 µs / 176.292 µs. Elision visits only enough graphemes to fill the
+visible label, plus visible suffix or match context; it does not allocate a
+shortened copy. These timings use the same exclusions as above.
+
 Source tests exercise disabled actions, ordering, bounds, preserved opaque data,
 UTF-16 diagnostic ranges, obsolete tickets, menu input, and cancellation. A mock
 stdio server verifies literal edits precede commands, hidden unsaved buffers stay

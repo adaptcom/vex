@@ -188,7 +188,8 @@ its original document, revision, mode, selection, or pane invalidates submission
 server diagnostics. Quick fixes sort first, followed by refactoring categories;
 diagnostic fixes and preferred actions break ties while equal actions retain
 server order. Disabled actions are omitted. The cursor-anchored menu uses the same
-border, bold title, and grey selection as the other popups.
+border and bold title as other popups. A `>` marks the selected action on the
+terminal background; long titles end with an ellipsis.
 
 Up/Down, Ctrl-p/Ctrl-n, or BackTab/Tab cycle actions. Ctrl-u/Ctrl-d and
 PageUp/PageDown move by half the visible rows. Enter applies the selected action;
@@ -282,7 +283,9 @@ at any prefix length. Completion supports a single caret in a named file with a 
 Suggestions appear in a
 bordered menu next to the cursor, above it when there is more room there. A
 separate documentation box appears beside the menu when space permits. Selected
-rows use the shared grey palette; drawing keeps the insertion cursor visible.
+rows use a `>` marker on the terminal background; drawing keeps the insertion
+cursor visible. A position indicator on the bottom border appears when the list
+contains more suggestions than fit. Long labels retain both ends with an ellipsis.
 Each row includes a right-aligned kind such as `field`, `method`, `function`, or
 `struct` when the server supplies one. Unknown kinds remain blank. The kind column
 is omitted in very narrow menus to preserve room for the candidate name.

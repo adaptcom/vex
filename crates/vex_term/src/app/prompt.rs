@@ -6,6 +6,7 @@ use crate::{
     picker::{label, paint_box},
     prompt::{Item, Job, Result as CompletionResult},
     screen::{Frame, Style},
+    ui::{Label, menu_position},
 };
 use std::{collections::VecDeque, ops::Range, sync::Arc};
 use vex_editor::background::Cancellation;
@@ -137,7 +138,7 @@ impl App {
             return;
         }
         let width = frame.width().min(96);
-        let bottom = frame.height().saturating_sub(1);
+        let bottom = frame.height().saturating_sub(2);
         if width < 12 || bottom < 3 {
             return;
         }
@@ -160,39 +161,42 @@ impl App {
         let start = completion
             .selected
             .unwrap_or(0)
-            .saturating_sub(rows.saturating_sub(1));
+            .saturating_sub(rows.saturating_sub(1))
+            .min(completion.items.len().saturating_sub(rows));
         for (offset, item) in completion.items.iter().enumerate().skip(start).take(rows) {
             let row = top + 1 + (offset - start) as u16;
             let selected = completion.selected == Some(offset);
-            let style = if selected {
-                Style::Selection
-            } else {
-                Style::Text
-            };
-            for col in 1..width - 1 {
-                frame.put(col, row, " ", style);
+            if selected {
+                frame.put(1, row, ">", Style::Message);
             }
             let label_width = (width / 2).min(36);
-            label(
+            Label::new(&item.text).middle().paint(
                 frame,
                 2,
                 row,
                 label_width.saturating_sub(2),
-                &item.text,
-                style,
+                Style::Text,
             );
-            label(
+            Label::new(item.description.lines().next().unwrap_or_default()).paint(
                 frame,
                 label_width + 1,
                 row,
                 width - label_width - 3,
-                item.description,
-                if selected { style } else { Style::Gutter },
+                Style::Gutter,
             );
         }
         if footer != 0 {
             label(frame, 2, bottom - 2, width - 4, notice, Style::Gutter);
         }
+        menu_position(
+            frame,
+            0,
+            width,
+            bottom,
+            completion.selected,
+            completion.items.len(),
+            rows,
+        );
     }
 }
 
@@ -353,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_box_is_grey_bold_clipped_and_keeps_the_global_prompt_cursor() {
+    fn completion_box_is_bordered_clipped_and_keeps_the_global_prompt_cursor() {
         let mut app = command("wri");
         app.handle_prompt_key(Key::Tab);
         finish_completion(&mut app);
@@ -365,9 +369,7 @@ mod tests {
                 assert_eq!(frame.cursor.unwrap().y, height - 1);
                 assert!(frame.row_text(height - 1).starts_with(":write"));
                 assert!((0..height - 1).any(|row| frame.row_text(row).contains("Completions")));
-                assert!(
-                    (0..height - 1).any(|row| frame.style_at(2, row) == Some(Style::Selection))
-                );
+                assert!((0..height - 1).any(|row| frame.row_text(row).starts_with("│>write")));
                 assert!(
                     (0..height - 1).any(|row| frame.style_at(3, row) == Some(Style::PopupTitle))
                 );

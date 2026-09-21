@@ -504,42 +504,64 @@ commands! {
         crate::register::paste(ctx, crate::Paste::Cursor)
     }
 
+    /// Copy to clipboard
+    ///
     /// Copy all selections to the system clipboard, retaining fragment boundaries for later pastes while the clipboard is unchanged. Leaves select mode; counts are ignored. The frontend performs clipboard I/O in the background.
     fn yank_to_clipboard(ctx) { clipboard(ctx, crate::ClipboardAction::Yank) }
 
+    /// Copy primary to clipboard
+    ///
     /// Copy only the primary selection to the system clipboard and leave select mode. Does not change the internal yank register; ignores counts.
     fn yank_main_selection_to_clipboard(ctx) { clipboard(ctx, crate::ClipboardAction::YankMain) }
 
+    /// Paste clipboard after
+    ///
     /// Paste system clipboard fragments after selections in normal mode, honoring counts and the destination's line endings. Newline-terminated text pastes below selected lines. Clipboard reads and edit preparation run in the background.
     fn paste_clipboard_after(ctx) { clipboard(ctx, crate::ClipboardAction::Paste(crate::Paste::After)) }
 
+    /// Paste clipboard before
+    ///
     /// Paste system clipboard fragments before selections in normal mode, honoring counts and the destination's line endings. Newline-terminated text pastes above selected lines.
     fn paste_clipboard_before(ctx) { clipboard(ctx, crate::ClipboardAction::Paste(crate::Paste::Before)) }
 
+    /// Replace with clipboard
+    ///
     /// Replace selections with system clipboard fragments in one undo step, honoring counts and leaving the internal yank register unchanged.
     fn replace_selections_with_clipboard(ctx) { clipboard(ctx, crate::ClipboardAction::Paste(crate::Paste::Replace)) }
 
     /// Repeat the last completed insert session at the current selections. Replays its entry command, counts, text, motions, and accepted completion locally. A count repeats the whole session; ordinary normal-mode edits do not replace it.
     fn repeat_insert(ctx) { crate::repeat::start(ctx) }
 
+    /// Add surrounding pair
+    ///
     /// Surround each selection with a character or bracket pair, selecting the result and returning to normal mode. Either bracket chooses its matching pair; other characters repeat on both sides. Enter uses the buffer's line ending. Ignores counts, leaves registers unchanged, and records one undo step.
     fn surround_add(ctx) [SurroundAdd] { crate::surround::add(ctx) }
 
+    /// Delete surrounding pair
+    ///
     /// Delete a surrounding pair at every cursor. Either bracket chooses its pair; m chooses the nearest pair. Counts seek outer pairs. Missing or overlapping pairs cancel all edits. Returns to normal mode with one undo step and leaves registers unchanged.
     fn surround_delete(ctx) [SurroundDelete] { crate::search::surround(ctx, false) }
 
+    /// Replace surrounding pair
+    ///
     /// Find and preview surrounding delimiters before replacing them. Supply the old delimiter (or m for nearest); counts seek outer pairs. Then supply the replacement character with surround_replace_finish. Cancellation restores the original selections.
     fn surround_replace(ctx) [SurroundReplace] { crate::search::surround(ctx, true) }
 
     /// Replace the previewed surrounding pairs with a character or bracket pair, restoring the original selections before mapping them through one undoable edit. Returns to normal mode and leaves registers unchanged. Used as the second input step of mr.
     fn surround_replace_finish(ctx) [SurroundReplacement] { crate::surround::finish(ctx) }
 
+    /// Match brackets
+    ///
     /// Move to the matching bracket, extending in select mode. Syntax also finds the enclosing scope from inside it. Counts are ignored.
     fn match_brackets(ctx) { crate::search::match_brackets(ctx) }
 
+    /// Select inside textobject
+    ///
     /// Select inside a word (w), WORD (W), paragraph (p), specified delimiter, or closest pair (m), retaining normal/select mode. Counts select outer pairs or multiple paragraphs; word objects ignore counts. Scans support background cancellation.
     fn select_textobject_inner(ctx) [TextobjectInner] { crate::search::textobject(ctx, false) }
 
+    /// Select around textobject
+    ///
     /// Select around a word (w), WORD (W), paragraph (p), specified delimiter, or closest pair (m), including adjacent whitespace or delimiters. Counts select outer pairs or multiple paragraphs; word objects ignore counts.
     fn select_textobject_around(ctx) [TextobjectAround] { crate::search::textobject(ctx, true) }
     /// Add copies of each selection on following logical lines at the same display columns. Counts add copies, skipping lines that cannot fit both endpoints. Multi-line selections advance by their height; the primary follows its last copy. Uses the cancellable search worker when enabled.
@@ -555,102 +577,138 @@ commands! {
         Ok(())
     }
 
+    /// Toggle line comments
+    ///
     /// Toggle comments on selected lines, preferring line comments and recognizing existing block comments. Uses language delimiters, skips blank lines, preserves selections and mode, and creates one undo step.
     fn toggle_comments(ctx) { crate::comments::toggle(ctx.editor, false) }
 
+    /// Toggle block comments
+    ///
     /// Toggle block comments around selections, retaining their direction and selecting added delimiters. Languages with only line comments use those instead; plain text defaults to /* */. One undo step, with normal/select mode retained.
     fn toggle_block_comments(ctx) { crate::comments::toggle(ctx.editor, true) }
 
+    /// Focus next window
+    ///
     /// Focus the next window in layout order. A count advances multiple windows.
     fn rotate_view(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::Rotate, ctx.count.get()));
         Ok(())
     }
 
+    /// Split vertically
+    ///
     /// Split the current window vertically, opening a shared view on the right.
     fn vsplit(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::SplitVertical, ctx.count.get()));
         Ok(())
     }
 
+    /// Split horizontally
+    ///
     /// Split the current window horizontally, opening a shared view below.
     fn hsplit(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::SplitHorizontal, ctx.count.get()));
         Ok(())
     }
 
+    /// Equalize splits
+    ///
     /// Equalize all split widths and heights, respecting minimum pane sizes. Preserve focus and selections; counts are ignored.
     fn equalize_splits(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::Equalize, ctx.count.get()));
         Ok(())
     }
 
+    /// Focus left
+    ///
     /// Focus the window to the left.
     fn jump_view_left(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::FocusLeft, ctx.count.get()));
         Ok(())
     }
 
+    /// Focus below
+    ///
     /// Focus the window below.
     fn jump_view_down(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::FocusDown, ctx.count.get()));
         Ok(())
     }
 
+    /// Focus above
+    ///
     /// Focus the window above.
     fn jump_view_up(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::FocusUp, ctx.count.get()));
         Ok(())
     }
 
+    /// Focus right
+    ///
     /// Focus the window to the right.
     fn jump_view_right(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::FocusRight, ctx.count.get()));
         Ok(())
     }
 
+    /// Swap left
+    ///
     /// Swap the current window with the window to the left.
     fn swap_view_left(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::SwapLeft, ctx.count.get()));
         Ok(())
     }
 
+    /// Swap below
+    ///
     /// Swap the current window with the window below.
     fn swap_view_down(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::SwapDown, ctx.count.get()));
         Ok(())
     }
 
+    /// Swap above
+    ///
     /// Swap the current window with the window above.
     fn swap_view_up(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::SwapUp, ctx.count.get()));
         Ok(())
     }
 
+    /// Swap right
+    ///
     /// Swap the current window with the window to the right.
     fn swap_view_right(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::SwapRight, ctx.count.get()));
         Ok(())
     }
 
+    /// Close window
+    ///
     /// Close this window, protecting the last view of unsaved text. Exit when no windows remain.
     fn wclose(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::Close, ctx.count.get()));
         Ok(())
     }
 
+    /// Keep only this window
+    ///
     /// Keep only this window, protecting unsaved text in other buffers.
     fn wonly(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::Only, ctx.count.get()));
         Ok(())
     }
 
+    /// Open file in horizontal split
+    ///
     /// Open filenames in the selections in horizontal splits. Paths are relative to the current file.
     fn goto_file_hsplit(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::OpenHorizontal, ctx.count.get()));
         Ok(())
     }
 
+    /// Open file in vertical split
+    ///
     /// Open filenames in the selections in vertical splits. Paths are relative to the current file.
     fn goto_file_vsplit(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Window(crate::WindowAction::OpenVertical, ctx.count.get()));
@@ -667,6 +725,8 @@ commands! {
         Ok(())
     }
 
+    /// Find files
+    ///
     /// Open a fuzzy file picker at the current project root.
     fn file_picker(ctx) {
         ctx.editor.finish_undo_group();
@@ -674,6 +734,8 @@ commands! {
         Ok(())
     }
 
+    /// Switch buffer
+    ///
     /// Open a fuzzy picker of loaded buffers, including hidden and unsaved buffers.
     fn buffer_picker(ctx) {
         ctx.editor.finish_undo_group();
@@ -681,6 +743,8 @@ commands! {
         Ok(())
     }
 
+    /// Jump history
+    ///
     /// Open a fuzzy picker of saved jump locations from every pane, restoring the full selection on acceptance.
     fn jumplist_picker(ctx) {
         ctx.editor.finish_undo_group();
@@ -688,6 +752,8 @@ commands! {
         Ok(())
     }
 
+    /// Reopen last picker
+    ///
     /// Reopen the last picker with its query, selected result, and scroll position.
     fn last_picker(ctx) {
         ctx.editor.finish_undo_group();
@@ -695,6 +761,8 @@ commands! {
         Ok(())
     }
 
+    /// Search workspace
+    ///
     /// Search file contents below the working directory with a regular expression, including unsaved buffers. Accepted queries use the chosen search register (default /).
     fn global_search(ctx) {
         let register = ctx.register.unwrap_or('/');
@@ -704,39 +772,53 @@ commands! {
         Ok(())
     }
 
+    /// Last accessed buffer
+    ///
     /// Switch to the last buffer accessed in this pane, restoring its view.
     fn goto_last_accessed_file(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::LastAccessed, 1));
         Ok(())
     }
 
+    /// Last edit
+    ///
     /// Go to the end of the latest undo group's change associated with its original primary selection. Select mode extends each selection; records a jump on success.
     fn goto_last_modification(ctx) { crate::search::last_modification(ctx) }
 
+    /// Last modified buffer
+    ///
     /// Switch to the last other buffer modified in this pane.
     fn goto_last_modified_file(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::LastModified, 1));
         Ok(())
     }
 
+    /// Next buffer
+    ///
     /// Switch to the next loaded buffer in opening order, wrapping; accepts a count.
     fn goto_next_buffer(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::Next, ctx.count.get()));
         Ok(())
     }
 
+    /// Previous buffer
+    ///
     /// Switch to the previous loaded buffer in opening order, wrapping; accepts a count.
     fn goto_previous_buffer(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::Previous, ctx.count.get()));
         Ok(())
     }
 
+    /// Open selected filenames
+    ///
     /// Open filenames in the selections in the current pane. Paths are relative to the current file; earlier buffers remain loaded.
     fn goto_file(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::Buffer(crate::BufferAction::OpenSelected, 1));
         Ok(())
     }
 
+    /// Git status
+    ///
     /// Open the repository status view with expandable staged and unstaged diffs.
     fn git_status(ctx) {
         ctx.editor.finish_undo_group();
@@ -744,6 +826,8 @@ commands! {
         Ok(())
     }
 
+    /// Document symbols
+    ///
     /// Open a searchable picker of symbols in the current document using its language server.
     fn symbol_picker(ctx) {
         ctx.editor.finish_undo_group();
@@ -751,6 +835,8 @@ commands! {
         Ok(())
     }
 
+    /// Document diagnostics
+    ///
     /// Open a searchable picker of cached diagnostics for the current document.
     fn diagnostics_picker(ctx) {
         ctx.editor.finish_undo_group();
@@ -758,6 +844,8 @@ commands! {
         Ok(())
     }
 
+    /// Workspace diagnostics
+    ///
     /// Open a searchable picker of cached diagnostics across files and language sessions.
     fn workspace_diagnostics_picker(ctx) {
         ctx.editor.finish_undo_group();
@@ -765,6 +853,8 @@ commands! {
         Ok(())
     }
 
+    /// Workspace symbols
+    ///
     /// Search workspace symbols using the current document's language server.
     fn workspace_symbol_picker(ctx) {
         ctx.editor.finish_undo_group();
@@ -793,6 +883,8 @@ commands! {
         Ok(())
     }
 
+    /// Hover documentation
+    ///
     /// Show language-server documentation for the symbol at the primary cursor.
     fn hover(ctx) {
         ctx.editor.finish_undo_group();
@@ -806,6 +898,8 @@ commands! {
         Ok(())
     }
 
+    /// Go to definition
+    ///
     /// Jump to the definition of the symbol at the primary cursor.
     fn goto_definition(ctx) {
         ctx.editor.finish_undo_group();
@@ -813,6 +907,8 @@ commands! {
         Ok(())
     }
 
+    /// Go to type definition
+    ///
     /// Jump to the type definition of the symbol at the primary cursor, or pick among destinations.
     fn goto_type_definition(ctx) {
         ctx.editor.finish_undo_group();
@@ -820,6 +916,8 @@ commands! {
         Ok(())
     }
 
+    /// Go to implementation
+    ///
     /// Jump to an implementation of the symbol at the primary cursor, or pick among destinations.
     fn goto_implementation(ctx) {
         ctx.editor.finish_undo_group();
@@ -827,6 +925,8 @@ commands! {
         Ok(())
     }
 
+    /// Find references
+    ///
     /// Find references to the symbol at the primary cursor, including its declaration.
     fn goto_reference(ctx) {
         ctx.editor.finish_undo_group();
@@ -834,6 +934,8 @@ commands! {
         Ok(())
     }
 
+    /// Select symbol references
+    ///
     /// Select document highlights for the symbol under the primary cursor, retaining the primary occurrence.
     fn select_references_to_symbol_under_cursor(ctx) {
         ctx.editor.finish_undo_group();
@@ -841,6 +943,8 @@ commands! {
         Ok(())
     }
 
+    /// Rename symbol
+    ///
     /// Rename the symbol under the primary cursor through its language server.
     /// Opens a prompt prefilled with the current name. Workspace edits preserve
     /// unsaved buffers and create a separate undo step in each changed buffer.
@@ -850,6 +954,8 @@ commands! {
         Ok(())
     }
 
+    /// Code actions
+    ///
     /// Show language-server code actions for the primary selection.
     /// The frontend resolves the selected action and applies its edits before
     /// executing any accompanying server command.
@@ -962,45 +1068,71 @@ commands! {
     /// Move up by logical lines, retaining each cursor's desired display column.
     fn move_up(ctx) { vertical(ctx, false) }
 
+    /// Align cursor line to top
+    ///
     /// Align the primary cursor's line to the top of the visible text area without changing selections.
     fn align_view_top(ctx) { view_action(ctx, crate::ViewAction::AlignTop) }
 
+    /// Center cursor line
+    ///
     /// Center the primary cursor's line vertically without changing selections.
     fn align_view_center(ctx) { view_action(ctx, crate::ViewAction::AlignCenter) }
 
+    /// Align cursor line to bottom
+    ///
     /// Align the primary cursor's line to the bottom of the visible text area without changing selections.
     fn align_view_bottom(ctx) { view_action(ctx, crate::ViewAction::AlignBottom) }
 
+    /// Center cursor horizontally
+    ///
     /// Center the primary cursor horizontally using display columns, including tabs and wide graphemes.
     fn align_view_middle(ctx) { view_action(ctx, crate::ViewAction::AlignMiddle) }
 
+    /// Scroll up
+    ///
     /// Scroll up by the counted number of lines. Preserve selections until the primary cursor must move to stay in view; select mode retains its anchor.
     fn scroll_up(ctx) { view_action(ctx, crate::ViewAction::ScrollUp) }
 
+    /// Scroll down
+    ///
     /// Scroll down by the counted number of lines. Preserve selections until the primary cursor must move to stay in view; select mode retains its anchor.
     fn scroll_down(ctx) { view_action(ctx, crate::ViewAction::ScrollDown) }
 
+    /// Page up
+    ///
     /// Scroll up one visible text height, moving only the primary cursor when needed to keep it visible. Counts are ignored, as in Helix.
     fn page_up(ctx) { view_action(ctx, crate::ViewAction::PageUp) }
 
+    /// Page down
+    ///
     /// Scroll down one visible text height, moving only the primary cursor when needed to keep it visible. Counts are ignored, as in Helix.
     fn page_down(ctx) { view_action(ctx, crate::ViewAction::PageDown) }
 
+    /// Top of window
+    ///
     /// Move to the top visible line inside the scroll margin, plus count minus one lines. Select mode extends selections.
     fn goto_window_top(ctx) { view_action(ctx, crate::ViewAction::WindowTop) }
 
+    /// Center of window
+    ///
     /// Move to the center visible line. Select mode extends selections; counts are ignored.
     fn goto_window_center(ctx) { view_action(ctx, crate::ViewAction::WindowCenter) }
 
+    /// Bottom of window
+    ///
     /// Move to the bottom visible line inside the scroll margin, minus count minus one lines. Select mode extends selections.
     fn goto_window_bottom(ctx) { view_action(ctx, crate::ViewAction::WindowBottom) }
 
+    /// Half page up
+    ///
     /// Move cursors and scroll up by half the visible text height, retaining desired columns and extending selections in select mode. Counts multiply the distance; the frontend supplies the current viewport size.
     fn page_cursor_half_up(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::HalfPageUp(ctx.count.get()));
         Ok(())
     }
 
+    /// Half page down
+    ///
     /// Move cursors and scroll down by half the visible text height, retaining desired columns and extending selections in select mode. Counts multiply the distance; the frontend supplies the current viewport size.
     fn page_cursor_half_down(ctx) {
         ctx.editor.request_application_action(crate::ApplicationAction::HalfPageDown(ctx.count.get()));
@@ -1037,6 +1169,8 @@ commands! {
     /// Select backward until just after the previous supplied character, skipping an adjacent match so repeated finds advance; accepts a count and crosses lines.
     fn till_prev_char(ctx) [Character] { find_character(ctx, vex_core::search::Direction::Backward, false) }
 
+    /// First non-whitespace
+    ///
     /// Move to the first non-whitespace grapheme of each cursor's line. Whitespace-only lines keep their selections unchanged.
     fn goto_first_nonwhitespace(ctx) {
         let editor = &mut *ctx.editor;
@@ -1052,6 +1186,8 @@ commands! {
         Ok(())
     }
 
+    /// Go to column
+    ///
     /// Move to the counted one-based grapheme column (default 1), clamped to each cursor's logical line. Tabs and wide graphemes each count as one column.
     fn goto_column(ctx) {
         move_to(ctx, |editor, selection, count| Ok(motion::at_grapheme_column(editor.document.text(), position(editor, selection)?, count - 1)?))
@@ -1063,11 +1199,15 @@ commands! {
         goto_counted_line(ctx)
     }
 
+    /// Start of line
+    ///
     /// Move to the beginning of the current logical line.
     fn goto_line_start(ctx) {
         move_to(ctx, |editor, selection, _| Ok(motion::line_start(editor.document.text(), position(editor, selection)?)?))
     }
 
+    /// End of line
+    ///
     /// Move to the last grapheme of the line, or its end boundary in insert mode.
     fn goto_line_end(ctx) {
         move_to(ctx, |editor, selection, _| {
@@ -1080,9 +1220,13 @@ commands! {
         })
     }
 
+    /// Start of file
+    ///
     /// Move to the start of the document, or to the counted one-based line, clamped to the last content line. Select mode extends to the destination.
     fn goto_file_start(ctx) { goto_counted_line(ctx) }
 
+    /// End of file
+    ///
     /// Move to the end-of-file boundary.
     fn goto_file_end(ctx) { move_to(ctx, |editor, _, _| Ok(CharOffset(editor.document.text().len_chars()))) }
 

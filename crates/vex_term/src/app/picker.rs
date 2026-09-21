@@ -10,9 +10,11 @@ use crate::{
         symbols::SymbolJob,
     },
     screen::{Frame, Style},
+    ui::Label,
 };
 use crossterm::event::{Event, KeyEventKind};
 use std::{io, path::PathBuf, sync::Arc, time::Instant};
+use unicode_width::UnicodeWidthStr;
 use vex_editor::background::Cancellation;
 
 mod diagnostics;
@@ -709,12 +711,26 @@ impl App {
                 entries.push((key.to_string(), description));
             }
         }
-        let width = frame.width().min(78);
-        let bottom = frame.height().saturating_sub(1);
-        let height = (entries.len() + 2).min(usize::from(bottom)) as u16;
-        if width < 4 || height < 3 {
+        let bottom = frame.height().saturating_sub(2);
+        if frame.width() < 8 || bottom < 3 {
             return;
         }
+        let key_width = entries
+            .iter()
+            .map(|(key, _)| key.width())
+            .max()
+            .unwrap_or(0);
+        let desired = entries
+            .iter()
+            .map(|(_, doc)| key_width + 2 + hint_summary(doc).width())
+            .max()
+            .unwrap_or(0)
+            .clamp(28, 50);
+        let columns = ((usize::from(frame.width()) - 1) / (desired + 3)).clamp(1, 3);
+        let width = (columns * (desired + 3) + 1).min(usize::from(frame.width())) as u16;
+        let rows = entries.len().div_ceil(columns).min(usize::from(bottom - 2));
+        let height = rows as u16 + 2;
+        let column_width = (usize::from(width) - 1) / columns;
         let x = frame.width() - width;
         let y = bottom - height;
         self.mouse.hints = Some(crate::documentation::Area {
@@ -731,20 +747,29 @@ impl App {
             bottom,
             &format!(" {} · Esc cancel ", hints.title),
         );
-        for (offset, (key, description)) in entries.iter().take(usize::from(height - 2)).enumerate()
-        {
-            let description = description.lines().next().unwrap_or(description);
-            picker::label(
+        for (offset, (key, doc)) in entries.iter().take(rows * columns).enumerate() {
+            let col = x + 2 + (offset / rows * column_width) as u16;
+            let row = y + 1 + (offset % rows) as u16;
+            let key_room = key_width.min(column_width.saturating_sub(5));
+            Label::new(key).paint(frame, col, row, key_room as u16, Style::PopupTitle);
+            Label::new(hint_summary(doc)).paint(
                 frame,
-                x + 2,
-                y + 1 + offset as u16,
-                width - 4,
-                &format!("{key}  {description}"),
+                col + key_room as u16 + 2,
+                row,
+                column_width.saturating_sub(key_room + 5) as u16,
                 Style::Text,
             );
         }
+        if entries.len() > rows * columns {
+            let notice = format!(" {} more · resize ", entries.len() - rows * columns);
+            Label::new(&notice).paint(frame, x + 2, bottom - 1, width - 4, Style::Gutter);
+        }
         frame.cursor = None;
     }
+}
+
+fn hint_summary(text: &str) -> &str {
+    text.lines().next().unwrap_or(text).trim_end_matches('.')
 }
 
 #[cfg(test)]
@@ -884,6 +909,30 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_columns_keep_every_space_command_visible_without_covering_the_document() {
+        let (_directory, mut app) = fixture();
+        press(&mut app, " ");
+        for (width, height) in [(80, 24), (120, 18)] {
+            let mut frame = Frame::default();
+            frame.reset(width, height).unwrap();
+            app.paint(&mut frame).unwrap();
+            let area = app.mouse.hints.unwrap();
+            assert!(area.top >= 4);
+            let text = (area.top..area.bottom)
+                .map(|row| frame.row_text(row))
+                .collect::<String>();
+            for (_, doc) in app.keys.hints().unwrap().entries {
+                assert!(
+                    text.contains(hint_summary(doc)),
+                    "missing {}: {text}",
+                    hint_summary(doc)
+                );
+            }
+            assert!(!text.contains("more · resize"));
+        }
+    }
+
+    #[test]
     fn hints_and_picker_render_and_escape_preserves_selection_viewport_and_document() {
         let (_directory, mut app) = fixture();
         press(&mut app, "vl");
@@ -899,6 +948,9 @@ mod tests {
         frame.reset(120, 18).unwrap();
         app.paint(&mut frame).unwrap();
         assert!((0..18).any(|row| frame.row_text(row).contains("Space · Esc cancel")));
+        assert!(frame.row_text(16).starts_with("─ SEL "));
+        assert!(frame.row_text(16).contains("alpha.txt"));
+        assert!(!frame.row_text(16).contains('┘'));
         press(&mut app, "f");
         finish(&mut app, &mut FileWorker::default());
         let preview = app.take_preview_job().unwrap().run().unwrap();

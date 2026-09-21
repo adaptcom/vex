@@ -2,8 +2,9 @@
 
 use super::{App, workspace::Context};
 use crate::{
-    picker::{label, paint_box},
+    picker::paint_box,
     screen::{Frame, Style},
+    ui::{Label, menu_position},
 };
 use crossterm::event::{Event, KeyEventKind};
 use unicode_width::UnicodeWidthStr;
@@ -212,16 +213,20 @@ impl App {
             .take(menu.visible)
         {
             let row = y + 1 + (index - menu.top) as u16;
-            let style = if index == menu.selected {
-                Style::Selection
-            } else {
-                Style::Text
-            };
-            for column in x + 1..x + width - 1 {
-                frame.put(column, row, " ", style);
+            if index == menu.selected {
+                frame.put(x + 1, row, ">", Style::Message);
             }
-            label(frame, x + 2, row, width - 4, &action.title, style);
+            Label::new(&action.title).paint(frame, x + 2, row, width - 4, Style::Text);
         }
+        menu_position(
+            frame,
+            x,
+            x + width,
+            y + height,
+            Some(menu.selected),
+            menu.actions.items.len(),
+            menu.visible,
+        );
         frame.cursor = None;
     }
 }

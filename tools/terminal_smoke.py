@@ -221,6 +221,17 @@ class Terminal:
                 break
         raise AssertionError(f"missing idle screen {needle!r}; displayed:\n{visible}")
 
+    def expect_screen_absent(self, needle):
+        """Wait for a dismissed overlay without injecting a redraw or more keys."""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            self.drain()
+            if needle not in displayed_text(self.output):
+                return
+            if self.poll() is not None:
+                break
+        raise AssertionError(f"screen still contains {needle!r}: {displayed_text(self.output)!r}")
+
     def start(self):
         self.expect(b"\x1b[?2026l")
         assert b"\x1b[?1049h" in self.output, "alternate screen was not entered"
@@ -410,8 +421,9 @@ def main():
             terminal.expect_screen_idle("row 028", row=0)
             assert "View (sticky)" in displayed_text(terminal.output)
             terminal.send(b"\x1b")
-            # The helper covers the status position until dismissed. Verify that
-            # scrolling retained the cursor, and separate Escape from later input.
+            # The status stays visible behind the helper. Wait for actual
+            # dismissal before asserting the cursor or sending another key.
+            terminal.expect_screen_absent("View (sticky)")
             terminal.expect_screen_idle("41:1")
             assert "View (sticky)" not in displayed_text(terminal.output)
             terminal.send(b"j")
@@ -509,7 +521,7 @@ def main():
             # Confirm the small resize was handled, rather than mistaking an
             # earlier queued focus redraw for its clear-screen sequence.
             terminal.send(b":help\r")
-            terminal.expect_screen(b"\x1b[3;1Hi/a insert")
+            terminal.expect_screen("\x1b[3;1Hi/a inser…".encode())
             terminal.resize(80, 24)
             terminal.expect_screen("│".encode())
             terminal.send(b":q\r")

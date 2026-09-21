@@ -5,6 +5,7 @@ use crate::{
     input,
     picker::{label, paint_box},
     screen::{Frame, Style},
+    ui::{Label, menu_position},
 };
 use crossterm::event::{Event, KeyEventKind};
 use std::{
@@ -600,6 +601,7 @@ impl App {
                 session.top = index + 1 - rows;
             }
         }
+        session.top = session.top.min(session.items.len().saturating_sub(rows));
         if !session.loaded {
             label(frame, x + 2, y + 1, width - 3, "Loading…", Style::Gutter);
         }
@@ -611,13 +613,8 @@ impl App {
             .take(rows)
         {
             let row = y + 1 + (index - session.top) as u16;
-            let style = if session.selected == Some(index) {
-                Style::Selection
-            } else {
-                Style::Text
-            };
-            for col in x + 1..x + width - 1 {
-                frame.put(col, row, " ", style);
+            if session.selected == Some(index) {
+                frame.put(x + 1, row, ">", Style::Message);
             }
             let content = width - 4;
             // Keep at least four columns for the name. Very narrow terminals
@@ -628,7 +625,9 @@ impl App {
                 0
             };
             let name_width = content - if kind_width == 0 { 0 } else { kind_width + 2 };
-            label(frame, x + 2, row, name_width, &item.label, style);
+            Label::new(&item.label)
+                .middle()
+                .paint(frame, x + 2, row, name_width, Style::Text);
             if kind_width != 0 {
                 let kind = item.kind_name();
                 label(
@@ -637,14 +636,19 @@ impl App {
                     row,
                     kind_width,
                     kind,
-                    if session.selected == Some(index) {
-                        style
-                    } else {
-                        Style::Gutter
-                    },
+                    Style::Gutter,
                 );
             }
         }
+        menu_position(
+            frame,
+            x,
+            x + width,
+            y + height,
+            session.selected,
+            session.items.len(),
+            rows,
+        );
         let Some(item) = session.selected.and_then(|index| session.items.get(index)) else {
             return Some(area);
         };
@@ -1253,7 +1257,7 @@ mod tests {
     }
 
     #[test]
-    fn kinds_have_a_separate_column_and_keep_selection_colors_at_narrow_widths() {
+    fn kinds_have_a_separate_column_and_keep_selection_markers_at_narrow_widths() {
         let (_directory, mut app) = fixture();
         let request = start(&mut app);
         let mut function = candidate(&"界".repeat(40), true);
@@ -1287,7 +1291,8 @@ mod tests {
                 assert!(frame.row_text(3).contains("field"));
                 assert!(frame.row_text(4).contains("method"));
                 let right = 64.min(width);
-                assert_eq!(frame.style_at(right - 3, 2), Some(Style::Selection));
+                assert_eq!(frame.style_at(right - 3, 2), Some(Style::Gutter));
+                assert!(frame.row_text(2).contains('>'));
                 assert_eq!(frame.style_at(right - 3, 3), Some(Style::Gutter));
             }
             assert!(area.right <= width && area.bottom <= 13);
@@ -1318,9 +1323,7 @@ mod tests {
                 if width == 120 && height == 20 {
                     assert!((0..height).any(|row| frame.row_text(row).contains("Complete")));
                     assert!((0..height).any(|row| frame.row_text(row).contains("Documentation")));
-                    assert!((0..height).any(|row| {
-                        (0..width).any(|col| frame.style_at(col, row) == Some(Style::Selection))
-                    }));
+                    assert!((0..height).any(|row| { frame.row_text(row).contains('>') }));
                 }
             }
         }

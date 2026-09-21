@@ -18,6 +18,7 @@ pub(crate) use preview::Preview;
 use crate::{
     input::Prompt,
     screen::{Cursor, CursorShape, Frame, Style},
+    ui::Label,
 };
 use std::{
     sync::Arc,
@@ -44,12 +45,15 @@ pub(crate) struct Layout {
 impl Layout {
     pub fn new(width: u16, height: u16) -> Self {
         let x = if width >= 40 { width / 12 } else { 0 };
+        // Keep the shared command line and bottom status line visible even on
+        // short terminals; collapse outer margins before covering editor chrome.
+        let body = height.saturating_sub(2);
         let y = if height >= 10 { height / 8 } else { 0 };
         Self {
             left: x,
-            top: y,
+            top: y.min(body),
             right: width - x,
-            bottom: height - y,
+            bottom: (height - y).min(body),
         }
     }
 
@@ -300,14 +304,16 @@ impl<T: Eq> Picker<T> {
             left, top, bottom, ..
         } = layout;
         let right = layout.list_right();
-        paint_box(
-            frame,
-            left,
-            top,
-            right,
-            bottom,
-            &format!(" {} ", self.title),
-        );
+        paint_box(frame, left, top, right, bottom, "");
+        if bottom - top >= 2 {
+            Label::new(&format!(" {} ", self.title)).middle().paint(
+                frame,
+                left + 2,
+                top,
+                (right - left).saturating_sub(4 + if self.pending { 3 } else { 0 }),
+                Style::PopupTitle,
+            );
+        }
         if self.pending {
             self.paint_spinner(frame, left, top, right, bottom);
         }
@@ -317,7 +323,15 @@ impl<T: Eq> Picker<T> {
             } else {
                 format!(" Preview · {} ", self.preview_title)
             };
-            paint_box(frame, preview_left, top, layout.right, bottom, &title);
+            paint_box(frame, preview_left, top, layout.right, bottom, "");
+            Label::new(&title).middle().paint(
+                frame,
+                preview_left + 2,
+                top,
+                (layout.right - preview_left)
+                    .saturating_sub(4 + if self.preview_pending { 3 } else { 0 }),
+                Style::PopupTitle,
+            );
             if self.preview_pending {
                 self.paint_spinner(frame, preview_left, top, layout.right, bottom);
             }
@@ -384,7 +398,8 @@ impl<T: Eq> Picker<T> {
         if self.selected >= self.top + rows {
             self.top = self.selected + 1 - rows;
         }
-        if self.items.is_empty() && !self.pending {
+        self.top = self.top.min(self.items.len().saturating_sub(rows));
+        if self.items.is_empty() && !self.pending && self.notice.is_empty() {
             let message = format!("No matching {}", self.noun);
             label(frame, x + 1, y + 2, right - x - 1, &message, Style::Gutter);
         }
@@ -392,41 +407,40 @@ impl<T: Eq> Picker<T> {
             let row = y + 2 + (offset - self.top) as u16;
             let selected = offset == self.selected;
             let base = Style::Text;
-            for col in x..right {
-                frame.put(col, row, " ", base);
-            }
             frame.put(x, row, if selected { ">" } else { " " }, Style::Message);
-            let mut col = x + 2;
-            for (byte, grapheme) in item.entry.label.grapheme_indices(true) {
-                let size = display::visible(grapheme).width() as u16;
-                if col.saturating_add(size) > right.saturating_sub(1) {
-                    break;
-                }
-                let found = item
-                    .matched
-                    .iter()
-                    .any(|&i| byte <= i && i < byte + grapheme.len());
-                frame.put(
-                    col,
-                    row,
-                    grapheme,
-                    if found { Style::PickerMatch } else { base },
-                );
-                col += size;
-            }
+            Label::new(&item.entry.label)
+                .middle()
+                .matched(&item.matched)
+                .paint(frame, x + 2, row, right - x - 3, base);
         }
-        let status = if !self.notice.is_empty() {
-            self.notice.clone()
+        if !self.notice.is_empty() {
+            Label::new(&self.notice).paint(frame, x + 1, bottom - 1, right - x - 2, Style::Text);
         } else {
-            format!(
-                " {}/{} matches · {} {} · ↑↓ move · Enter open · Esc close",
-                self.items.len(),
-                self.matched,
-                self.total,
-                self.noun,
-            )
-        };
-        label(frame, x, bottom - 1, right - x, &status, Style::Text);
+            let position = if self.items.is_empty() {
+                0
+            } else {
+                self.selected + 1
+            };
+            let count = format!("{position}/{}", self.matched);
+            let available = right - x - 2;
+            let counts = if self.matched > self.items.len() {
+                format!("{count} matches · {} shown", self.items.len())
+            } else {
+                format!("{count} matches · {} {}", self.total, self.noun)
+            };
+            let choices = [
+                format!("{counts} · ↑↓ move · Enter open · Esc close"),
+                format!("{count} · ↑↓ · Enter open · Esc close"),
+                format!("{count} · Enter open · Esc close"),
+                format!("{count} · Enter · Esc"),
+                count,
+            ];
+            let status = choices
+                .iter()
+                .find(|s| s.width() <= usize::from(available))
+                .unwrap_or(choices.last().unwrap());
+            Label::new(status).paint(frame, x + 1, bottom - 1, available, Style::Text);
+        }
     }
 
     fn paint_spinner(&self, frame: &mut Frame, left: u16, top: u16, right: u16, bottom: u16) {
@@ -460,12 +474,11 @@ pub(crate) fn paint_box(
     }
     rule(frame, left, right, top, "┌", "┐");
     rule(frame, left, right, bottom - 1, "└", "┘");
-    label(
+    Label::new(title).middle().paint(
         frame,
         left + 2,
         top,
         (right - left).saturating_sub(4),
-        title,
         Style::PopupTitle,
     );
 }
@@ -495,6 +508,42 @@ pub(crate) fn label(frame: &mut Frame, mut x: u16, y: u16, width: u16, text: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn growing_picker_fills_the_page_without_moving_selection_and_narrow_footer_keeps_controls() {
+        let mut picker = Picker::new("Files".into());
+        picker.replace(
+            (0..20)
+                .map(|value| Item {
+                    entry: Arc::new(Entry {
+                        label: format!("file-{value:02}.txt"),
+                        value,
+                    }),
+                    matched: Vec::new(),
+                })
+                .collect(),
+        );
+        picker.pending = false;
+        picker.matched = 20;
+        picker.total = 20;
+        picker.navigate(19);
+        let mut frame = Frame::default();
+        frame.reset(40, 12).unwrap();
+        picker.paint(&mut frame);
+        let narrow = Layout::new(40, 12);
+        let footer = frame.row_text(narrow.bottom - 2);
+        assert!(
+            footer.contains("20/20") && footer.contains("Enter") && footer.contains("Esc"),
+            "{footer}"
+        );
+        frame.reset(80, 24).unwrap();
+        picker.paint(&mut frame);
+        let layout = Layout::new(80, 24);
+        assert_eq!(picker.selected().unwrap().value, 19);
+        assert_eq!(picker.top, 20 - usize::from(layout.rows()));
+        assert!(frame.row_text(layout.top + 3).contains("file-08.txt"));
+        assert!(frame.row_text(layout.bottom - 4).contains("file-19.txt"));
+    }
 
     #[test]
     fn pending_queries_keep_rows_and_preview_with_only_a_marker_and_match_colors() {

@@ -480,6 +480,10 @@ fn paint_status(
     let available = end.saturating_sub(start);
     let suffix = if chrome.dirty { " [+] " } else { " " };
     if available <= suffix.len() + 1 {
+        if chrome.dirty {
+            // Even the narrowest useful pane must reveal unsaved changes.
+            frame.put(mode.len() as u16, row, "+", Style::StatusLine);
+        }
         return;
     }
     let error = chrome.prompt.is_some() && chrome.error;
@@ -600,10 +604,11 @@ pub(crate) fn paint_command_line(
             shape: CursorShape::Bar,
         });
     } else {
-        frame.label(
+        crate::ui::Label::new(message).paint(
+            frame,
             0,
             bottom,
-            message,
+            frame.width(),
             if error { Style::Error } else { Style::Message },
         );
     }
@@ -639,6 +644,33 @@ fn glyph(
 mod tests {
     use super::*;
     use vex_core::{Document, Selection, SelectionSet};
+
+    #[test]
+    fn unsaved_indicator_survives_narrow_panes_and_clears_on_save() {
+        for width in 7..40 {
+            let mut frame = Frame::default();
+            frame.reset(width, 1).unwrap();
+            for dirty in [true, false] {
+                paint_status(
+                    &mut frame,
+                    0,
+                    Mode::Normal,
+                    Chrome {
+                        filename: "a/very/long/path/filename.rs",
+                        title: false,
+                        dirty,
+                        pending: "",
+                        message: "",
+                        error: false,
+                        prompt: None,
+                    },
+                    (1234, 5678),
+                    100,
+                );
+                assert_eq!(frame.row_text(0).contains('+'), dirty, "width {width}");
+            }
+        }
+    }
 
     fn render(editor: &Editor, width: u16, height: u16, viewport: &mut Viewport) -> Frame {
         let mut frame = Frame::default();

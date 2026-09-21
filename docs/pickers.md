@@ -5,9 +5,11 @@ Normal and select modes have named prefix groups: `g` (Goto), Space, `[` (Previo
 same Rustdoc as command help. Completing a command or pressing an unbound key
 leaves the group. Escape cancels a pending prefix/count while preserving the
 editing mode; Escape with no pending input enters normal mode. Groups are
-one-shot; sticky groups are not implemented yet. Shortcut hints use the same
+one-shot by default; `Z` opens sticky view mode. Shortcut hints use the same
 box-drawing borders and bold titles as the picker and completion menu, with
-plain-text entries inside and the global command line left visible below.
+bold keys and concise summaries in columns when space permits. Full command
+details stay available through `:help`. Small terminals indicate hidden entries;
+the bottom status line and global command line stay visible below.
 
 The keymap still supports arbitrary nested sequences. After binding commands,
 `Keymap::name_group(mode, prefix, title)` names a group for discovery. Unnamed
@@ -47,7 +49,7 @@ Matching uses each whitespace-separated query word as a subsequence; all words
 must match, in any order. Uppercase in the query enables case-sensitive matching.
 Otherwise matching uses simple Unicode lowercase comparison. Contiguous matches,
 word boundaries, camel-case boundaries, and the basename receive higher scores.
-Ties use path order. Matched characters are highlighted at grapheme boundaries.
+Ties use path order. Matched characters are bold and highlighted at grapheme boundaries.
 The selected row uses a `>` marker and the same foreground match highlights as
 other rows, with the terminal's default background. Preview line markers also
 use foreground emphasis.
@@ -75,6 +77,13 @@ While another preview loads, the previous text and title remain together; the
 new title, text, and syntax colors replace them at once. Narrow
 terminals show only the file list; margins shrink on small terminals, and
 terminals too small for results show a resize message.
+
+The bottom status and command lines remain visible on short terminals too.
+Long labels show an ellipsis and retain both ends of paths. If that would hide
+every match, the label shows the matching context instead. Match colors keep their
+original Unicode boundaries. The footer uses the terminal background and shows the
+selected result number, with shorter controls on narrow terminals. Resizing keeps
+the selection visible and fills the available result rows.
 
 Previews reuse the editor's language registry, Tree-sitter grammars, highlight
 queries, and syntax colors for all bundled languages. Reading, parsing, and querying all
@@ -195,7 +204,7 @@ before sending the current query. The server owns workspace search semantics and
 ordering; the empty query requests its initial list. This searches the active
 server's workspace, not a combined index of every configured language.
 
-Both use the same two floating boxes, bold titles, grey selection, and navigation
+Both use the same two floating boxes, bold titles, selection marker, and navigation
 keys as the file picker. Entries show symbol kind and line; workspace entries
 also show the file path. The preview scrolls to the selected symbol, marks its
 line number, and retains syntax coloring. Open files use their current buffer

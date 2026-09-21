@@ -344,7 +344,9 @@ still contain only accepted queries. Editing keys also work in pickers unless
 reserved for result navigation. Prompt movement, editing, and drawing visit
 nearby graphemes and the affected text rather than scanning the entire prefix.
 
-Command suggestions appear above the prompt in a grey-selection box. Tab writes
+Command suggestions appear above the prompt in a bordered box, with a `>`
+selection marker and the terminal background. Overflow lists show the current
+position on the bottom border. Tab writes
 the selected suggestion into the prompt; subsequent Tab/Shift-Tab cycle the same
 list, and Enter executes the resulting command. Enter on a selected directory
 lists its contents. A sole directory candidate expands immediately on Tab.
