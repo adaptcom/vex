@@ -123,8 +123,9 @@ cancellation work. Returning to a visited directory restores its query, caret,
 selected entry, and scroll position; up to 64 directory checkpoints are retained.
 Space-' reopens the browser at its last directory with that state intact.
 
-Listings and previews use the same ignore-file rules as file discovery and
-exclude dot-prefixed entries, symlinks, and special files. Directory reads,
+Listings and directory previews show dotfiles and dot-directories by default.
+The same ignore-file rules as file discovery still apply; symlinks and special
+files are excluded. Directory reads,
 path resolution, filtering, and previews run on the existing picker workers.
 Query edits reuse the current listing; navigating away and back or reopening
 the browser refreshes it. Errors remain visible in the picker without changing

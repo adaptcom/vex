@@ -312,6 +312,7 @@ mod tests {
     fn stale_results_after_navigation_close_and_reopen_are_ignored() {
         let (root, mut app, mut worker) = fixture();
         app.open_browser(Some(root.path())).unwrap();
+        press(&mut app, "src");
         finish(&mut app, &mut worker);
         assert_eq!(selected(&app), "src/");
         let old_preview = app.take_preview_job().unwrap().run().unwrap();

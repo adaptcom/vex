@@ -127,9 +127,6 @@ fn listing(path: &Path, cancellation: &Cancellation) -> io::Result<Listing> {
             }
         };
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
-            continue;
-        }
         let kind = match entry.file_type() {
             Ok(kind) => kind,
             Err(error) => {
@@ -227,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn lists_only_children_with_directories_first_and_shared_visibility_rules() {
+    fn lists_children_including_dotfiles_with_directories_first_and_ignore_rules() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join(".git")).unwrap();
         fs::write(root.path().join(".gitignore"), "*.log\nignored/\n").unwrap();
@@ -258,9 +255,17 @@ mod tests {
                 .iter()
                 .map(|item| item.entry.label.as_str())
                 .collect::<Vec<_>>(),
-            ["zebra/", "alpha.rs", "keep.log", "界 file.rs"]
+            [
+                ".hidden/",
+                "zebra/",
+                ".hidden.rs",
+                ".ignore",
+                "alpha.rs",
+                "keep.log",
+                "界 file.rs"
+            ]
         );
-        assert_eq!(result.ranked.total, 4);
+        assert_eq!(result.ranked.total, 7);
         assert!(result.ranked.items[0].entry.value.directory);
         let result = worker.run(job(&path, "界 f")).unwrap();
         assert_eq!(result.ranked.items.len(), 1);
@@ -271,7 +276,7 @@ mod tests {
         assert!(!result.ranked.items[0].matched.is_empty());
         assert_eq!(
             preview(&path, &Cancellation::default()).unwrap().text,
-            "zebra/\nalpha.rs\nkeep.log\n界 file.rs\n"
+            ".hidden/\nzebra/\n.hidden.rs\n.ignore\nalpha.rs\nkeep.log\n界 file.rs\n"
         );
     }
 
