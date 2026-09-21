@@ -254,10 +254,10 @@ mod tests {
             }]
         }));
         let frame = draw(&mut app);
-        assert!(frame.row_text(0).starts_with("!1 ▍ // added"));
+        assert!(frame.row_text(0).starts_with("!1 ▍// added"));
         assert_eq!(frame.style_at(0, 0), Some(Style::Error));
         assert_eq!(frame.style_at(3, 0), Some(Style::GitAdded));
-        assert!(frame.cursor.unwrap().x >= 5);
+        assert!(frame.cursor.unwrap().x >= 4);
         app.execute("vsplit").unwrap();
         assert_eq!(app.git_documents().len(), 1);
         let frame = draw(&mut app);

@@ -166,7 +166,7 @@ pub(crate) fn gutter(width: usize, lines: usize) -> Gutter {
     if width >= 12 {
         let digits = digits.min(width / 3);
         Gutter {
-            width: digits + 4,
+            width: digits + 3,
             diagnostic: Some(0),
             number_start: 1,
             digits,
@@ -715,14 +715,14 @@ mod tests {
                 .unwrap();
             let mut frame = render(&editor, 30, 5, &mut Viewport::default());
             assert_eq!(
-                frame.style_at(5, 0),
+                frame.style_at(4, 0),
                 Some(if mode == "insert_mode" {
                     Style::InsertCursor(None)
                 } else {
                     Style::PrimaryCursor(None)
                 })
             );
-            assert_eq!(frame.style_at(8, 0), Some(Style::MatchingBracket(None)));
+            assert_eq!(frame.style_at(7, 0), Some(Style::MatchingBracket(None)));
             assert_eq!(
                 frame.cursor.unwrap().shape,
                 if mode == "insert_mode" {
@@ -732,8 +732,8 @@ mod tests {
                 }
             );
             frame.inactive();
-            assert_eq!(frame.style_at(5, 0), Some(Style::InactiveCursor));
-            assert_eq!(frame.style_at(8, 0), Some(Style::Text));
+            assert_eq!(frame.style_at(4, 0), Some(Style::InactiveCursor));
+            assert_eq!(frame.style_at(7, 0), Some(Style::Text));
             assert!(frame.cursor.is_none());
         }
         editor.execute("normal_mode", 1).unwrap();
@@ -741,14 +741,14 @@ mod tests {
             .set_selections(SelectionSet::single(Selection::cursor(CharOffset(2))))
             .unwrap();
         let frame = render(&editor, 30, 5, &mut Viewport::default());
-        assert_eq!(frame.style_at(5, 0), Some(Style::MatchingBracket(None)));
-        assert_eq!(frame.style_at(8, 0), Some(Style::PrimaryCursor(None)));
+        assert_eq!(frame.style_at(4, 0), Some(Style::MatchingBracket(None)));
+        assert_eq!(frame.style_at(7, 0), Some(Style::PrimaryCursor(None)));
         editor
             .set_selections(SelectionSet::single(Selection::cursor(CharOffset(4))))
             .unwrap();
         let frame = render(&editor, 30, 5, &mut Viewport::default());
-        assert_eq!(frame.style_at(5, 0), Some(Style::Text));
-        assert_eq!(frame.style_at(8, 0), Some(Style::Text));
+        assert_eq!(frame.style_at(4, 0), Some(Style::Text));
+        assert_eq!(frame.style_at(7, 0), Some(Style::Text));
     }
 
     #[test]
@@ -761,8 +761,8 @@ mod tests {
             )))
             .unwrap();
         let frame = render(&editor, 20, 4, &mut Viewport::default());
-        assert_eq!(frame.style_at(5, 0), Some(Style::SelectedMatchingBracket));
-        assert_eq!(frame.style_at(7, 0), Some(Style::PrimaryCursor(None)));
+        assert_eq!(frame.style_at(4, 0), Some(Style::SelectedMatchingBracket));
+        assert_eq!(frame.style_at(6, 0), Some(Style::PrimaryCursor(None)));
         editor
             .set_selections(
                 SelectionSet::new(
@@ -776,9 +776,9 @@ mod tests {
             )
             .unwrap();
         let mut frame = render(&editor, 20, 4, &mut Viewport::default());
-        assert_eq!(frame.style_at(5, 0), Some(Style::MatchingBracketCursor));
+        assert_eq!(frame.style_at(4, 0), Some(Style::MatchingBracketCursor));
         frame.inactive();
-        assert_eq!(frame.style_at(5, 0), Some(Style::InactiveCursor));
+        assert_eq!(frame.style_at(4, 0), Some(Style::InactiveCursor));
         for mode in ["normal_mode", "insert_mode"] {
             let mut editor = Editor::new(Document::from("// (x)"));
             editor.set_language(Some(vex_editor::Language::Rust));
@@ -789,17 +789,17 @@ mod tests {
             let mut frame = render(&editor, 20, 4, &mut Viewport::default());
             let syntax = Some(vex_editor::Highlight::Comment);
             assert_eq!(
-                frame.style_at(8, 0),
+                frame.style_at(7, 0),
                 Some(if mode == "insert_mode" {
                     Style::InsertCursor(syntax)
                 } else {
                     Style::PrimaryCursor(syntax)
                 })
             );
-            assert_eq!(frame.style_at(10, 0), Some(Style::MatchingBracket(syntax)));
+            assert_eq!(frame.style_at(9, 0), Some(Style::MatchingBracket(syntax)));
             frame.inactive();
             assert_eq!(
-                frame.style_at(10, 0),
+                frame.style_at(9, 0),
                 Some(Style::Syntax(vex_editor::Highlight::Comment))
             );
         }
@@ -815,10 +815,10 @@ mod tests {
             )))
             .unwrap();
         let frame = render(&editor, 24, 6, &mut Viewport::default());
-        assert!(frame.row_text(0).starts_with(" 1   a   界e\u{301}"));
-        assert_eq!(frame.style_at(9, 0), Some(Style::Selection));
-        assert_eq!(frame.cursor.unwrap().x, 11);
-        assert_eq!(frame.style_at(11, 0), Some(Style::PrimaryCursor(None)));
+        assert!(frame.row_text(0).starts_with(" 1  a   界e\u{301}"));
+        assert_eq!(frame.style_at(8, 0), Some(Style::Selection));
+        assert_eq!(frame.cursor.unwrap().x, 10);
+        assert_eq!(frame.style_at(10, 0), Some(Style::PrimaryCursor(None)));
     }
 
     #[test]
@@ -868,23 +868,23 @@ mod tests {
         editor.execute("goto_file_end", 1).unwrap();
         let frame = render(&editor, 50, 8, &mut Viewport::default());
         assert_eq!(
-            frame.style_at(5, 0),
+            frame.style_at(4, 0),
             Some(Style::Syntax(Highlight::Keyword))
         );
         assert_eq!(
-            frame.style_at(8, 0),
+            frame.style_at(7, 0),
             Some(Style::Syntax(Highlight::Function))
         );
         assert_eq!(
-            frame.style_at(9, 1),
+            frame.style_at(8, 1),
             Some(Style::Syntax(Highlight::Keyword))
         );
-        let quote = 17;
+        let quote = 16;
         for x in quote..quote + 5 {
             assert_eq!(frame.style_at(x, 1), Some(Style::Syntax(Highlight::String)));
         }
         assert_eq!(
-            frame.style_at(25, 1),
+            frame.style_at(24, 1),
             Some(Style::Syntax(Highlight::Comment))
         );
         editor
@@ -894,27 +894,27 @@ mod tests {
             )))
             .unwrap();
         let frame = render(&editor, 50, 8, &mut Viewport::default());
-        assert_eq!(frame.style_at(5, 0), Some(Style::Selection));
+        assert_eq!(frame.style_at(4, 0), Some(Style::Selection));
         assert_eq!(
-            frame.style_at(6, 0),
+            frame.style_at(5, 0),
             Some(Style::PrimaryCursor(Some(Highlight::Keyword)))
         );
 
         editor.execute("insert_mode", 1).unwrap();
         let mut frame = render(&editor, 50, 8, &mut Viewport::default());
         assert_eq!(
-            frame.style_at(5, 0),
+            frame.style_at(4, 0),
             Some(Style::InsertCursor(Some(Highlight::Keyword)))
         );
         assert_eq!(frame.cursor.unwrap().shape, CursorShape::Bar);
         frame.inactive();
-        assert_eq!(frame.style_at(5, 0), Some(Style::InactiveCursor));
+        assert_eq!(frame.style_at(4, 0), Some(Style::InactiveCursor));
         assert!(frame.cursor.is_none());
 
         editor.execute("normal_mode", 1).unwrap();
         let frame = render(&editor, 50, 8, &mut Viewport::default());
         assert_eq!(
-            frame.style_at(5, 0),
+            frame.style_at(4, 0),
             Some(Style::PrimaryCursor(Some(Highlight::Keyword)))
         );
         assert_eq!(frame.cursor.unwrap().shape, CursorShape::Block);
@@ -939,15 +939,15 @@ mod tests {
             editor.insert_text(text).unwrap();
             let frame = render(&editor, 40, 8, &mut viewport);
             assert_eq!(
-                frame.style_at(5, 0),
+                frame.style_at(4, 0),
                 Some(Style::Syntax(Highlight::Keyword))
             );
             assert_eq!(
-                frame.style_at(8, 0),
+                frame.style_at(7, 0),
                 Some(Style::Syntax(Highlight::Function))
             );
             assert_eq!(
-                frame.style_at(5, 1),
+                frame.style_at(4, 1),
                 Some(Style::Syntax(Highlight::Comment))
             );
             assert!(editor.take_syntax_job().is_some());
@@ -956,11 +956,11 @@ mod tests {
         editor.execute("undo", 1).unwrap();
         let frame = render(&editor, 40, 8, &mut viewport);
         assert_eq!(
-            frame.style_at(5, 0),
+            frame.style_at(4, 0),
             Some(Style::Syntax(Highlight::Keyword))
         );
         assert_eq!(
-            frame.style_at(5, 2),
+            frame.style_at(4, 2),
             Some(Style::Syntax(Highlight::Keyword))
         );
         let job = editor.take_syntax_job().unwrap();
@@ -986,7 +986,7 @@ mod tests {
         let frame = render(&editor, 20, 5, &mut viewport);
         assert!(viewport.left_column > 0);
         for y in 0..2 {
-            for x in 5..19 {
+            for x in 4..19 {
                 assert_eq!(
                     frame.style_at(x, y),
                     Some(Style::Syntax(Highlight::Comment))

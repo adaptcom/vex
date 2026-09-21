@@ -1443,14 +1443,14 @@ mod tests {
         let mut app = App::from_document(Document::from("abc"), (81, 21));
         app.execute("vsplit").unwrap();
         let frame = draw(&mut app);
-        assert_eq!(frame.style_at(5, 0), Some(Style::InactiveCursor));
-        assert_eq!(frame.style_at(46, 0), Some(Style::PrimaryCursor(None)));
-        assert_eq!(frame.cursor.unwrap().x, 46);
+        assert_eq!(frame.style_at(4, 0), Some(Style::InactiveCursor));
+        assert_eq!(frame.style_at(45, 0), Some(Style::PrimaryCursor(None)));
+        assert_eq!(frame.cursor.unwrap().x, 45);
         app.execute("jump_view_left").unwrap();
         let frame = draw(&mut app);
-        assert_eq!(frame.style_at(5, 0), Some(Style::PrimaryCursor(None)));
-        assert_eq!(frame.style_at(46, 0), Some(Style::InactiveCursor));
-        assert_eq!(frame.cursor.unwrap().x, 5);
+        assert_eq!(frame.style_at(4, 0), Some(Style::PrimaryCursor(None)));
+        assert_eq!(frame.style_at(45, 0), Some(Style::InactiveCursor));
+        assert_eq!(frame.cursor.unwrap().x, 4);
     }
 
     #[test]
@@ -1549,7 +1549,7 @@ mod tests {
         let viewport = app.viewport;
         assert!(frame.cursor.unwrap().x > 40);
         assert_eq!(frame.row_text(0).chars().nth(40), Some('│'));
-        assert!(frame.row_text(0).starts_with("   1   line 0"));
+        assert!(frame.row_text(0).starts_with("   1  line 0"));
         assert!(viewport.top_line > 0);
         press(&mut app, " wh");
         assert_eq!(app.windows.layout.active, 0);
@@ -1970,7 +1970,7 @@ mod tests {
         assert!(app.handle_syntax_results(results));
         let frame = draw(&mut app);
         assert_eq!(
-            frame.style_at(6, 0),
+            frame.style_at(5, 0),
             Some(Style::Syntax(vex_editor::Highlight::Keyword))
         );
         assert!(app.take_syntax_batch().is_none());
