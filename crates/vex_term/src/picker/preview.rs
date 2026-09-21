@@ -36,22 +36,25 @@ impl Preview {
         let mut highlight_index = 0;
         for (row, line) in self.text.split_inclusive('\n').take(rows).enumerate() {
             if gutter > 0 {
+                let focused = self.focus_line == Some(row);
                 super::label(
                     frame,
                     x,
                     y + row as u16,
-                    gutter as u16,
-                    &format!(
-                        "{:>5} {}",
-                        self.line_offset.unwrap() + row + 1,
-                        if self.focus_line == Some(row) {
-                            '>'
-                        } else {
-                            ' '
-                        }
-                    ),
-                    if self.focus_line == Some(row) {
+                    gutter as u16 - 1,
+                    &format!("{:>5} ", self.line_offset.unwrap() + row + 1),
+                    if focused {
                         Style::Message
+                    } else {
+                        Style::Gutter
+                    },
+                );
+                frame.put(
+                    x + gutter as u16 - 1,
+                    y + row as u16,
+                    if focused { ">" } else { " " },
+                    if focused {
+                        Style::PickerMarker
                     } else {
                         Style::Gutter
                     },

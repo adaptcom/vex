@@ -50,9 +50,9 @@ must match, in any order. Uppercase in the query enables case-sensitive matching
 Otherwise matching uses simple Unicode lowercase comparison. Contiguous matches,
 word boundaries, camel-case boundaries, and the basename receive higher scores.
 Ties use path order. Matched characters are bold and highlighted at grapheme boundaries.
-The selected row uses a `>` marker and the same foreground match highlights as
-other rows, with the terminal's default background. Preview line markers also
-use foreground emphasis.
+The selected row uses a bold `>` marker and the same foreground match highlights as
+other rows, with the terminal's default background. Preview line markers use the
+same bold foreground emphasis.
 Accent folding, regex queries, and fuzzy-query operators are not supported.
 
 Results appear as scanning proceeds. The picker keeps the best 512 entries and
