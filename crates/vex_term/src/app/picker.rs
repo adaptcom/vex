@@ -622,7 +622,7 @@ impl App {
             .map(|entry| entry.value.clone())
         else {
             if let Some(active) = &mut self.picker.active {
-                active.view.notice = format!("No matching {} · Esc close", active.view.noun);
+                active.view.notice = format!("No matching {}", active.view.noun);
             }
             self.request_picker_preview();
             return;
@@ -745,7 +745,7 @@ impl App {
             y,
             x + width,
             bottom,
-            &format!(" {} · Esc cancel ", hints.title),
+            &format!(" {} ", hints.title),
         );
         for (offset, (key, doc)) in entries.iter().take(rows * columns).enumerate() {
             let col = x + 2 + (offset / rows * column_width) as u16;
@@ -947,7 +947,7 @@ mod tests {
         press(&mut app, " ");
         frame.reset(120, 18).unwrap();
         app.paint(&mut frame).unwrap();
-        assert!((0..18).any(|row| frame.row_text(row).contains("Space · Esc cancel")));
+        assert!((0..18).any(|row| frame.row_text(row).contains("┌─ Space ")));
         assert!(frame.row_text(16).starts_with("─ SEL "));
         assert!(frame.row_text(16).contains("alpha.txt"));
         assert!(!frame.row_text(16).contains('┘'));

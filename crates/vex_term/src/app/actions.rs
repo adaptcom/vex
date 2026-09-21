@@ -95,7 +95,7 @@ impl App {
             width,
             visible: 10,
         });
-        self.message = "code actions · ↑/↓ or Ctrl-p/Ctrl-n · Enter applies · Esc closes".into();
+        self.message = "code actions · ↑/↓ or Ctrl-p/Ctrl-n · Enter applies".into();
     }
 
     pub(super) fn receive_code_action_ready(&mut self, action: ActionEdit) {
@@ -214,7 +214,7 @@ impl App {
         {
             let row = y + 1 + (index - menu.top) as u16;
             if index == menu.selected {
-                frame.put(x + 1, row, ">", Style::Message);
+                frame.put(x + 1, row, ">", Style::PickerMarker);
             }
             Label::new(&action.title).paint(frame, x + 2, row, width - 4, Style::Text);
         }

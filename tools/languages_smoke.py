@@ -48,7 +48,7 @@ def main():
             terminal.expect_screen(b"1E")
             terminal.send(b"/wrong\r k")
             terminal.expect_screen(b"Documentation")
-            terminal.expect_screen(b"Esc closes")
+            terminal.expect_screen(b"Ctrl-u/Ctrl-d scroll")
             terminal.send(b'/"oops"\rc1')
             terminal.save_from_insert()
             terminal.expect_screen(b"0E 0W")

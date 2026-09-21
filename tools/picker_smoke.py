@@ -31,7 +31,7 @@ def main():
             terminal.start()
             terminal.resize(120, 20)
             terminal.send(b"v ")
-            terminal.expect_screen("Space · Esc cancel".encode())
+            terminal.expect_screen("┌─ Space ".encode())
             terminal.send(b"\x03")  # Cancel and return to normal mode.
             terminal.send(b" f")
             terminal.expect_screen("Files ·".encode())

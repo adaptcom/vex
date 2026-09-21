@@ -354,7 +354,7 @@ impl<T: Eq> Picker<T> {
                     left + 1,
                     top + 1,
                     right - left - 2,
-                    "Esc close · resize for picker",
+                    "Resize to show picker",
                     Style::Gutter,
                 );
             }
@@ -407,7 +407,12 @@ impl<T: Eq> Picker<T> {
             let row = y + 2 + (offset - self.top) as u16;
             let selected = offset == self.selected;
             let base = Style::Text;
-            frame.put(x, row, if selected { ">" } else { " " }, Style::Message);
+            frame.put(
+                x,
+                row,
+                if selected { ">" } else { " " },
+                Style::PickerMarker,
+            );
             Label::new(&item.entry.label)
                 .middle()
                 .matched(&item.matched)
@@ -429,10 +434,10 @@ impl<T: Eq> Picker<T> {
                 format!("{count} matches · {} {}", self.total, self.noun)
             };
             let choices = [
-                format!("{counts} · ↑↓ move · Enter open · Esc close"),
-                format!("{count} · ↑↓ · Enter open · Esc close"),
-                format!("{count} · Enter open · Esc close"),
-                format!("{count} · Enter · Esc"),
+                format!("{counts} · ↑↓ move · Enter open"),
+                format!("{count} · ↑↓ · Enter open"),
+                format!("{count} · Enter open"),
+                format!("{count} · Enter"),
                 count,
             ];
             let status = choices
@@ -533,7 +538,7 @@ mod tests {
         let narrow = Layout::new(40, 12);
         let footer = frame.row_text(narrow.bottom - 2);
         assert!(
-            footer.contains("20/20") && footer.contains("Enter") && footer.contains("Esc"),
+            footer.contains("20/20") && footer.contains("Enter") && !footer.contains("Esc"),
             "{footer}"
         );
         frame.reset(80, 24).unwrap();

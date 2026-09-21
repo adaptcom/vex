@@ -44,6 +44,8 @@ pub enum Style {
     SecondaryCursor,
     InactiveCursor,
     PickerMatch,
+    /// Selected-result marker in pickers and completion menus.
+    PickerMarker,
 }
 
 impl Style {
@@ -65,6 +67,7 @@ impl Style {
                 | Self::MatchingSelection
                 | Self::MatchingSecondaryCursor
                 | Self::PickerMatch
+                | Self::PickerMarker
         ) || matches!(self.syntax(), Some(Highlight::Heading | Highlight::Strong))
             || matches!(self, Self::Markup(attributes) if attributes.contains(Attributes::STRONG))
     }
@@ -125,6 +128,7 @@ impl Style {
             }
             Self::SecondaryCursor => (Black, DarkCyan),
             Self::InactiveCursor => (DarkGrey, Reset),
+            Self::PickerMarker => (DarkCyan, Reset),
             Self::PickerMatch => (DarkYellow, Reset),
         }
     }

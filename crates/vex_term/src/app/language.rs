@@ -561,7 +561,7 @@ impl App {
                         self.message = "no hover information".into()
                     }
                     Ok(Answer::Hover(text)) => {
-                        self.message = "hover · Ctrl-u/Ctrl-d scroll · Esc closes".into();
+                        self.message = "hover · Ctrl-u/Ctrl-d scroll".into();
                         self.language.popup = Some(crate::documentation::Popup::new(text));
                     }
                     Ok(Answer::Locations(kind, locations)) => {

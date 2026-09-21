@@ -213,7 +213,7 @@ impl App {
         active.cancellation.cancel();
         active.accept_pending = false;
         active.view.pending = false;
-        active.view.notice = format!("{error} · Esc close");
+        active.view.notice = error.to_owned();
         source.error = Some(active.view.notice.clone());
         source.loading = false;
         source.due = None;

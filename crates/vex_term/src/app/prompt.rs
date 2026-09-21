@@ -167,7 +167,7 @@ impl App {
             let row = top + 1 + (offset - start) as u16;
             let selected = completion.selected == Some(offset);
             if selected {
-                frame.put(1, row, ">", Style::Message);
+                frame.put(1, row, ">", Style::PickerMarker);
             }
             let label_width = (width / 2).min(36);
             Label::new(&item.text).middle().paint(

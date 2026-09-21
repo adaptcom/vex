@@ -614,7 +614,7 @@ impl App {
         {
             let row = y + 1 + (index - session.top) as u16;
             if session.selected == Some(index) {
-                frame.put(x + 1, row, ">", Style::Message);
+                frame.put(x + 1, row, ">", Style::PickerMarker);
             }
             let content = width - 4;
             // Keep at least four columns for the name. Very narrow terminals
