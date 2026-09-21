@@ -1,5 +1,7 @@
 # Vex
 
+TODO: Write an actual README for humans.
+
 A terminal text editor in Rust, inspired by Helix's selection-first editing model.
 
 `vex_core` provides rope-backed documents, directional multiple selections,
