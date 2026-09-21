@@ -953,6 +953,38 @@ mod tests {
                     ("true", Constant),
                 ],
             ),
+            (
+                Language::Nix,
+                r#"# comment
+{ pkgs, ... }:
+let
+  count = 42;
+  ratio = 1.5;
+  message = "hello\n";
+  script = ''
+    echo ${message}
+  '';
+in {
+  inherit count;
+  path = ./default.nix;
+  /* block comment */
+  sum = count + 1;
+}
+"#,
+                &[
+                    ("# comment", Comment),
+                    ("let", Keyword),
+                    ("42", Constant),
+                    ("1.5", Constant),
+                    ("hello", String),
+                    ("\\n", Escape),
+                    ("echo", String),
+                    ("inherit", Keyword),
+                    ("./default.nix", String),
+                    ("/* block comment */", Comment),
+                    ("+", Operator),
+                ],
+            ),
         ];
         for language in Language::ALL {
             assert!(
@@ -993,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::literal_string_with_formatting_args)] // Literal shell parameter expansion.
+    #[allow(clippy::literal_string_with_formatting_args)] // Literal shell/Nix interpolation.
     fn interpolations_reset_string_colors_and_keep_nested_captures_when_clipped() {
         use Highlight::*;
         for (language, source, expected) in [
@@ -1026,6 +1058,18 @@ mod tests {
                 ("fallback", Embedded),
                 ("printf", Function),
                 ("word", Embedded),
+                (" after", String),
+            ],
+        )))
+        .chain(std::iter::once((
+            Language::Nix,
+            "\"before ${ item + 42 } after\"",
+            vec![
+                ("before", String),
+                ("item", Variable),
+                (" +", Embedded),
+                ("+", Operator),
+                ("42", Constant),
                 (" after", String),
             ],
         ))) {

@@ -27,6 +27,7 @@ downloads or external Tree-sitter installation.
 | JSON with comments | `.jsonc`, `tsconfig.json`, `jsconfig.json` | `jsonc`, `json-with-comments` |
 | YAML | `.yaml`, `.yml`, `.clangd`, `.clang-format`, `.clang-tidy` | `yaml`, `yml` |
 | TOML | `.toml`, `Cargo.lock`, `uv.lock`, `poetry.lock`, `Pipfile` | `toml` |
+| Nix | `.nix` | `nix` |
 
 Known paths take precedence over shebangs. Detection reads at most 256 characters
 of a shebang and supports `/usr/bin/env bash` and `/usr/bin/env -S bash -eu`.
@@ -138,9 +139,9 @@ for lines and `/* */` for blocks. Rust recognizes existing `///` and `//!`
 comments as well as block documentation comments.
 Python, Ruby, YAML, and TOML use `#` for both comment commands. Go, C/C++, Java,
 C#, Swift, and PHP use `//` and `/* */`; PHP also recognizes existing `#`
-comments. Lua uses `--` and `--[[ ]]`. HTML uses `<!-- -->`; CSS uses `/* */`
-for both commands. JSON leaves both comment commands inactive; JSONC uses
-`//` and `/* */`. Plain-text buffers retain their generic fallbacks.
+comments. Nix uses `#` and `/* */`. Lua uses `--` and `--[[ ]]`. HTML uses
+`<!-- -->`; CSS uses `/* */` for both commands. JSON leaves both comment commands
+inactive; JSONC uses `//` and `/* */`. Plain-text buffers retain their generic fallbacks.
 
 Line comments share the minimum indentation of the selected nonblank lines;
 overlapping line selections are edited once. Block toggling skips whitespace

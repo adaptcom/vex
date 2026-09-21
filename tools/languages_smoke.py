@@ -57,6 +57,7 @@ def main():
             ("settings.jsonc", '// comment\n{"message": "hello"}\n', b"\x1b[38;5;4m"),
             ("config.yaml", 'message: "hello"\ncount: 42\n', b"\x1b[38;5;4m"),
             ("Cargo.lock", 'version = 4\nmessage = "hello"\n', b"\x1b[38;5;4m"),
+            ("flake.nix", 'let message = "hello"; in { inherit message; }\n', b"\x1b[38;5;1m"),
         ]:
             path = project / name
             path.write_text(source)
@@ -67,7 +68,7 @@ def main():
                 terminal.expect_screen_absent("failed to start")
                 terminal.send(b":q\r")
                 terminal.finish()
-        print("PASS: 19 language/detection fixtures render with missing servers and clean shutdown")
+        print("PASS: 20 language/detection fixtures render with missing servers and clean shutdown")
         if args.syntax_only:
             return
 

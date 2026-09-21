@@ -371,6 +371,14 @@ languages! {
         grammar: || tree_sitter_toml_ng::LANGUAGE.into(),
         queries: &[tree_sitter_toml_ng::HIGHLIGHTS_QUERY], inline: None,
     },
+    Nix {
+        name: "nix", aliases: &[], extensions: &["nix"], filenames: &[], interpreters: &[],
+        language_id: "nix", indentation: TWO_SPACES,
+        comments: Comments { line: &["#"], block: &[("/*", "*/")] },
+        server: None,
+        grammar: || tree_sitter_nix::LANGUAGE.into(),
+        queries: &[tree_sitter_nix::HIGHLIGHTS_QUERY], inline: None,
+    },
 }
 
 impl Language {
@@ -537,6 +545,9 @@ mod tests {
             ("Cargo.lock", Language::Toml),
             ("Pipfile", Language::Toml),
             ("uv.lock", Language::Toml),
+            ("flake.nix", Language::Nix),
+            ("default.nix", Language::Nix),
+            ("shell.nix", Language::Nix),
         ] {
             assert_eq!(
                 Language::from_path(Path::new(path)),

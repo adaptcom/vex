@@ -28,6 +28,7 @@ tree-sitter-css.workspace = true
 tree-sitter-json.workspace = true
 tree-sitter-yaml.workspace = true
 tree-sitter-toml-ng.workspace = true
+tree-sitter-nix.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
