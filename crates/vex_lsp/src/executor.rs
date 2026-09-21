@@ -36,6 +36,19 @@ impl Wake for Parker {
 pub(crate) struct Executor(Arc<Parker>);
 
 impl Executor {
+    /// Give the root a chance to route input and poll other server sessions.
+    pub async fn yield_now(&self) {
+        let mut yielded = false;
+        std::future::poll_fn(|cx| {
+            if std::mem::replace(&mut yielded, true) {
+                Poll::Ready(())
+            } else {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await;
+    }
     /// Register a deadline during poll. Registration is rebuilt each poll, so
     /// dropping a timeout future cannot leave an ever-growing timer collection.
     pub fn deadline(&self, deadline: Instant) {

@@ -940,6 +940,21 @@ without sending extra input to wake the loop.
 
 ## Language services
 
+Server processes persist per workspace/configuration, with an eight-server LRU
+bound. Focus changes reuse initialization, open documents, and wire versions.
+All session futures share the existing service executor and yield after 32
+processed events; workspace preflight yields every 64 captured buffers. A slow
+initialization or shutdown grace period does not stop other sessions' futures.
+Each retained server still owns three blocking-I/O threads.
+
+Ordinary typing keeps its fixed-size active-snapshot submission. Buffer lifecycle
+changes and external/workspace edits capture shared snapshots on the UI; root
+resolution, document reconciliation, diagnostic restoration, and serialization
+run on the service thread. Lifecycle captures scale with loaded buffers; they do
+not run per keystroke. Mock-server tests count launches and document notifications
+through switches, restarts, and LRU eviction, and check progress while another
+server withholds initialization. They do not measure real-server indexing costs.
+
 Rust-analyzer runs in a child process. The UI submits shared rope snapshots;
 JSON encoding, UTF-16 indexing, and protocol handling run on the LSP service
 thread, with separate threads for blocking pipe I/O. Routine updates wait for

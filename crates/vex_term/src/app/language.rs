@@ -43,6 +43,7 @@ pub(super) struct State {
     enabled: bool,
     epoch: u64,
     document: Option<vex_lsp::Document>,
+    restart: u64,
     force: bool,
     next_request: u64,
     pending: Option<Pending>,
@@ -160,13 +161,13 @@ impl App {
         }
     }
 
-    /// Only workspace application schedules this full catalog capture. Normal
-    /// keystrokes keep their constant-size active-document update path.
+    /// Buffer lifetimes, reloads, and workspace application schedule this catalog
+    /// capture. Normal keystrokes keep their constant-size active-document update.
     pub(crate) fn take_lsp_workspace_update(&mut self) -> Option<vex_lsp::WorkspaceUpdate> {
         if !std::mem::take(&mut self.workspace.synchronize) || !self.language.enabled {
             return None;
         }
-        let epoch = self.language.document.as_ref()?.epoch;
+        let epoch = self.language.epoch;
         self.language.workspace_generation += 1;
         Some(vex_lsp::WorkspaceUpdate {
             epoch,
@@ -242,10 +243,17 @@ impl App {
     }
 
     pub(super) fn restart_language_server(&mut self) {
+        if self.files.target().is_none()
+            || self.editor.language().and_then(Language::server).is_none()
+        {
+            self.message = "no language server configured for this buffer".into();
+            return;
+        }
         self.dismiss_language_help();
         self.signature.reset();
         self.language.signature = None;
         self.language.epoch += 1;
+        self.language.restart += 1;
         self.language.document = None;
         self.language.completion = None;
         self.language.force = true;
@@ -292,6 +300,7 @@ impl App {
             _ => true,
         };
         if identity_changed {
+            self.workspace.synchronize = true;
             self.language.cancel();
             self.signature.reset();
             self.language.signature = None;
@@ -313,6 +322,7 @@ impl App {
             });
         let document = path.map(|path| vex_lsp::Document {
             epoch: self.language.epoch,
+            restart: self.language.restart,
             language: language.unwrap(),
             path: path.into(),
             snapshot: self.editor.document().snapshot(),
@@ -955,6 +965,59 @@ mod tests {
             diagnostics,
             now,
         )
+    }
+
+    #[test]
+    fn buffer_lifetimes_publish_catalogs_without_recapturing_every_keystroke() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = app(directory.path());
+        let first = app.editor.document().id();
+        let initial = app.take_lsp_workspace_update().unwrap();
+        assert_eq!(initial.documents.len(), 1);
+        let epoch = app.language.epoch;
+        app.editor.execute("insert_mode", 1).unwrap();
+        app.editor.insert_text("// unsaved\n").unwrap();
+        app.editor.execute("normal_mode", 1).unwrap();
+        let typed = app.take_lsp_update().unwrap().document.unwrap();
+        assert_eq!(typed.epoch, epoch);
+        assert_eq!(typed.restart, 0);
+        assert!(app.take_lsp_workspace_update().is_none());
+        let path = directory.path().join("other.rs");
+        fs::write(&path, "fn other() {}\n").unwrap();
+        app.open_window_file(&path).unwrap();
+        let switched = app.take_lsp_update().unwrap().document.unwrap();
+        assert!(switched.epoch > epoch);
+        assert_eq!(switched.restart, 0);
+        let captured = app.take_lsp_workspace_update().unwrap();
+        assert_eq!(captured.documents.len(), 2);
+        let hidden = captured
+            .documents
+            .iter()
+            .find(|doc| doc.snapshot.id() == first)
+            .unwrap();
+        assert_eq!(hidden.snapshot.revision(), typed.snapshot.revision());
+        app.execute("bc").unwrap();
+        app.take_lsp_update().unwrap();
+        assert_eq!(app.editor.document().id(), first);
+        assert_eq!(app.take_lsp_workspace_update().unwrap().documents.len(), 1);
+        app.execute("lsp-restart").unwrap();
+        assert_eq!(app.take_lsp_update().unwrap().document.unwrap().restart, 1);
+        app.take_lsp_workspace_update().unwrap();
+        let saved = directory.path().join("renamed.rs");
+        app.execute(&format!("w {}", saved.display())).unwrap();
+        let update = app.take_lsp_update().unwrap().document.unwrap();
+        let captured = app.take_lsp_workspace_update().unwrap();
+        assert_eq!(captured.documents.len(), 1);
+        assert_eq!(captured.documents[0].path, update.path);
+        assert!(update.path.ends_with("renamed.rs"));
+        app.execute("language text").unwrap();
+        assert!(app.take_lsp_update().unwrap().document.is_none());
+        assert_eq!(
+            app.take_lsp_workspace_update().unwrap().documents[0].language,
+            None
+        );
+        app.execute("lsp-restart").unwrap();
+        assert_eq!(app.language.restart, 1);
     }
 
     #[test]

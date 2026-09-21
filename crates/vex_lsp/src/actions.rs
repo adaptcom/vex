@@ -374,6 +374,7 @@ mod tests {
     fn document() -> Document {
         Document {
             epoch: 1,
+            restart: 0,
             language: Language::Rust,
             path: "/tmp/action.rs".into(),
             snapshot: TextDocument::from("a🦀b\n").snapshot(),

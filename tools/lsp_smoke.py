@@ -107,7 +107,16 @@ def main():
 
         main_file.write_text("mod other;\nfn main() { let _: bool = other::answer(); }\n")
         (project / "src/other.rs").write_text("pub fn answer() -> u32 { 42 }\n")
-        with Terminal([binary, str(main_file)]) as terminal:
+        launches = project / "server-launches.txt"
+        wrapper = project / "count-server-launches.py"
+        server = os.environ.get("VEX_RUST_ANALYZER", "rust-analyzer")
+        wrapper.write_text(
+            "#!/usr/bin/env python3\nimport os, sys\n"
+            f"with open({str(launches)!r}, 'a') as log: log.write(str(os.getpid()) + '\\n')\n"
+            f"os.execvpe({server!r}, [{server!r}, *sys.argv[1:]], os.environ)\n"
+        )
+        wrapper.chmod(0o700)
+        with Terminal([binary, str(main_file)], env={"VEX_RUST_ANALYZER": str(wrapper)}) as terminal:
             terminal.start()
             terminal.resize(220, 24)
             terminal.expect_screen(b"LSP:ready")
@@ -133,7 +142,7 @@ def main():
             terminal.send(b"\x03")  # Close the picker without altering jump history.
             terminal.send(b"\x0f")  # Ctrl-o: return to the saved origin.
             terminal.expect_screen(b"main.rs")
-            terminal.expect_screen(b"1E")  # Wait for the reopened workspace to finish indexing/checking.
+            terminal.expect_screen(b"1E")  # Cached diagnostics return with the original server.
             terminal.send(b" smain")
             terminal.expect_screen(b"Document symbols")
             terminal.expect_screen(b"main  [function]")
@@ -149,9 +158,10 @@ def main():
             terminal.expect_screen(b"1:8")
             terminal.send(b"\x0f")
             terminal.expect_screen(b"main.rs")
+            assert len(launches.read_text().splitlines()) == 1, "file navigation restarted rust-analyzer"
             terminal.send(b":q\r")
             terminal.finish()
-        print("PASS: real rust-analyzer diagnostics, document/workspace diagnostic pickers, hover, definitions, symbols, jump back, shutdown")
+        print("PASS: persistent rust-analyzer across definitions/symbols/jump back, diagnostics, hover, and shutdown")
 
         # Markdown is prepared by the service and shown in a floating, scrollable box.
         markdown_docs = (

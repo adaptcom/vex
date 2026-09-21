@@ -55,7 +55,8 @@ to rename a symbol across files. Space-a opens the code-action menu for the
 primary selection. Rename and code actions preserve unsaved buffers and leave
 changes unsaved, with undo in each affected buffer. `=` formats one selection
 when the server supports range formatting; `:format`/`:fmt` formats the file. Use
-`Ctrl-o` to jump back, `]d` / `[d` for next/previous diagnostics, and `[D` / `]D` for first/last. See [language services and setup](docs/lsp.md).
+`Ctrl-o` to jump back, `]d` / `[d` for next/previous diagnostics, and `[D` / `]D` for first/last. Servers persist across file and pane switches, sharing one process per workspace
+and server configuration. See [language services and setup](docs/lsp.md).
 Tracked files show live Git gutter markers, including unsaved changes, with
 Helix-style bars and deletion overlines. See [Git gutter behavior](docs/git.md).
 See [terminal usage and architecture](docs/terminal.md).

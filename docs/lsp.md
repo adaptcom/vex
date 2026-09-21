@@ -47,8 +47,9 @@ additional arguments or setup are needed.
 Scratch buffers gain language services after saving to a recognized path or
 saving with a manually selected language. `:language NAME` changes both syntax
 and server selection; `:language text` stops language services. Changing language
-on the same file also starts a fresh server session and discards old capabilities,
-completion requests, and diagnostics.
+on the same file discards cursor-specific requests and switches to the matching
+server. Compatible languages reuse a server, with a close/open notification pair
+when a document's language ID changes.
 
 The status line shows `LSP:ready 0E 0W` (or `LSP:starting` with counts during
 startup), using the current error and warning counts. It shows `LSP:down` when
@@ -60,7 +61,9 @@ over the LSP field.
 Ready means the initialization handshake finished;
 workspace loading and diagnostics may still be in progress. Missing servers,
 protocol failures, and request errors leave editing and saving available.
-`:lsp-restart` retries the current file after a failure or configuration change.
+`:lsp-restart` restarts only the current buffer's workspace/server, including
+its other open documents. Other workspaces keep running. Failed servers stay
+down until explicitly restarted or evicted from the bounded pool.
 
 | Key / command | Behavior |
 |---|---|
@@ -128,8 +131,8 @@ entries. Cached diagnostics whose captured buffer revision has changed are omitt
 Diagnostics published for an unsynchronized file are usable while it is unopened
 or freshly loaded; they are omitted after local edits until a current publication
 can be tied to that buffer. Closed buffers with revision-stamped diagnostics are
-also omitted until republished. Picker records are last-published data; keeping
-separate server sessions alive remains future work.
+also omitted until republished. Picker records are last-published data; idle
+server sessions continue accepting publications for their workspaces.
 
 The catalog retains up to 4,096 files, 65,536 diagnostics, and 16 MiB of accounted
 message/metadata data, with at most 512 diagnostics per file. Messages are capped
@@ -171,12 +174,34 @@ visible results per query. Document highlight responses exceeding 65,536 ranges
 fail explicitly rather than selecting only a prefix. These limits are separate
 from the existing 8 MiB active-document LSP limit.
 
-Language services maintain one active document session. Switching focus between
-views of the same file keeps the session and cancels cursor-specific requests.
-Focusing a different file changes the session. Diagnostics, hover, and completion
-are shown in the focused pane. The diagnostic catalog survives session changes;
-workspace pickers include diagnostics published for unopened files. Rename synchronizes other captured buffers into
-that session; retaining server sessions when switching files remains future work.
+Server lifetime is independent of the focused file. The pool keys each server by
+project root, executable, arguments, and registry configuration. Files with the
+same key share one initialized process, including JavaScript/TypeScript and C/C++.
+Switching files, panes, projects, or visiting a scratch buffer retains servers and
+open documents. Focus changes cancel cursor-specific requests and advance their
+frontend generation, so old responses cannot reach a new pane or document.
+
+The pool retains up to eight servers. Opening a ninth retires the least recently
+used server before starting its replacement; returning to an evicted workspace
+starts it again. Exit stops every retained process and its I/O threads.
+
+Buffer lifecycle changes publish a shared snapshot catalog. The worker synchronizes
+eligible open buffers, including hidden unsaved text, and sends `didClose` for
+closed, renamed, or reconfigured buffers. Ordinary typing still submits only the
+active snapshot. External reloads and applied workspace edits also refresh the
+catalog. Requests run after pending catalog updates. Each server keeps document
+versions across focus changes; reopened URIs advance beyond their previous versions.
+
+Diagnostics, hover, and completion appear in the focused pane. Returning to an
+unchanged document restores cached diagnostics without waiting for republication.
+A per-server cache retains up to 512 files / 8 MiB of opaque diagnostic context
+for code actions, guarded by document identity, revision, and wire version.
+Evicted context falls back to typed diagnostics for display. The shared diagnostic
+picker continues to receive publications from idle servers and unopened files.
+
+These lifetimes follow the protocol's
+[document ownership rules](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/textDocument/didOpen.md):
+hiding a buffer does not close the document on the server.
 
 Project discovery uses the nearest configured marker (`.marksman.toml`,
 `.shellcheckrc`, or a TypeScript/JavaScript project manifest), falling back to the
@@ -409,15 +434,18 @@ drawing. It implements the relevant parts of
 Servers receive their default configuration. Rust-analyzer includes its usual workspace
 loading and Cargo checks. Project roots use the registry rules described above.
 Settings and server-initiated workspace-edit requests receive explicit responses;
-`workspace/applyEdit` and dynamic capability registration are not supported.
+`workspace/applyEdit` is supported for active server commands; dynamic capability
+registration is not supported.
 Rename response edits support versioned text changes with whole-batch validation.
 
 A small, safe `Future` executor runs one service future on a dedicated thread.
-That future waits concurrently for editor updates, protocol notifications, and
-the active request response. `std::task::Wake`, a condition variable, and the
+That future routes editor updates and polls every retained server session,
+including initialization, protocol notifications, and outstanding responses.
+Sessions yield between batches so one busy server does not monopolize the executor.
+`std::task::Wake`, a condition variable, and the
 earliest registered deadline provide sleeping and wakeups. There is no Tokio,
 general task scheduler, or OS async I/O driver. Three additional threads own
-stdin writes, stdout reads, and bounded stderr capture for the active server.
+stdin writes, stdout reads, and bounded stderr capture for each retained server.
 All blocking pipe I/O stays outside `Future::poll`.
 
 The output queue holds eight client messages. Synchronization and requests await
@@ -429,7 +457,7 @@ responses or block the reader. Client document notifications retain FIFO order.
 The UI sends cheap rope snapshots through a latest-update mailbox. Routine edits
 wait for 300 ms without another text change; continuous typing keeps postponing
 the update. Saves, submitted requests (including completion and signature help),
-and session changes wake immediately. Metadata-only refreshes do not extend the
+and focus changes wake immediately. Metadata-only refreshes do not extend the
 idle deadline, and protocol replies continue while updates wait. Text is
 serialized on the service thread.
 `didOpen`, full-content `didChange`, `didSave` when supported, and `didClose` are
@@ -464,9 +492,12 @@ handles. This prevents inherited pipes from holding the reader joins open.
 
 ## Current limits and validation
 
-One server session is active at a time; changing file identity, Save As, or
-explicit restart starts a new session. Documents above 8 MiB stay editable but
-do not start language services. Frames are limited to 32 MiB, headers to 8 KiB,
+Up to eight server sessions stay alive. Catalog synchronization is limited to
+4,096 documents / 64 MiB of text per server. Background updates skip documents above these
+limits; workspace-edit requests still validate their entire capture and fail
+explicitly when it exceeds the limits. Documents above 8 MiB stay editable but
+do not start language services or shut down a healthy server for other files.
+Frames are limited to 32 MiB, headers to 8 KiB,
 outgoing client messages to eight queued values and server-request replies to 32,
 non-diagnostic service packets and UI
 LSP events to 128 each, active diagnostics to 512, and retained stderr to 8 KiB. An
@@ -486,8 +517,8 @@ proportional to document size on the service thread. Definition/type/implementat
 reference destinations and workspace-edit files load on workers; some older
 symbol-jump paths still load synchronously.
 
-Signature help, semantic tokens, multi-buffer server reuse, and configurable server settings are
-future work.
+Incremental document synchronization, semantic tokens, configurable pool limits,
+and user-defined server settings remain future work.
 
 Hover preparation runs on the LSP service thread using the bundled Markdown
 grammars, with no additional third-party dependencies. It accepts modern

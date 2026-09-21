@@ -2,11 +2,12 @@
 
 LSP rename (`Space-r`) uses the shared workspace-edit path. Server commands use
 the same path for `workspace/applyEdit`, with acknowledgements tied to actual
-application results. The code-action menu and formatting are not enabled yet.
+application results. Code actions and formatting also use this validation path.
 
 Before rename preparation and submission, the LSP worker synchronizes captured
 open buffers belonging to its configured languages and workspace, including
-hidden unsaved buffers. Unchanged snapshots are not resent. Wire versions are
+hidden unsaved buffers. Persistent sessions also synchronize these buffers at
+file/buffer lifecycle changes. Unchanged snapshots are not resent. Wire versions are
 tracked separately from editor revisions and accompany the response. The capture
 is limited to 4,096 named buffers and synchronization to 64 MiB in total, with
 the existing 8 MiB limit per document. Unrelated dirty buffers remain protected:

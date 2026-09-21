@@ -65,6 +65,7 @@ mod tests {
     fn document() -> Document {
         Document {
             epoch: 1,
+            restart: 0,
             path: "/tmp/format.rs".into(),
             language: Language::Rust,
             snapshot: TextDocument::from("a🦀b\r\nz").snapshot(),

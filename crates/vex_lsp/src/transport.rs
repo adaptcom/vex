@@ -495,14 +495,18 @@ impl Transport {
             let _ = poll_fn(|cx| self.poll_lifecycle_response(inbox, &mut response, cx)).await;
         }
         let _ = self.notify("exit", Value::Null);
-        // The grace period runs on the service thread, after its last future.
+        // Other workspace sessions continue while this child exits.
         let deadline = Instant::now() + Duration::from_millis(200);
-        while Instant::now() < deadline {
-            if self.child.try_wait().ok().flatten().is_some() {
-                break;
+        poll_fn(|_| {
+            let now = Instant::now();
+            if now >= deadline || self.child.try_wait().ok().flatten().is_some() {
+                Poll::Ready(())
+            } else {
+                executor.deadline(deadline.min(now + Duration::from_millis(5)));
+                Poll::Pending
             }
-            thread::sleep(Duration::from_millis(5));
-        }
+        })
+        .await;
     }
 
     pub fn error_context(&self, message: &str) -> String {

@@ -118,7 +118,10 @@ while True:
         doc['version'] += 1; doc['text'] = params['contentChanges'][0]['text']
     elif method == 'textDocument/didClose': documents.pop(params['textDocument']['uri'])
     elif method in ['textDocument/rangeFormatting','textDocument/formatting']:
-        assert len(documents) == 1  # Formatting does not open unrelated hidden buffers.
+        # Persistent sessions already know hidden buffers; formatting still
+        # targets only the requested document and preserves unsaved neighbors.
+        assert len(documents) == 2
+        assert next(doc['text'] for uri, doc in documents.items() if uri.endswith('/hidden.rs')) == '// unsaved\nhidden\n'
         text = documents[params['textDocument']['uri']]['text']
         edits = []
         for i, line in enumerate(text.split('\n')):

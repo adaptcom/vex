@@ -45,18 +45,101 @@ pub(crate) fn validate_origin(
     Ok(())
 }
 
-struct OpenDocument {
-    snapshot: Snapshot,
-    version: i32,
+pub(crate) struct OpenDocument {
+    pub snapshot: Snapshot,
+    pub version: i32,
+    pub saved: u64,
     language: Language,
 }
 
 #[derive(Default)]
 pub(crate) struct Workspace {
     documents: BTreeMap<PathBuf, OpenDocument>,
+    // A fresh didOpen must not reuse a closed URI's diagnostic version. A
+    // monotonic floor avoids retaining an unbounded list of closed paths.
+    open_version: i32,
 }
 
 impl Workspace {
+    pub fn remember(&mut self, document: &Document, version: i32) {
+        self.documents.insert(
+            document.path.clone(),
+            OpenDocument {
+                snapshot: document.snapshot.clone(),
+                version,
+                saved: document.saved,
+                language: document.language,
+            },
+        );
+    }
+
+    /// Reuse the URI's wire version when changing focus. didOpen belongs to
+    /// buffer lifetime, not pane focus or cursor-request generations.
+    pub async fn activate(
+        &mut self,
+        transport: &Transport,
+        executor: &Executor,
+        document: &Document,
+        interrupted: impl Fn(&Context<'_>) -> bool,
+    ) -> Result<OpenDocument, String> {
+        let uri = file_uri(&document.path).map_err(|e| e.to_string())?;
+        if self
+            .documents
+            .get(&document.path)
+            .is_some_and(|old| old.language != document.language)
+        {
+            self.advance_open_version(&document.path)?;
+            transport
+                .notify_wait(
+                    executor,
+                    "textDocument/didClose",
+                    json!({"textDocument":{"uri":uri}}),
+                    &interrupted,
+                )
+                .await?;
+            self.documents.remove(&document.path);
+        }
+        if let Some(old) = self.documents.get(&document.path) {
+            return Ok(OpenDocument {
+                snapshot: old.snapshot.clone(),
+                version: old.version,
+                saved: old.saved,
+                language: old.language,
+            });
+        }
+        if self.documents.len() >= 4096
+            || self
+                .documents
+                .values()
+                .map(|doc| doc.snapshot.text().len_bytes())
+                .sum::<usize>()
+                .saturating_add(document.snapshot.text().len_bytes())
+                > 64 << 20
+        {
+            return Err("workspace synchronization exceeds 4096 buffers or 64 MiB".into());
+        }
+        let version = self.open_version;
+        transport.notify_wait(executor, "textDocument/didOpen", json!({"textDocument":{
+            "uri":uri,"languageId":document.language.language_id(),"version":version,"text":document.snapshot.text().to_string()
+        }}), interrupted).await?;
+        self.remember(document, version);
+        Ok(OpenDocument {
+            snapshot: document.snapshot.clone(),
+            version,
+            saved: document.saved,
+            language: document.language,
+        })
+    }
+
+    fn advance_open_version(&mut self, path: &Path) -> Result<(), String> {
+        let version = self.documents[path]
+            .version
+            .checked_add(1)
+            .ok_or("LSP document version exhausted")?;
+        self.open_version = self.open_version.max(version);
+        Ok(())
+    }
+
     pub(crate) fn diagnostic_version(
         &self,
         path: &Path,
@@ -76,6 +159,7 @@ impl Workspace {
         .chain(
             self.documents
                 .iter()
+                .filter(|(path, _)| **path != active.path)
                 .map(|(path, doc)| SynchronizedDocument {
                     path: path.clone(),
                     version: doc.version,
@@ -99,8 +183,57 @@ impl Workspace {
         captured: &[WorkspaceDocument],
         interrupted: impl Fn(&Context<'_>) -> bool,
     ) -> Result<Vec<SynchronizedDocument>, String> {
-        let server = active.language.server().unwrap();
-        if captured.len() > 4096 {
+        self.synchronize_inner(
+            transport,
+            executor,
+            Some((active, active_version)),
+            active.language,
+            root,
+            captured,
+            true,
+            interrupted,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn synchronize_catalog(
+        &mut self,
+        transport: &Transport,
+        executor: &Executor,
+        active: Option<(&Document, i32)>,
+        language: Language,
+        root: &Path,
+        captured: &[WorkspaceDocument],
+        interrupted: impl Fn(&Context<'_>) -> bool,
+    ) -> Result<Vec<SynchronizedDocument>, String> {
+        self.synchronize_inner(
+            transport,
+            executor,
+            active,
+            language,
+            root,
+            captured,
+            false,
+            interrupted,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn synchronize_inner(
+        &mut self,
+        transport: &Transport,
+        executor: &Executor,
+        active: Option<(&Document, i32)>,
+        language: Language,
+        root: &Path,
+        captured: &[WorkspaceDocument],
+        strict: bool,
+        interrupted: impl Fn(&Context<'_>) -> bool,
+    ) -> Result<Vec<SynchronizedDocument>, String> {
+        let server = language.server().unwrap();
+        if strict && captured.len() > 4096 {
             return Err("workspace synchronization exceeds 4096 buffers".into());
         }
         let mut bytes = 0usize;
@@ -109,16 +242,26 @@ impl Workspace {
         // remain protected by the frontend's workspace-edit validation.
         // Active edits may have advanced while an applied workspace update was
         // queued. The session already synchronized that document separately.
-        let origin = WorkspaceDocument {
+        let origin = active.map(|(active, _)| WorkspaceDocument {
             path: active.path.clone(),
             language: Some(active.language),
             snapshot: active.snapshot.clone(),
-        };
-        for doc in captured
+        });
+        for (index, doc) in origin
             .iter()
-            .filter(|doc| doc.path != active.path)
-            .chain(std::iter::once(&origin))
+            .chain(
+                captured
+                    .iter()
+                    .filter(|doc| active.is_none_or(|(active, _)| doc.path != active.path)),
+            )
+            .enumerate()
         {
+            if index > 0 && index % 64 == 0 {
+                executor.yield_now().await;
+                if std::future::poll_fn(|cx| std::task::Poll::Ready(interrupted(cx))).await {
+                    return Err("workspace synchronization cancelled".into());
+                }
+            }
             let Some(language) = doc.language else {
                 continue;
             };
@@ -129,28 +272,46 @@ impl Workspace {
                 || server.command != other.command
                 || server.arguments != other.arguments
                 || server.environment != other.environment
+                || crate::root(&doc.path, language) != root
             {
                 continue;
             }
             if doc.snapshot.text().len_bytes() > crate::MAX_DOCUMENT_BYTES {
+                if !strict {
+                    continue;
+                }
                 return Err(format!(
                     "buffer exceeds the 8 MiB LSP limit: {}",
                     vex_editor::paths::display(&doc.path)
                 ));
             }
-            if self.documents.get(&doc.path).is_some_and(|current| {
-                current.snapshot.id() == doc.snapshot.id()
-                    && current.snapshot.revision() > doc.snapshot.revision()
-            }) {
+            if strict
+                && self.documents.get(&doc.path).is_some_and(|current| {
+                    current.snapshot.id() == doc.snapshot.id()
+                        && current.snapshot.revision() > doc.snapshot.revision()
+                })
+            {
                 return Err(format!(
                     "workspace capture is out of date: {}",
                     vex_editor::paths::display(&doc.path)
                 ));
             }
-            bytes = bytes.saturating_add(doc.snapshot.text().len_bytes());
-            if bytes > 64 << 20 {
+            let document_bytes =
+                self.documents
+                    .get(&doc.path)
+                    .map_or(doc.snapshot.text().len_bytes(), |old| {
+                        old.snapshot
+                            .text()
+                            .len_bytes()
+                            .max(doc.snapshot.text().len_bytes())
+                    });
+            if bytes.saturating_add(document_bytes) > 64 << 20 || relevant.len() >= 4096 {
+                if !strict {
+                    continue;
+                }
                 return Err("workspace synchronization exceeds 64 MiB".into());
             }
+            bytes += document_bytes;
             if relevant.insert(doc.path.clone(), (doc, language)).is_some() {
                 return Err("duplicate workspace buffer path".into());
             }
@@ -166,6 +327,7 @@ impl Workspace {
             .map(|(path, _)| path.clone())
             .collect();
         for path in closed {
+            self.advance_open_version(&path)?;
             transport
                 .notify_wait(
                     executor,
@@ -178,12 +340,26 @@ impl Workspace {
         }
         let mut versions = Vec::with_capacity(relevant.len());
         for (path, (doc, language)) in relevant {
-            let version = if path == active.path {
+            let version = if let Some((active, active_version)) =
+                active.filter(|(active, _)| path == active.path)
+            {
+                self.remember(active, active_version);
                 active_version
             } else {
                 let uri = file_uri(&path).map_err(|e| e.to_string())?;
                 match self.documents.get_mut(&path) {
                     Some(old) => {
+                        if old.snapshot.id() == doc.snapshot.id()
+                            && old.snapshot.revision() > doc.snapshot.revision()
+                        {
+                            versions.push(SynchronizedDocument {
+                                path,
+                                version: old.version,
+                                document: old.snapshot.id(),
+                                revision: old.snapshot.revision(),
+                            });
+                            continue;
+                        }
                         if old.snapshot.id() != doc.snapshot.id()
                             || old.snapshot.revision() != doc.snapshot.revision()
                         {
@@ -208,18 +384,20 @@ impl Workspace {
                         old.version
                     }
                     None => {
+                        let version = self.open_version;
                         transport.notify_wait(executor, "textDocument/didOpen", json!({"textDocument":{
-                            "uri":uri,"languageId":language.language_id(),"version":0,"text":doc.snapshot.text().to_string()
+                            "uri":uri,"languageId":language.language_id(),"version":version,"text":doc.snapshot.text().to_string()
                         }}), &interrupted).await?;
                         self.documents.insert(
                             path.clone(),
                             OpenDocument {
                                 snapshot: doc.snapshot.clone(),
-                                version: 0,
+                                version,
+                                saved: 0,
                                 language,
                             },
                         );
-                        0
+                        version
                     }
                 }
             };
@@ -361,6 +539,7 @@ while True:
         });
         let document = Document {
             epoch: 1,
+            restart: 0,
             language: Language::Rust,
             path: capture[0].path.clone(),
             snapshot: texts[0].snapshot(),
@@ -489,6 +668,7 @@ while True:
         service.update(Update {
             document: Some(Document {
                 epoch: 1,
+                restart: 0,
                 language: Language::Rust,
                 path,
                 snapshot: text.snapshot(),
@@ -538,6 +718,7 @@ while True:
         service.update(Update {
             document: Some(Document {
                 epoch: 1,
+                restart: 0,
                 language: Language::Rust,
                 path: capture[0].path.clone(),
                 snapshot: large.snapshot(),
@@ -583,6 +764,7 @@ while True:
         let mut hidden = TextDocument::from("foo");
         let mut document = Document {
             epoch: 1,
+            restart: 0,
             language: Language::Rust,
             path: root.join("main.rs"),
             snapshot: active.snapshot(),

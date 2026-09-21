@@ -64,6 +64,14 @@ selections, and measure operations that could affect input latency.
 
 ## Project navigation and language tools
 
+- [x] Persistent workspace LSP sessions. Reuse servers across file/pane/project
+  switches, retain per-document wire versions and diagnostics, synchronize hidden
+  buffers, and close removed/reconfigured documents. The existing executor polls
+  up to eight servers; explicit restart affects only the selected server and
+  least-recently-used eviction bounds process/I/O-thread lifetimes.
+- [ ] Expose the LSP session-pool limit in user configuration. Replace full-text
+  synchronization and line-index rebuilds with incremental updates where useful.
+
 - [x] Workspace text search with `<space>/`, then `<space>'` to reopen the last
   picker with its query and selection intact.
   Regex search uses cancellable background reads and shared unsaved buffers,

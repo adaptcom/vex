@@ -16,6 +16,7 @@ mod executor;
 mod navigation;
 mod protocol;
 mod rename;
+mod sessions;
 mod signature;
 pub use signature::{SignatureHelp, SignatureOptions};
 mod symbols;
@@ -90,6 +91,8 @@ impl CompletionOptions {
 #[derive(Clone, Debug)]
 pub struct Document {
     pub epoch: u64,
+    /// Monotonic explicit-restart sequence. Focus changes only advance epoch.
+    pub restart: u64,
     pub language: Language,
     pub path: PathBuf,
     pub snapshot: Snapshot,
@@ -245,20 +248,13 @@ impl Inbox {
         state.workspace = Some(update);
         Self::wake(&mut state);
     }
-    fn take_workspace(&self, epoch: u64) -> Option<WorkspaceUpdate> {
-        let mut state = self.0.lock().unwrap();
-        if state
-            .workspace
-            .as_ref()
-            .is_some_and(|update| update.epoch < epoch)
-        {
-            state.workspace = None;
-        }
-        state
-            .workspace
-            .as_ref()
-            .is_some_and(|update| update.epoch == epoch)
-            .then(|| state.workspace.take().unwrap())
+    fn take_workspace(&self) -> Option<WorkspaceUpdate> {
+        self.0.lock().unwrap().workspace.take()
+    }
+    fn route(&self, update: Update) {
+        // The outer mailbox already applied the typing debounce.
+        self.0.lock().unwrap().update_immediate = true;
+        self.update(update);
     }
     fn session_interrupted(&self, cx: &Context<'_>, epoch: u64) -> bool {
         let mut state = self.0.lock().unwrap();
@@ -381,16 +377,6 @@ impl Inbox {
         }
         Poll::Pending
     }
-    fn clear_wire(&self) {
-        let mut state = self.0.lock().unwrap();
-        let retired = (
-            std::mem::take(&mut state.wire),
-            std::mem::take(&mut state.diagnostics),
-        );
-        state.failure = None;
-        drop(state);
-        drop(retired);
-    }
 }
 
 enum Input {
@@ -407,8 +393,8 @@ enum Input {
 }
 
 /// Owns the service and all its child-process threads. Updates never block on
-/// pipe I/O or wait for a language server. Missing servers fail once per epoch;
-/// explicit restart or changing files permits another attempt.
+/// pipe I/O or wait for a language server. Servers persist across focus changes;
+/// explicit restart retries a failed server.
 pub struct Service {
     inbox: Inbox,
     thread: Option<JoinHandle<()>>,
@@ -437,7 +423,12 @@ impl Service {
             .name("vex-lsp".into())
             .spawn(move || {
                 let executor = Executor::default();
-                executor.run(serve(program.as_deref(), &shared, &executor, &emit));
+                executor.run(sessions::serve(
+                    program.as_deref(),
+                    &shared,
+                    &executor,
+                    &emit,
+                ));
             })?;
         Ok(Self {
             inbox,
@@ -490,69 +481,6 @@ fn root(path: &Path, language: Language) -> PathBuf {
     root.unwrap_or_else(|| parent.into())
 }
 
-async fn serve(
-    program_override: Option<&Path>,
-    inbox: &Inbox,
-    executor: &Executor,
-    emit: &impl Fn(Event),
-) {
-    let mut next = None;
-    let mut failed_epoch = None;
-    let diagnostics = diagnostics::Catalog::default();
-    emit(Event::DiagnosticCatalog(diagnostics.clone()));
-    loop {
-        let update = match next.take() {
-            Some(update) => update,
-            None => match poll_fn(|cx| inbox.poll(cx, executor, Instant::now())).await {
-                Input::Update(update) => update,
-                Input::Stop => return,
-                _ => continue,
-            },
-        };
-        let Some(document) = update.document else {
-            continue;
-        };
-        let epoch = document.epoch;
-        if failed_epoch == Some(epoch) {
-            continue;
-        }
-        let Some(server) = document.language.server() else {
-            continue;
-        };
-        let program = program_override
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os(server.environment).map(PathBuf::from))
-            .unwrap_or_else(|| server.command.into());
-        emit(Event::Status {
-            epoch,
-            message: format!("{} starting", server.command),
-            failed: false,
-        });
-        let result = session(
-            &program,
-            inbox,
-            executor,
-            document,
-            update.request,
-            &diagnostics,
-            emit,
-        )
-        .await;
-        match result {
-            Ok(update) => next = update,
-            Err(message) => {
-                failed_epoch = Some(epoch);
-                emit(Event::Status {
-                    epoch,
-                    message: format!("{}: {message}", server.command),
-                    failed: true,
-                });
-            }
-        }
-        inbox.clear_wire();
-    }
-}
-
 async fn session(
     program: &Path,
     inbox: &Inbox,
@@ -561,22 +489,21 @@ async fn session(
     mut initial_request: Option<Request>,
     catalog: &diagnostics::Catalog,
     emit: &impl Fn(Event),
-) -> Result<Option<Update>, String> {
+) -> Result<(), String> {
     check_size(&document)?;
-    let epoch = document.epoch;
+    let mut epoch = document.epoch;
     let server = document
         .language
         .server()
         .ok_or("no language server configured")?;
     let root = root(&document.path, document.language);
     let root_uri = file_uri(&root).map_err(|e| e.to_string())?;
-    let uri = file_uri(&document.path).map_err(|e| e.to_string())?;
+    let mut uri = file_uri(&document.path).map_err(|e| e.to_string())?;
     let notifications = inbox.clone();
-    let active_uri = uri.clone();
     let mut transport =
         transport::Transport::start(program, server.arguments, &root, move |value| {
             if value["method"] == "textDocument/publishDiagnostics" {
-                if let Some(publication) = diagnostics::Publication::decode(value, &active_uri) {
+                if let Some(publication) = diagnostics::Publication::decode(value) {
                     notifications.publish_diagnostics(publication);
                 }
             } else {
@@ -617,18 +544,6 @@ async fn session(
         if inbox.stopped(cx) {
             return Poll::Ready(Err("stopped".into()));
         }
-        if inbox
-            .0
-            .lock()
-            .unwrap()
-            .update
-            .as_ref()
-            .is_some_and(|update| {
-                update.document.as_ref().map(|document| document.epoch) != Some(epoch)
-            })
-        {
-            return Poll::Ready(Err("initialization superseded".into()));
-        }
         transport.poll_lifecycle_response(inbox, &mut initialize, cx)
     })
     .await?;
@@ -649,7 +564,7 @@ async fn session(
     }
     transport.notify("initialized", json!({}))?;
     let mut version = 0i32;
-    let mut opened = false;
+    let mut focused = true;
     let mut pending: Option<PendingRequest> = None;
     let mut workspace = workspace::Workspace::default();
     let mut workspace_generation = 0;
@@ -664,52 +579,144 @@ async fn session(
             state.update.take()
         };
         if let Some(update) = latest {
-            if update.document.as_ref().map(|doc| doc.epoch) != Some(epoch) { return Ok(Some(update)) }
-            document = update.document.unwrap();
+            focused = update.document.is_some();
+            if let Some(latest) = update.document {
+                document = latest;
+            }
+            epoch = document.epoch;
+            uri = file_uri(&document.path).map_err(|e| e.to_string())?;
             initial_request = update.request;
         }
         check_size(&document)?;
-        transport.notify("textDocument/didOpen", json!({"textDocument":{
-            "uri":uri,"languageId":document.language.language_id(),"version":version,"text":document.snapshot.text().to_string()
-        }}))?;
-        opened = true;
+        if focused {
+            let old = workspace
+                .activate(&transport, executor, &document, |cx| inbox.stopped(cx))
+                .await?;
+            version = old.version;
+        }
         let mut positions = protocol::Positions::new(document.snapshot.text());
         let mut action_diagnostics = actions::Diagnostics::default();
+        let mut diagnostic_context = diagnostics::ContextCache::default();
         let mut code_actions = actions::Catalog::default();
-        emit(Event::Capabilities { epoch, completion: CompletionOptions::from_capabilities(&capabilities), signature: SignatureOptions::from_capabilities(&capabilities) });
-        emit(Event::Status { epoch, message: format!("{} ready", server.command), failed: false });
-        if let Some(update) = inbox.take_workspace(epoch) {
+        if focused {
+            emit(Event::Capabilities {
+                epoch,
+                completion: CompletionOptions::from_capabilities(&capabilities),
+                signature: SignatureOptions::from_capabilities(&capabilities),
+            });
+            emit(Event::Status {
+                epoch,
+                message: format!("{} ready", server.command),
+                failed: false,
+            });
+        }
+        if let Some(update) = inbox.take_workspace() {
             workspace_generation = update.generation;
-            workspace.synchronize(&transport, executor, &document, version, &root, &update.documents,
-                |cx| inbox.session_interrupted(cx, epoch)).await?;
+            workspace
+                .synchronize_catalog(
+                    &transport,
+                    executor,
+                    focused.then_some((&document, version)),
+                    document.language,
+                    &root,
+                    &update.documents,
+                    |cx| inbox.stopped(cx),
+                )
+                .await?;
         }
         if let Some(request) = initial_request.take() {
-            start_request(&mut transport, executor, &capabilities, &uri, &document, version, &root, &mut workspace, &action_diagnostics, &code_actions, inbox, request, &mut pending, emit).await;
+            start_request(
+                &mut transport,
+                executor,
+                &capabilities,
+                &uri,
+                &document,
+                version,
+                &root,
+                &mut workspace,
+                &action_diagnostics,
+                &code_actions,
+                inbox,
+                request,
+                &mut pending,
+                emit,
+            )
+            .await;
         }
+        let mut budget = 0;
         loop {
+            if budget == 32 {
+                executor.yield_now().await;
+                budget = 0;
+            }
+            budget += 1;
             let input = poll_fn(|cx| {
                 // Register the inbox waker even while waiting for a reply, so
                 // edits, cancellation, and shutdown never wait for that reply.
-                if inbox.stopped(cx) { return Poll::Ready(Input::Stop) }
+                if inbox.stopped(cx) {
+                    return Poll::Ready(Input::Stop);
+                }
                 if let Some(edit) = &mut applying {
-                    if pending.as_ref().is_none_or(|pending| pending.request.id != edit.request || pending.request.cancellation.is_cancelled()) {
+                    if pending.as_ref().is_none_or(|pending| {
+                        pending.request.id != edit.request
+                            || pending.request.cancellation.is_cancelled()
+                    }) {
                         edit.response.cancellation().cancel();
                     }
-                    if let Poll::Ready(result) = Pin::new(&mut edit.response).poll(cx) { return Poll::Ready(Input::Applied(result)) }
-                } else if !queued_edits.is_empty() { return Poll::Ready(Input::NextEdit) }
-                if let Some(update) = inbox.take_workspace(epoch) { return Poll::Ready(Input::Workspace(update)) }
-                if applying.is_none() && let Some(PendingRequest { request, response, .. }) = &mut pending {
-                    if request.cancellation.is_cancelled() { return Poll::Ready(Input::Answer(Err("cancelled".into()))) }
-                    if let Poll::Ready(answer) = Pin::new(response).poll(cx) { return Poll::Ready(Input::Answer(answer)) }
+                    if let Poll::Ready(result) = Pin::new(&mut edit.response).poll(cx) {
+                        return Poll::Ready(Input::Applied(result));
+                    }
+                } else if !queued_edits.is_empty() {
+                    return Poll::Ready(Input::NextEdit);
+                }
+                // A focus update must precede a captured buffer catalog, so the
+                // previous active snapshot cannot replace newer unsaved text.
+                {
+                    let mut state = inbox.0.lock().unwrap();
+                    if state.update_due.is_some_and(|due| due <= Instant::now()) {
+                        state.update_due = None;
+                        state.update_immediate = false;
+                        if let Some(update) = state.update.take() {
+                            return Poll::Ready(Input::Update(update));
+                        }
+                    }
+                }
+                if let Some(update) = inbox.take_workspace() {
+                    return Poll::Ready(Input::Workspace(update));
+                }
+                if applying.is_none()
+                    && let Some(PendingRequest {
+                        request, response, ..
+                    }) = &mut pending
+                {
+                    if request.cancellation.is_cancelled() {
+                        return Poll::Ready(Input::Answer(Err("cancelled".into())));
+                    }
+                    if let Poll::Ready(answer) = Pin::new(response).poll(cx) {
+                        return Poll::Ready(Input::Answer(answer));
+                    }
                 }
                 inbox.poll(cx, executor, Instant::now())
-            }).await;
+            })
+            .await;
             match input {
-                Input::Stop => return Ok(None),
+                Input::Stop => return Ok(()),
                 Input::Failed(error) => return Err(error),
                 Input::NextEdit => {
                     let (request, value) = queued_edits.pop_front().unwrap();
-                    applying = start_server_edit(&transport, executor, inbox, &document, &workspace, version, pending.as_mut(), request, value, emit).await?;
+                    applying = start_server_edit(
+                        &transport,
+                        executor,
+                        inbox,
+                        &document,
+                        &workspace,
+                        version,
+                        pending.as_mut(),
+                        request,
+                        value,
+                        emit,
+                    )
+                    .await?;
                 }
                 Input::Applied(result) => {
                     let edit = applying.take().unwrap();
@@ -718,150 +725,448 @@ async fn session(
                         Ok(applied) => {
                             // Text has already been installed: synchronization failure
                             // ends this session instead of falsely reporting applied:false.
-                            if applied.document.epoch != epoch || applied.workspace.epoch != epoch || applied.document.path != document.path
-                                || applied.document.language != document.language || applied.document.snapshot.id() != document.snapshot.id()
-                                || applied.document.snapshot.revision() < document.snapshot.revision() {
+                            if applied.document.epoch != epoch
+                                || applied.workspace.epoch != epoch
+                                || applied.document.path != document.path
+                                || applied.document.language != document.language
+                                || applied.document.snapshot.id() != document.snapshot.id()
+                                || applied.document.snapshot.revision()
+                                    < document.snapshot.revision()
+                            {
                                 return Err("invalid workspace application acknowledgement".into());
                             }
                             check_size(&applied.document)?;
                             let mut synced = document.snapshot.clone();
-                            synchronize(&transport, executor, inbox, &uri, &mut version, &mut synced, &applied.document.snapshot).await?;
-                            if document.snapshot.revision() != applied.document.snapshot.revision() {
-                                positions = protocol::Positions::new(applied.document.snapshot.text());
+                            synchronize(
+                                &transport,
+                                executor,
+                                inbox,
+                                &uri,
+                                &mut version,
+                                &mut synced,
+                                &applied.document.snapshot,
+                            )
+                            .await?;
+                            if document.snapshot.revision() != applied.document.snapshot.revision()
+                            {
+                                positions =
+                                    protocol::Positions::new(applied.document.snapshot.text());
                             }
                             document = applied.document;
+                            workspace.remember(&document, version);
                             if applied.workspace.generation > workspace_generation {
                                 workspace_generation = applied.workspace.generation;
-                                workspace.synchronize(&transport, executor, &document, version, &root, &applied.workspace.documents,
-                                    |cx| inbox.session_interrupted(cx, epoch)).await?;
+                                workspace
+                                    .synchronize(
+                                        &transport,
+                                        executor,
+                                        &document,
+                                        version,
+                                        &root,
+                                        &applied.workspace.documents,
+                                        |cx| inbox.session_interrupted(cx, epoch),
+                                    )
+                                    .await?;
                             }
                             Ok(())
                         }
                         Err(error) => Err(error),
                     };
-                    if let Err(error) = &result && let Some(pending) = &mut pending {
+                    if let Err(error) = &result
+                        && let Some(pending) = &mut pending
+                    {
                         pending.edit_failure.get_or_insert_with(|| error.clone());
                     }
-                    transport.reply_edit(executor, inbox, edit.wire_id, &result).await?;
-                    if let Some(pending) = &mut pending { pending.response.resume_timeout(); }
-                    emit(Event::ApplyEditFinished { epoch, cancellation, result });
+                    transport
+                        .reply_edit(executor, inbox, edit.wire_id, &result)
+                        .await?;
+                    if let Some(pending) = &mut pending {
+                        pending.response.resume_timeout();
+                    }
+                    emit(Event::ApplyEditFinished {
+                        epoch,
+                        cancellation,
+                        result,
+                    });
                 }
                 Input::Workspace(update) => {
-                    if update.generation <= workspace_generation { continue }
+                    if update.generation <= workspace_generation {
+                        continue;
+                    }
                     workspace_generation = update.generation;
-                    workspace.synchronize(&transport, executor, &document, version, &root, &update.documents,
-                        |cx| inbox.session_interrupted(cx, epoch)).await?;
+                    workspace
+                        .synchronize_catalog(
+                            &transport,
+                            executor,
+                            focused.then_some((&document, version)),
+                            document.language,
+                            &root,
+                            &update.documents,
+                            |cx| inbox.stopped(cx),
+                        )
+                        .await?;
                 }
                 Input::Update(update) => {
-                    if update.document.as_ref().map(|doc| doc.epoch) != Some(epoch) { return Ok(Some(update)) }
-                    let newer = update.document.unwrap();
-                    // An application acknowledgement can overtake an older
-                    // coalesced UI update. Never send that older text back over
-                    // the just-applied workspace edit (undo has a newer revision).
-                    if newer.snapshot.id() == document.snapshot.id()
-                        && newer.snapshot.revision() < document.snapshot.revision() {
+                    let changed_focus = !focused
+                        || update.document.as_ref().is_none_or(|newer| {
+                            newer.epoch != epoch
+                                || newer.path != document.path
+                                || newer.snapshot.id() != document.snapshot.id()
+                        });
+                    if changed_focus {
+                        if let Some(edit) = &applying {
+                            edit.response.cancellation().cancel();
+                            inbox.route(update);
+                            continue;
+                        }
+                        pending.take();
+                        transport.enable_edits(false);
+                        action_diagnostics = actions::Diagnostics::default();
+                        code_actions = actions::Catalog::default();
+                    }
+                    let Some(newer) = update.document else {
+                        focused = false;
+                        continue;
+                    };
+                    check_size(&newer)?;
+                    let old = workspace
+                        .activate(&transport, executor, &newer, |cx| inbox.stopped(cx))
+                        .await?;
+                    // An application acknowledgement can overtake a coalesced
+                    // UI snapshot. Never send that older text back to the server.
+                    if old.snapshot.id() == newer.snapshot.id()
+                        && old.snapshot.revision() > newer.snapshot.revision()
+                    {
                         if let Some(request) = update.request {
-                            emit(Event::Answer { epoch, revision:newer.snapshot.revision(), id:request.id,
-                                result:Err("request snapshot was superseded by a workspace edit".into()) });
+                            emit(Event::Answer {
+                                epoch: newer.epoch,
+                                revision: newer.snapshot.revision(),
+                                id: request.id,
+                                result: Err(
+                                    "request snapshot was superseded by a workspace edit".into()
+                                ),
+                            });
                         }
                         continue;
                     }
-                    check_size(&newer)?;
-                    let mut synced = document.snapshot.clone();
-                    if newer.saved != document.saved
-                        && let Some(saved) = &newer.saved_snapshot {
-                            synchronize(&transport, executor, inbox, &uri, &mut version, &mut synced, saved).await?;
-                            let save = &capabilities["textDocumentSync"]["save"];
-                            if save == true || save.is_object() {
-                                let mut params = json!({"textDocument":{"uri":uri}});
-                                if save["includeText"] == true { params["text"] = json!(saved.text().to_string()); }
-                                transport.notify_wait(executor, "textDocument/didSave", params, |cx| inbox.stopped(cx)).await?;
+                    epoch = newer.epoch;
+                    uri = file_uri(&newer.path).map_err(|e| e.to_string())?;
+                    version = old.version;
+                    let mut synced = old.snapshot;
+                    if newer.saved != old.saved
+                        && let Some(saved) = &newer.saved_snapshot
+                    {
+                        synchronize(
+                            &transport,
+                            executor,
+                            inbox,
+                            &uri,
+                            &mut version,
+                            &mut synced,
+                            saved,
+                        )
+                        .await?;
+                        let save = &capabilities["textDocumentSync"]["save"];
+                        if save == true || save.is_object() {
+                            let mut params = json!({"textDocument":{"uri":uri}});
+                            if save["includeText"] == true {
+                                params["text"] = json!(saved.text().to_string());
                             }
+                            transport
+                                .notify_wait(executor, "textDocument/didSave", params, |cx| {
+                                    inbox.stopped(cx)
+                                })
+                                .await?;
+                        }
                     }
-                    synchronize(&transport, executor, inbox, &uri, &mut version, &mut synced, &newer.snapshot).await?;
-                    if newer.snapshot.revision() != document.snapshot.revision() {
-                        if pending.as_ref().is_some_and(|pending| !matches!(pending.request.kind, RequestKind::ExecuteCommand { .. })) {
+                    synchronize(
+                        &transport,
+                        executor,
+                        inbox,
+                        &uri,
+                        &mut version,
+                        &mut synced,
+                        &newer.snapshot,
+                    )
+                    .await?;
+                    if changed_focus || newer.snapshot.revision() != document.snapshot.revision() {
+                        if pending.as_ref().is_some_and(|pending| {
+                            !matches!(pending.request.kind, RequestKind::ExecuteCommand { .. })
+                        }) {
                             pending.take();
                             transport.enable_edits(false);
                         }
                         positions = protocol::Positions::new(newer.snapshot.text());
                     }
                     document = newer;
+                    focused = true;
+                    workspace.remember(&document, version);
+                    if changed_focus {
+                        emit(Event::Capabilities {
+                            epoch,
+                            completion: CompletionOptions::from_capabilities(&capabilities),
+                            signature: SignatureOptions::from_capabilities(&capabilities),
+                        });
+                        emit(Event::Status {
+                            epoch,
+                            message: format!("{} ready", server.command),
+                            failed: false,
+                        });
+                        let diagnostics = diagnostic_context.get(&document, version).map_or_else(
+                            || catalog.for_document(&document, &positions),
+                            |values| {
+                                Some(
+                                    action_diagnostics
+                                        .update(values, &document, &positions, version),
+                                )
+                            },
+                        );
+                        if let Some(diagnostics) = diagnostics {
+                            emit(Event::Diagnostics {
+                                epoch,
+                                revision: document.snapshot.revision(),
+                                diagnostics,
+                            });
+                        }
+                    }
+                    if let Some(update) = inbox.take_workspace()
+                        && update.generation > workspace_generation
+                    {
+                        workspace_generation = update.generation;
+                        workspace
+                            .synchronize_catalog(
+                                &transport,
+                                executor,
+                                Some((&document, version)),
+                                document.language,
+                                &root,
+                                &update.documents,
+                                |cx| inbox.stopped(cx),
+                            )
+                            .await?;
+                    }
                     if let Some(request) = update.request {
-                        start_request(&mut transport, executor, &capabilities, &uri, &document, version, &root, &mut workspace, &action_diagnostics, &code_actions, inbox, request, &mut pending, emit).await;
+                        start_request(
+                            &mut transport,
+                            executor,
+                            &capabilities,
+                            &uri,
+                            &document,
+                            version,
+                            &root,
+                            &mut workspace,
+                            &action_diagnostics,
+                            &code_actions,
+                            inbox,
+                            request,
+                            &mut pending,
+                            emit,
+                        )
+                        .await;
                     }
                 }
                 Input::Answer(result) => {
-                    let PendingRequest { request, versions, edit_failure, .. } = pending.take().unwrap();
+                    let PendingRequest {
+                        request,
+                        versions,
+                        edit_failure,
+                        ..
+                    } = pending.take().unwrap();
                     transport.enable_edits(false);
                     if !request.cancellation.is_cancelled() {
                         let result = result.and_then(|value| match request.kind {
-                            RequestKind::Hover => documentation::hover(&value, &request.cancellation).map(Answer::Hover),
-                            RequestKind::SignatureHelp => signature::parse(&value, &request.cancellation).map(Answer::SignatureHelp),
-                            RequestKind::Navigation(kind) => navigation::locations(&value, &request.cancellation).map(|locations| Answer::Locations(kind, locations)),
-                            RequestKind::DocumentHighlights => navigation::highlights(&value, &document.snapshot, &positions, request.position, &request.cancellation).map(Answer::DocumentHighlights),
-                            RequestKind::DocumentSymbols => symbols::parse(&value, Some(&document.path)).map(Answer::Symbols),
-                            RequestKind::WorkspaceSymbols(_) => symbols::parse(&value, None).map(Answer::Symbols),
-                            RequestKind::Completion(_) => completion::parse(value, document.snapshot.text(), request.position, capabilities["completionProvider"]["resolveProvider"] == true).map(Answer::Completion),
-                            RequestKind::ResolveCompletion(item) => completion::resolve(&item, value, document.snapshot.text(), request.position).map(Answer::CompletionResolved),
-                            RequestKind::PrepareRename { selection, .. } => rename::placeholder(&value, &document.snapshot, selection, request.position, &positions, &request.cancellation).map(Answer::RenamePrepared),
-                            RequestKind::Rename { .. } => workspace_edit::parse(&value, &request.cancellation).map(|edit| Answer::WorkspaceEdit { edit, versions }),
-                            RequestKind::Format { .. } => formatting::parse(value, &uri, versions[0].version, &request.cancellation).map(|edit| Answer::Formatted { edit, versions }),
-                            RequestKind::CodeActions { .. } => code_actions.replace(value, &document, &request.cancellation).map(Answer::CodeActions),
-                            RequestKind::ApplyCodeAction { action, .. } => code_actions.ready(&action, &document, Some(value), &capabilities, versions, &request.cancellation).map(Answer::CodeActionReady),
-                            RequestKind::ExecuteCommand { .. } => edit_failure.map_or(Ok(Answer::CommandExecuted), |error| Err(format!("workspace edit failed: {error}"))),
+                            RequestKind::Hover => {
+                                documentation::hover(&value, &request.cancellation)
+                                    .map(Answer::Hover)
+                            }
+                            RequestKind::SignatureHelp => {
+                                signature::parse(&value, &request.cancellation)
+                                    .map(Answer::SignatureHelp)
+                            }
+                            RequestKind::Navigation(kind) => {
+                                navigation::locations(&value, &request.cancellation)
+                                    .map(|locations| Answer::Locations(kind, locations))
+                            }
+                            RequestKind::DocumentHighlights => navigation::highlights(
+                                &value,
+                                &document.snapshot,
+                                &positions,
+                                request.position,
+                                &request.cancellation,
+                            )
+                            .map(Answer::DocumentHighlights),
+                            RequestKind::DocumentSymbols => {
+                                symbols::parse(&value, Some(&document.path)).map(Answer::Symbols)
+                            }
+                            RequestKind::WorkspaceSymbols(_) => {
+                                symbols::parse(&value, None).map(Answer::Symbols)
+                            }
+                            RequestKind::Completion(_) => completion::parse(
+                                value,
+                                document.snapshot.text(),
+                                request.position,
+                                capabilities["completionProvider"]["resolveProvider"] == true,
+                            )
+                            .map(Answer::Completion),
+                            RequestKind::ResolveCompletion(item) => completion::resolve(
+                                &item,
+                                value,
+                                document.snapshot.text(),
+                                request.position,
+                            )
+                            .map(Answer::CompletionResolved),
+                            RequestKind::PrepareRename { selection, .. } => rename::placeholder(
+                                &value,
+                                &document.snapshot,
+                                selection,
+                                request.position,
+                                &positions,
+                                &request.cancellation,
+                            )
+                            .map(Answer::RenamePrepared),
+                            RequestKind::Rename { .. } => {
+                                workspace_edit::parse(&value, &request.cancellation)
+                                    .map(|edit| Answer::WorkspaceEdit { edit, versions })
+                            }
+                            RequestKind::Format { .. } => formatting::parse(
+                                value,
+                                &uri,
+                                versions[0].version,
+                                &request.cancellation,
+                            )
+                            .map(|edit| Answer::Formatted { edit, versions }),
+                            RequestKind::CodeActions { .. } => code_actions
+                                .replace(value, &document, &request.cancellation)
+                                .map(Answer::CodeActions),
+                            RequestKind::ApplyCodeAction { action, .. } => code_actions
+                                .ready(
+                                    &action,
+                                    &document,
+                                    Some(value),
+                                    &capabilities,
+                                    versions,
+                                    &request.cancellation,
+                                )
+                                .map(Answer::CodeActionReady),
+                            RequestKind::ExecuteCommand { .. } => edit_failure
+                                .map_or(Ok(Answer::CommandExecuted), |error| {
+                                    Err(format!("workspace edit failed: {error}"))
+                                }),
                         });
-                        emit(Event::Answer { epoch, revision: document.snapshot.revision(), id: request.id, result });
+                        emit(Event::Answer {
+                            epoch,
+                            revision: document.snapshot.revision(),
+                            id: request.id,
+                            result,
+                        });
                     }
                 }
                 Input::DiagnosticsReset => {
                     catalog.reset_limited();
                     action_diagnostics = actions::Diagnostics::default();
-                    emit(Event::Diagnostics { epoch, revision: document.snapshot.revision(), diagnostics: Vec::new() });
+                    diagnostic_context = diagnostics::ContextCache::default();
+                    if focused {
+                        emit(Event::Diagnostics {
+                            epoch,
+                            revision: document.snapshot.revision(),
+                            diagnostics: Vec::new(),
+                        });
+                    }
                     emit(Event::DiagnosticCatalog(catalog.clone()));
                 }
                 Input::Diagnostics(mut publication) => {
-                    let active = publication.file.path == document.path;
+                    let active = focused && publication.file.path == document.path;
                     let synchronized = if active {
-                        Some((version, document.snapshot.id(), document.snapshot.revision()))
+                        Some((
+                            version,
+                            document.snapshot.id(),
+                            document.snapshot.revision(),
+                        ))
                     } else {
                         workspace.diagnostic_version(&publication.file.path)
                     };
                     if let Some((current_version, id, revision)) = synchronized {
-                        if publication.version.is_some_and(|v| v != i64::from(current_version)) { continue; }
+                        if publication
+                            .version
+                            .is_some_and(|v| v != i64::from(current_version))
+                        {
+                            continue;
+                        }
                         publication.file.version = Some((id, revision));
+                    }
+                    if let (Some(synchronized), Some(raw)) = (synchronized, &publication.raw) {
+                        diagnostic_context.insert(
+                            publication.file.path.clone(),
+                            synchronized,
+                            raw.clone(),
+                        );
                     }
                     catalog.replace(publication.file);
                     emit(Event::DiagnosticCatalog(catalog.clone()));
                     if active {
-                        let diagnostics = action_diagnostics.update(publication.raw.take().unwrap_or(Value::Null), &document, &positions, version);
-                        emit(Event::Diagnostics { epoch, revision: document.snapshot.revision(), diagnostics });
+                        let diagnostics = action_diagnostics.update(
+                            publication.raw.take().unwrap_or(Value::Null),
+                            &document,
+                            &positions,
+                            version,
+                        );
+                        emit(Event::Diagnostics {
+                            epoch,
+                            revision: document.snapshot.revision(),
+                            diagnostics,
+                        });
                     }
                 }
                 Input::Wire(value) => {
-                    if transport.receive_response(&value) { continue }
+                    if transport.receive_response(&value) {
+                        continue;
+                    }
                     if value["method"] == "workspace/applyEdit" {
                         let request = pending.as_ref().map_or(0, |pending| pending.request.id);
                         if applying.is_some() {
                             if queued_edits.len() == 8 {
-                                if let Some(pending) = &mut pending { pending.edit_failure = Some("too many pending workspace edit requests".into()); }
-                                transport.reply_edit(executor, inbox, value["id"].clone(), &Err("too many pending workspace edit requests".into())).await?;
-                            } else { queued_edits.push_back((request, value)); }
+                                if let Some(pending) = &mut pending {
+                                    pending.edit_failure =
+                                        Some("too many pending workspace edit requests".into());
+                                }
+                                transport
+                                    .reply_edit(
+                                        executor,
+                                        inbox,
+                                        value["id"].clone(),
+                                        &Err("too many pending workspace edit requests".into()),
+                                    )
+                                    .await?;
+                            } else {
+                                queued_edits.push_back((request, value));
+                            }
                         } else {
-                            applying = start_server_edit(&transport, executor, inbox, &document, &workspace, version, pending.as_mut(), request, value, emit).await?;
+                            applying = start_server_edit(
+                                &transport,
+                                executor,
+                                inbox,
+                                &document,
+                                &workspace,
+                                version,
+                                pending.as_mut(),
+                                request,
+                                value,
+                                emit,
+                            )
+                            .await?;
                         }
                         continue;
                     }
-
                 }
             }
         }
-    }.await;
+    }
+    .await;
     applying.take();
     pending.take();
     transport.enable_edits(false);
     transport
-        .shutdown(executor, inbox, opened.then_some(uri.as_str()))
+        .shutdown(executor, inbox, focused.then_some(uri.as_str()))
         .await;
     result.map_err(|error| transport.error_context(&error))
 }
@@ -1173,6 +1478,7 @@ mod tests {
     fn document(path: PathBuf, text: &TextDocument) -> Document {
         Document {
             epoch: 1,
+            restart: 0,
             language: Language::Rust,
             path,
             snapshot: text.snapshot(),
@@ -1523,7 +1829,7 @@ while True:
 
     #[cfg(unix)]
     #[test]
-    fn registry_servers_use_their_arguments_ids_and_restart_on_language_changes() {
+    fn registry_servers_use_their_arguments_ids_and_share_compatible_languages() {
         let directory = tempfile::tempdir().unwrap();
         let (sender, receiver) = mpsc::channel();
         let service = Service::with_program(mock(directory.path(), false), move |event| {
@@ -1585,9 +1891,20 @@ while True:
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(opens.len(), cases.len());
-        assert_eq!(launches.len(), cases.len());
-        for (index, (_, id, arguments)) in cases.iter().enumerate() {
+        let mut configurations = Vec::new();
+        for (language, _, arguments) in &cases {
+            let server = language.server().unwrap();
+            if !configurations.iter().any(|(command, _, environment)| {
+                *command == server.command && *environment == server.environment
+            }) {
+                configurations.push((server.command, arguments, server.environment));
+            }
+        }
+        assert_eq!(launches.len(), configurations.len());
+        for (index, (_, id, _)) in cases.iter().enumerate() {
             assert_eq!(opens[index]["params"]["textDocument"]["languageId"], *id);
+        }
+        for (index, (_, arguments, _)) in configurations.iter().enumerate() {
             assert_eq!(launches[index]["arguments"], json!(arguments));
         }
         assert_eq!(
@@ -1595,7 +1912,7 @@ while True:
                 .iter()
                 .filter(|message| message["method"] == "shutdown")
                 .count(),
-            cases.len()
+            configurations.len()
         );
     }
 
@@ -2033,7 +2350,7 @@ while True:
 
     #[cfg(unix)]
     #[test]
-    fn shutdown_interrupts_initialize_and_missing_servers_fail_once_per_epoch() {
+    fn shutdown_interrupts_initialize_and_missing_servers_do_not_retry_on_updates() {
         let directory = tempfile::tempdir().unwrap();
         let (sender, receiver) = mpsc::channel();
         let service = Service::with_program(mock(directory.path(), true), move |event| {

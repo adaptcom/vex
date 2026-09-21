@@ -57,6 +57,38 @@ pub struct Snapshot {
 }
 
 impl Catalog {
+    pub(crate) fn for_document(
+        &self,
+        document: &crate::Document,
+        positions: &crate::protocol::Positions,
+    ) -> Option<Vec<crate::Diagnostic>> {
+        let file = self
+            .state
+            .lock()
+            .unwrap()
+            .files
+            .get(&document.path)
+            .cloned();
+        file.filter(|file| {
+            file.version == Some((document.snapshot.id(), document.snapshot.revision()))
+        })
+        .map(|file| {
+            file.entries
+                .iter()
+                .filter_map(|entry| {
+                    let start = positions.offset(document.snapshot.text(), entry.range.start)?;
+                    let end = positions.offset(document.snapshot.text(), entry.range.end)?;
+                    Some(crate::Diagnostic {
+                        start,
+                        end,
+                        line: document.snapshot.text().char_to_line(start.0),
+                        severity: entry.severity,
+                        message: entry.message.to_string(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+    }
     pub fn same_catalog(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.state, &other.state)
     }
@@ -130,20 +162,20 @@ fn entry_size(entry: &Entry) -> usize {
 pub(crate) struct Publication {
     pub file: File,
     pub version: Option<i64>,
-    // Only the active document needs opaque code-action context. Other files
-    // retain typed, bounded fields, never arbitrary diagnostic data.
+    // Bounded opaque code-action context can survive a focus change. The public
+    // catalog only retains typed fields; each session owns its private cache.
     pub raw: Option<Value>,
+    raw_bytes: usize,
 }
 
 impl Publication {
-    pub fn decode(mut value: Value, active_uri: &str) -> Option<Self> {
+    pub fn decode(mut value: Value) -> Option<Self> {
         let params = &mut value["params"];
         let uri = params["uri"].as_str()?;
         if uri.len() > 16_384 {
             return None;
         }
         let path = file_path(uri).ok()?;
-        let active = uri == active_uri;
         let version = match &params["version"] {
             Value::Null => None,
             value => Some(value.as_i64()?),
@@ -188,6 +220,7 @@ impl Publication {
                 },
             });
         }
+        let raw_bytes = encoded_size(&values).unwrap_or(0);
         Some(Self {
             file: File {
                 path,
@@ -199,19 +232,99 @@ impl Publication {
                 version: None,
             },
             version,
-            raw: active.then_some(values),
+            raw: (raw_bytes > 0).then_some(values),
+            raw_bytes,
         })
     }
 
     fn bytes(&self) -> usize {
-        // Charging the full framing limit bounds opaque JSON without a second
-        // serialization pass. At most one active URI is present per session.
-        size(&self.file)
-            + if self.raw.is_some() {
-                crate::protocol::MAX_MESSAGE
-            } else {
-                0
+        size(&self.file) + self.raw_bytes
+    }
+}
+
+const MAX_CONTEXT_BYTES: usize = 8 << 20;
+
+fn encoded_size(value: &Value) -> Option<usize> {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            if self.0 > MAX_CONTEXT_BYTES {
+                return Err(std::io::Error::other("diagnostic context limit"));
             }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value).ok()?;
+    Some(counter.0)
+}
+
+type ContextVersion = (i32, DocumentId, Revision);
+struct ContextEntry {
+    version: ContextVersion,
+    value: Value,
+    bytes: usize,
+    used: u64,
+}
+
+/// Retain bounded opaque diagnostics for code actions after focus changes.
+/// The UI never clones or drops these server-owned payloads.
+#[derive(Default)]
+pub(crate) struct ContextCache {
+    files: BTreeMap<PathBuf, ContextEntry>,
+    bytes: usize,
+    sequence: u64,
+}
+
+impl ContextCache {
+    pub fn insert(&mut self, path: PathBuf, version: ContextVersion, value: Value) {
+        if let Some(old) = self.files.remove(&path) {
+            self.bytes -= old.bytes;
+        }
+        let Some(bytes) = encoded_size(&value) else {
+            return;
+        };
+        while self.bytes + bytes > MAX_CONTEXT_BYTES || self.files.len() >= 512 {
+            let path = self
+                .files
+                .iter()
+                .min_by_key(|(_, entry)| entry.used)
+                .unwrap()
+                .0
+                .clone();
+            self.bytes -= self.files.remove(&path).unwrap().bytes;
+        }
+        self.sequence += 1;
+        self.bytes += bytes;
+        self.files.insert(
+            path,
+            ContextEntry {
+                version,
+                value,
+                bytes,
+                used: self.sequence,
+            },
+        );
+    }
+
+    pub fn get(&mut self, document: &crate::Document, version: i32) -> Option<Value> {
+        let entry = self.files.get_mut(&document.path)?;
+        if entry.version
+            != (
+                version,
+                document.snapshot.id(),
+                document.snapshot.revision(),
+            )
+        {
+            return None;
+        }
+        self.sequence += 1;
+        entry.used = self.sequence;
+        Some(entry.value.clone())
     }
 }
 
@@ -285,11 +398,11 @@ mod tests {
         Publication::decode(json!({"params": {"uri":uri,"version":version,"diagnostics":[{
             "range":{"start":{"line":2,"character":1},"end":{"line":2,"character":4}},
             "message":message,"severity":2,"source":"rustc","code":"E0001","data":{"opaque":true}
-        }]}}), "file:///active.rs").unwrap()
+        }]}})).unwrap()
     }
 
     #[test]
-    fn coalescing_preserves_newest_versions_clears_and_opaque_active_context() {
+    fn coalescing_preserves_newest_versions_clears_and_opaque_context() {
         let mut pending = Pending::default();
         pending.push(publication("file:///active.rs", 2, "new"));
         pending.push(publication("file:///active.rs", 1, "old"));
@@ -298,7 +411,7 @@ mod tests {
         assert_eq!(&*active.file.entries[0].message, "new");
         assert_eq!(active.raw.unwrap()[0]["data"]["opaque"], true);
         let hidden = pending.pop().unwrap();
-        assert!(hidden.raw.is_none());
+        assert_eq!(hidden.raw.as_ref().unwrap()[0]["data"]["opaque"], true);
         let catalog = Catalog::default();
         catalog.replace(hidden.file);
         let before = catalog.snapshot();
@@ -334,5 +447,42 @@ mod tests {
         let limited = catalog.snapshot();
         assert!(limited.files[0].limited);
         assert!(size(&limited.files[0]) <= MAX_BYTES);
+    }
+
+    #[test]
+    fn cached_code_action_context_is_bounded_and_requires_the_current_document_and_wire_version() {
+        let text = vex_core::Document::from("hello");
+        let mut document = crate::Document {
+            epoch: 1,
+            restart: 0,
+            language: vex_editor::Language::Rust,
+            path: PathBuf::from("file-0.rs"),
+            snapshot: text.snapshot(),
+            saved: 0,
+            saved_snapshot: None,
+        };
+        let mut cache = ContextCache::default();
+        let version = (7, text.id(), text.revision());
+        for index in 0..513 {
+            cache.insert(
+                PathBuf::from(format!("file-{index}.rs")),
+                version,
+                json!([{"data":index}]),
+            );
+        }
+        assert_eq!(cache.files.len(), 512);
+        assert!(cache.get(&document, 7).is_none());
+        document.path = PathBuf::from("file-512.rs");
+        assert_eq!(cache.get(&document, 7).unwrap()[0]["data"], 512);
+        assert!(cache.get(&document, 8).is_none());
+        document.snapshot = vex_core::Document::from("hello").snapshot();
+        assert!(cache.get(&document, 7).is_none());
+        cache.insert(
+            document.path.clone(),
+            version,
+            json!("x".repeat(MAX_CONTEXT_BYTES + 1)),
+        );
+        assert!(!cache.files.contains_key(&document.path));
+        assert!(cache.bytes <= MAX_CONTEXT_BYTES);
     }
 }
