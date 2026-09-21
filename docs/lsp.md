@@ -25,8 +25,14 @@ and server selection; `:language text` stops language services. Changing languag
 on the same file also starts a fresh server session and discards old capabilities,
 completion requests, and diagnostics.
 
-The status line shows the server label with `starting`, `ready`, or `unavailable`, followed by
-error and warning counts. Ready means the initialization handshake finished;
+The status line shows `LSP:ready 0E 0W` (or `LSP:starting` with counts during
+startup), using the current error and warning counts. It shows `LSP:down` when
+there is no server for the buffer or the server is unavailable.
+Automatic startup failures, including missing server executables, stay quiet;
+requesting a language feature while unavailable gives a short availability message.
+In narrow panes, pending commands/searches and the buffer title take priority
+over the LSP field.
+Ready means the initialization handshake finished;
 workspace loading and diagnostics may still be in progress. Missing servers,
 protocol failures, and request errors leave editing and saving available.
 `:lsp-restart` retries the current file after a failure or configuration change.

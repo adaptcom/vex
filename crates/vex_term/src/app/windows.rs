@@ -1412,6 +1412,7 @@ impl App {
                                 title: self.git_write.drafts.contains_key(&pane.document),
                                 dirty,
                                 pending: "",
+                                lsp: "",
                                 message: "",
                                 error: false,
                                 prompt: None,

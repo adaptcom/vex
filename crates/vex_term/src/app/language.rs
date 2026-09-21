@@ -511,6 +511,8 @@ impl App {
                 if epoch != self.language.epoch || self.language.document.is_none() {
                     return false;
                 }
+                let starting = self.language.status != "ready";
+                let requested = self.language.pending.is_some();
                 self.language.status = if failed {
                     "unavailable"
                 } else if message.ends_with("ready") {
@@ -524,7 +526,17 @@ impl App {
                     self.language.signature = None;
                     self.language.completion = None;
                     self.language.cancel();
-                    self.fail_language_request(message);
+                    if starting && !requested {
+                        // Language servers are optional. Opening a file should
+                        // only show LSP:down when its server cannot start.
+                        self.dismiss_language_help();
+                    } else {
+                        self.fail_language_request(if starting {
+                            "language server is unavailable; use :lsp-restart to retry".into()
+                        } else {
+                            message
+                        });
+                    }
                 }
             }
             Event::Diagnostics {
@@ -836,8 +848,8 @@ impl App {
     }
 
     pub(super) fn language_status(&self) -> String {
-        if self.language.status.is_empty() {
-            return String::new();
+        if !matches!(self.language.status, "starting" | "ready") {
+            return "LSP:down".into();
         }
         let errors = self
             .language
@@ -851,12 +863,7 @@ impl App {
             .iter()
             .filter(|d| d.severity == 2)
             .count();
-        let label = self
-            .editor
-            .language()
-            .and_then(Language::server)
-            .map_or("LSP", |server| server.label);
-        format!(" {label}:{} {errors}E {warnings}W", self.language.status)
+        format!("LSP:{} {errors}E {warnings}W", self.language.status)
     }
 
     pub(super) fn paint_language(&mut self, frame: &mut Frame, body_height: u16) {
@@ -1078,6 +1085,7 @@ mod tests {
             let document = app.take_lsp_update().unwrap().document.unwrap();
             assert!(document.epoch > previous_epoch);
             assert_eq!(document.language, Language::from_name(language).unwrap());
+            assert_eq!(app.language_status(), "LSP:starting 0E 0W");
             assert!(app.completion_options().is_none());
             assert!(!app.handle_lsp_event(Event::Capabilities {
                 signature: None,
@@ -1096,17 +1104,14 @@ mod tests {
                 message: "server ready".into(),
                 failed: false,
             });
-            assert!(
-                app.language_status()
-                    .contains(document.language.server().unwrap().label)
-            );
+            assert_eq!(app.language_status(), "LSP:ready 0E 0W");
             assert!(app.completion_options().is_some());
             previous_epoch = document.epoch;
         }
         app.execute("language text").unwrap();
         assert!(app.take_lsp_update().unwrap().document.is_none());
         assert!(app.completion_options().is_none());
-        assert_eq!(app.language_status(), "");
+        assert_eq!(app.language_status(), "LSP:down");
     }
 
     #[test]
@@ -1379,16 +1384,38 @@ mod tests {
         let updated = app.take_lsp_update().unwrap().document.unwrap();
         assert!(updated.epoch > old_epoch);
         assert_eq!(updated.saved, 1);
+        let message = app.message.clone();
+        let error = app.error;
         app.handle_lsp_event(Event::Status {
             epoch: updated.epoch,
             failed: true,
-            message: "missing executable".into(),
+            message: "failed to start language server: executable not found".into(),
         });
+        assert_eq!(app.language_status(), "LSP:down");
+        assert_eq!(app.message, message);
+        assert_eq!(app.error, error);
         app.execute("hover").unwrap();
         assert!(app.take_lsp_update().is_none());
         assert!(app.language.pending.is_none());
         assert!(app.message.contains("lsp-restart"));
         app.execute("language text").unwrap();
         assert!(app.take_lsp_update().unwrap().document.is_none());
+
+        // A command issued during startup must still finish and release queued
+        // input, with a short availability message instead of a spawn error.
+        app.execute("language rust").unwrap();
+        let key = issue(&mut app, "goto_definition");
+        assert!(app.input_waiting());
+        assert!(app.handle_lsp_event(Event::Status {
+            epoch: key.0,
+            failed: true,
+            message: "failed to start language server: executable not found".into(),
+        }));
+        assert!(!app.input_waiting());
+        assert_eq!(app.language_status(), "LSP:down");
+        assert_eq!(
+            app.message,
+            "language server is unavailable; use :lsp-restart to retry"
+        );
     }
 }

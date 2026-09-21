@@ -37,7 +37,7 @@ pub enum Style {
     SecondaryCursor,
     InactiveCursor,
     PickerMatch,
-    /// Selected-result marker in pickers and completion menus.
+    /// Prompt and selected-result markers in pickers and completion menus.
     PickerMarker,
 }
 

@@ -550,7 +550,7 @@ impl App {
             pending.push(' ');
             pending.push_str(progress);
         }
-        pending.push_str(&self.language_status());
+        let lsp = self.language_status();
         if self
             .git_write
             .drafts
@@ -572,6 +572,7 @@ impl App {
                     .contains_key(&self.editor.document().id()),
                 dirty: self.files.is_dirty(self.editor.document()),
                 pending: &pending,
+                lsp: &lsp,
                 message: if self.message.is_empty() {
                     &diagnostic
                 } else {

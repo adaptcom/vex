@@ -20,6 +20,7 @@ def empty_diagnostic_pickers(binary, directory):
     for binding in (b" d", b" D"):
         with Terminal([binary, str(source)]) as terminal:
             terminal.start()
+            terminal.expect_screen(b"LSP:down")
             terminal.send(binding)
             # Do not use expect_screen here: its focus events force a repaint
             # and hide a missing redraw after the worker delivers zero rows.
@@ -56,7 +57,7 @@ def main():
         with Terminal([binary, str(main_file)]) as terminal:
             terminal.start()
             terminal.resize(140, 24)
-            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"LSP:ready")
             # Restore the argument position on each indexing retry. Escape from
             # insert mode moves the cursor left, outside the call on later tries.
             for attempt in range(3):
@@ -85,7 +86,7 @@ def main():
         with Terminal([binary, str(main_file)]) as terminal:
             terminal.start()
             terminal.resize(140, 24)
-            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"LSP:ready")
             terminal.send(b"/demo\\.\ra")
             for attempt in range(3):
                 terminal.send(b"\x18")
@@ -109,7 +110,7 @@ def main():
         with Terminal([binary, str(main_file)]) as terminal:
             terminal.start()
             terminal.resize(220, 24)
-            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"LSP:ready")
             terminal.expect_screen(b"1E")
             terminal.send(b" d")
             terminal.expect_screen(b"Document diagnostics")
@@ -165,7 +166,7 @@ def main():
         with Terminal([binary, str(main_file)]) as terminal:
             terminal.start()
             terminal.resize(120, 30)
-            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"LSP:ready")
             terminal.expect_screen(b"1W")
             terminal.send(b"/documented\r")
             terminal.send(b" k")
@@ -186,7 +187,7 @@ def main():
         with Terminal([binary, str(main_file)]) as terminal:
             terminal.start()
             terminal.resize(140, 24)
-            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"LSP:ready")
             terminal.expect_screen(b"1W")
             terminal.send(b"]d a")
             terminal.expect_screen(b"Code actions")
@@ -212,7 +213,7 @@ def main():
         with Terminal([binary, str(main_file)]) as terminal:
             terminal.start()
             terminal.resize(140, 24)
-            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"LSP:ready")
             terminal.send(b"=")
             terminal.expect_screen(b"range formatting")
             assert main_file.read_text() == format_source
@@ -245,7 +246,7 @@ def main():
         with Terminal([binary, str(main_file)]) as terminal:
             terminal.start()
             terminal.resize(180, 24)
-            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"LSP:ready")
             terminal.expect_screen(b"1W")  # Workspace loading and cargo check finished.
             terminal.send(b"/value\rgy")
             terminal.expect_screen(b"1:1")
@@ -277,7 +278,7 @@ def main():
         with Terminal([binary, str(main_file)]) as terminal:
             terminal.start()
             terminal.resize(180, 24)
-            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"LSP:ready")
             terminal.expect_screen(b"1E")
             terminal.send(b":e " + os.fsencode(other_file) + b"\r")
             terminal.expect_screen(b"other.rs")
@@ -324,10 +325,10 @@ def main():
         with Terminal([binary, str(main_file)]) as terminal:
             terminal.start()
             terminal.resize(140, 24)
-            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"LSP:ready")
             terminal.send(b"gei")
             terminal.expect_screen(f"{len(source.splitlines())}:{len(source.splitlines()[-1]) + 1}".encode())
-            # RA:ready means initialized; indexing may still be in progress.
+            # LSP:ready means initialized; indexing may still be in progress.
             for attempt in range(3):
                 terminal.send(b"\x18")  # Ctrl-x: explicit completion.
                 try:
@@ -364,7 +365,7 @@ def main():
         with Terminal([binary, str(main_file)]) as terminal:
             terminal.start()
             terminal.resize(140, 24)
-            terminal.expect_screen(b"RA:ready")
+            terminal.expect_screen(b"LSP:ready")
             terminal.send(b"/12345\rcvex_co")
             # Fresh typing retries if rust-analyzer is still indexing. No Ctrl-x
             # or further keypress is needed for the timer to display the menu.
@@ -407,12 +408,13 @@ def main():
         try:
             with Terminal([binary, str(main_file)]) as terminal:
                 terminal.start()
-                terminal.expect_screen(b"RA:unavailable")
+                terminal.expect_screen(b"LSP:down")
                 terminal.send(b"i// editing works")
                 terminal.leave_insert()
                 terminal.expect_screen(b"main.rs [+]")
                 terminal.send(b":q!\r")
                 terminal.finish()
+                assert b"No such file or directory" not in terminal.output
         finally:
             if original is None:
                 os.environ.pop("VEX_RUST_ANALYZER", None)

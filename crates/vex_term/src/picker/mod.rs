@@ -367,7 +367,7 @@ impl<T: Eq> Picker<T> {
         let bottom = bottom - 1;
         rule(frame, left, right + 1, y + 1, "├", "┤");
         rule(frame, left, right + 1, bottom - 2, "├", "┤");
-        frame.put(x, y, ">", Style::Message);
+        frame.put(x, y, ">", Style::PickerMarker);
         // Keep the prompt caret visible, scrolling at grapheme boundaries.
         let room = usize::from(right - x - 2);
         let before = &self.query.text()[..self.query.cursor()];

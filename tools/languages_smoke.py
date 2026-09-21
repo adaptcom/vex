@@ -44,7 +44,7 @@ def main():
         with Terminal([binary, str(path)]) as terminal:
             terminal.start()
             terminal.resize(140, 24)
-            terminal.expect_screen(b"TS:ready")
+            terminal.expect_screen(b"LSP:ready")
             terminal.expect_screen(b"1E")
             terminal.send(b"/wrong\r k")
             terminal.expect_screen(b"Documentation")

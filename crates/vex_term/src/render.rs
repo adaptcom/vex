@@ -200,6 +200,8 @@ pub struct Chrome<'a> {
     pub title: bool,
     pub dirty: bool,
     pub pending: &'a str,
+    /// Lower-priority status that yields space to pending input and buffer titles.
+    pub lsp: &'a str,
     pub message: &'a str,
     pub error: bool,
     pub prompt: Option<(&'a str, &'a str, usize)>,
@@ -464,18 +466,32 @@ fn paint_status(
     }
     let start = mode.len() + 2;
     let pending = chrome.pending.trim();
-    let pending_width = pending
-        .graphemes(true)
-        .map(|g| display::visible(g).width())
-        .sum::<usize>()
-        + 2;
+    let field_width = |text: &str| {
+        if text.is_empty() {
+            0
+        } else {
+            text.graphemes(true)
+                .map(|g| display::visible(g).width())
+                .sum::<usize>()
+                + 3 // Surrounding spaces and the rule between fields.
+        }
+    };
     // Pending work stays visible in narrow panes even when the filename must
     // give way. A modified file still keeps room for its indicator.
     let minimum_filename = if chrome.dirty { 8 } else { 1 };
-    if !pending.is_empty() && end.saturating_sub(start) >= pending_width + minimum_filename {
-        end -= pending_width;
-        frame.label(end as u16, row, &format!(" {pending} "), Style::StatusLine);
-        end -= 1;
+    // Keep descriptive titles such as "Git commit" recognizable before adding
+    // routine language-service status. Pending input/work takes precedence too.
+    let lsp_reserve = field_width(pending) + if chrome.title { 16 } else { minimum_filename };
+    for (field, reserve) in [
+        (chrome.lsp.trim(), lsp_reserve),
+        (pending, minimum_filename),
+    ] {
+        let field_width = field_width(field);
+        if field_width > 0 && end.saturating_sub(start) >= field_width + reserve {
+            end -= field_width - 1;
+            frame.label(end as u16, row, &format!(" {field} "), Style::StatusLine);
+            end -= 1;
+        }
     }
     let available = end.saturating_sub(start);
     let suffix = if chrome.dirty { " [+] " } else { " " };
@@ -660,6 +676,7 @@ mod tests {
                         title: false,
                         dirty,
                         pending: "",
+                        lsp: "LSP:down",
                         message: "",
                         error: false,
                         prompt: None,
@@ -684,6 +701,7 @@ mod tests {
                 title: false,
                 dirty: false,
                 pending: "",
+                lsp: "",
                 message: "",
                 error: false,
                 prompt: None,
