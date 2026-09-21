@@ -68,6 +68,7 @@ impl Style {
                 | Self::MatchingSecondaryCursor
                 | Self::PickerMatch
                 | Self::PickerMarker
+                | Self::Syntax(Highlight::Heading),
         ) || matches!(self.syntax(), Some(Highlight::Heading | Highlight::Strong))
             || matches!(self, Self::Markup(attributes) if attributes.contains(Attributes::STRONG))
     }
@@ -110,7 +111,7 @@ impl Style {
                 }
             }
             Self::Syntax(highlight) => (syntax_color(highlight), Reset),
-            Self::Gutter => (DarkGrey, Reset),
+            Self::Gutter => (Grey, Reset),
             Self::GitAdded => (Green, Reset),
             Self::GitModified => (Yellow, Reset),
             Self::GitDeleted => (Red, Reset),
@@ -119,7 +120,7 @@ impl Style {
             Self::StatusBorder | Self::InactiveStatus => (DarkGrey, Reset),
             Self::Message | Self::PopupTitle => (DarkCyan, Reset),
             Self::Error => (Red, Reset),
-            Self::Selection => (Black, Grey),
+            Self::Selection => (Reset, Grey),
             Self::MatchingBracket(_) => (Yellow, Reset),
             Self::MatchingSelection => (Yellow, Grey),
             Self::MatchingSecondaryCursor => (Yellow, DarkCyan),
@@ -129,7 +130,7 @@ impl Style {
             Self::SecondaryCursor => (Black, DarkCyan),
             Self::InactiveCursor => (DarkGrey, Reset),
             Self::PickerMarker => (DarkCyan, Reset),
-            Self::PickerMatch => (DarkYellow, Reset),
+            Self::PickerMatch => (Blue, Reset),
         }
     }
 }
@@ -150,7 +151,8 @@ fn syntax_color(highlight: Highlight) -> Color {
         Function | Constructor => Color::DarkMagenta,
         Tag => Color::DarkGreen,
         Comment => Color::DarkGrey,
-        Punctuation | Attribute | Variable | Emphasis | Strong | LinkUrl => Color::Reset,
+        Attribute => Color::Yellow,
+        Punctuation | Variable | Emphasis | Strong | LinkUrl => Color::Reset,
     }
 }
 
