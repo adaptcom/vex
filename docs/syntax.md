@@ -28,6 +28,7 @@ downloads or external Tree-sitter installation.
 | YAML | `.yaml`, `.yml`, `.clangd`, `.clang-format`, `.clang-tidy` | `yaml`, `yml` |
 | TOML | `.toml`, `Cargo.lock`, `uv.lock`, `poetry.lock`, `Pipfile` | `toml` |
 | Nix | `.nix` | `nix` |
+| SQL | `.sql` | `sql` |
 
 Known paths take precedence over shebangs. Detection reads at most 256 characters
 of a shebang and supports `/usr/bin/env bash` and `/usr/bin/env -S bash -eu`.
@@ -139,9 +140,10 @@ for lines and `/* */` for blocks. Rust recognizes existing `///` and `//!`
 comments as well as block documentation comments.
 Python, Ruby, YAML, and TOML use `#` for both comment commands. Go, C/C++, Java,
 C#, Swift, and PHP use `//` and `/* */`; PHP also recognizes existing `#`
-comments. Nix uses `#` and `/* */`. Lua uses `--` and `--[[ ]]`. HTML uses
-`<!-- -->`; CSS uses `/* */` for both commands. JSON leaves both comment commands
-inactive; JSONC uses `//` and `/* */`. Plain-text buffers retain their generic fallbacks.
+comments. Nix uses `#` and `/* */`; SQL uses `--` and `/* */`. Lua uses `--` and
+`--[[ ]]`. HTML uses `<!-- -->`; CSS uses `/* */` for both commands. JSON leaves
+both comment commands inactive; JSONC uses `//` and `/* */`. Plain-text buffers
+retain their generic fallbacks.
 
 Line comments share the minimum indentation of the selected nonblank lines;
 overlapping line selections are edited once. Block toggling skips whitespace
@@ -267,6 +269,8 @@ against a fresh parse, and node coordinates are checked for both cases.
 HTML script/style bodies and HTML inside PHP do not receive nested language
 highlighting. JSONC uses the JSON grammar's comment support; trailing commas
 rely on error recovery rather than a separate JSONC grammar.
+SQL uses the general grammar from `tree-sitter-sequel`; dialect-specific syntax
+may rely on error recovery.
 
 We use the grammars' bundled highlight queries. Their coverage varies: the Rust
 query misses several operators and has a broken uppercase-constant predicate;
@@ -280,6 +284,9 @@ With the current capture precedence, Go's later generic identifier capture wins
 over function captures, and TOML's narrower bare-key capture wins over its
 enclosing property capture. Go names use the variable style and TOML bare keys
 use the type style.
+The bundled SQL query uses Lua-style numeric predicates, so numeric literals
+retain its string capture with the Rust regex engine. Both strings and numbers
+use the same blue foreground in the current palette.
 
 Source tests cover incremental edits and grouped history, batched/multi-cursor
 input, Unicode and line endings, chunk boundaries, nested and clipped captures,

@@ -46,7 +46,7 @@ Use `s` to select matches, `S` to split selections, `K` to filter, and `*` to
 remember selected text for search. Select mode accumulates navigation matches. See [search behavior](docs/search.md).
 Interactive search runs on a worker, with cancellation and revision checks.
 Rust, Python, Go, C/C++, Java, C#, Swift, Ruby, PHP, Lua, JavaScript/TypeScript,
-JSX/TSX, HTML, CSS, JSON/JSONC, YAML, TOML, Nix, Markdown, and Bash/shell use syntax
+JSX/TSX, HTML, CSS, JSON/JSONC, YAML, TOML, Nix, SQL, Markdown, and Bash/shell use syntax
 colors automatically, including in file previews. Use `:language NAME` to override
 detection, `:language text` for plain text, or `:language auto` to restore
 filename/shebang detection. See [syntax support and adding languages](docs/syntax.md).

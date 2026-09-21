@@ -379,6 +379,14 @@ languages! {
         grammar: || tree_sitter_nix::LANGUAGE.into(),
         queries: &[tree_sitter_nix::HIGHLIGHTS_QUERY], inline: None,
     },
+    Sql {
+        name: "sql", aliases: &[], extensions: &["sql"], filenames: &[], interpreters: &[],
+        language_id: "sql", indentation: TWO_SPACES,
+        comments: Comments { line: &["--"], block: &[("/*", "*/")] },
+        server: None,
+        grammar: || tree_sitter_sequel::LANGUAGE.into(),
+        queries: &[tree_sitter_sequel::HIGHLIGHTS_QUERY], inline: None,
+    },
 }
 
 impl Language {
@@ -548,6 +556,8 @@ mod tests {
             ("flake.nix", Language::Nix),
             ("default.nix", Language::Nix),
             ("shell.nix", Language::Nix),
+            ("schema.sql", Language::Sql),
+            ("query.SQL", Language::Sql),
         ] {
             assert_eq!(
                 Language::from_path(Path::new(path)),

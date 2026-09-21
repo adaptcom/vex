@@ -315,6 +315,7 @@ mod tests {
             (Some(Language::Jsonc), "// x", "/* x */"),
             (Some(Language::Yaml), "# x", "# x"),
             (Some(Language::Toml), "# x", "# x"),
+            (Some(Language::Sql), "-- x", "/* x */"),
             (None, "# x", "/* x */"),
         ] {
             for (command, expected) in [("toggle_comments", line), ("toggle_block_comments", block)]
