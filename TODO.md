@@ -130,6 +130,14 @@ selections, and measure operations that could affect input latency.
 
 ## Later editing and interface work
 
+- [ ] Revisit bundled Tree-sitter query coverage: Rust operators and its broken
+  uppercase-constant predicate; JavaScript parameters and escapes; TypeScript
+  default-value/constructor classification; Markdown strikethrough. Keep using
+  upstream queries for now; custom highlight queries are deferred.
+- [ ] Compose nested source-Markdown attributes (for example bold inside italic
+  or headings). Source highlighting currently chooses one capture; prepared
+  popup Markdown already combines attributes. Preserve compact screen styles
+  and bounded viewport work.
 - [x] Consistent popup presentation: compact shortcut summaries and columns,
   foreground selection markers, adaptive picker footers, visible match context
   in clipped Unicode labels, overflow positions, and resize-safe scrolling.

@@ -44,14 +44,38 @@ using the terminal's built-in 16 colors and default foreground/background:
 | Builtin types, constants, strings, escapes, operators, properties, headings, and raw Markdown | Blue |
 | Tags | Green |
 | Comments | Bright black / grey |
-| Variables, punctuation, attributes, ordinary Markdown text | Default foreground |
+| Attributes | Bright yellow |
+| Variables, punctuation, ordinary Markdown text, interpolation bodies | Default foreground |
 
-These use the regular ANSI color slots; comments use bright black. The terminal's
+These use the regular ANSI color slots except for comments and attributes. The terminal's
 palette determines the actual shades, without RGB or extended palette colors.
 Markdown headings and strong emphasis are bold, emphasis is italic, and links
 are underlined. Link text is blue; URLs inherit the default foreground. Cursor
 cells preserve these syntax attributes. The same palette applies to file
 previews and Git diff text.
+
+### Style definitions
+
+[`crates/vex_term/src/theme.rs`](../crates/vex_term/src/theme.rs) owns all terminal
+colors and attributes. `syntax_color` maps semantic highlights to foregrounds;
+`syntax_attributes` supplies bold, italic, underline, and strikethrough where
+supported by a capture. UI styles are defined alongside them in `Style`.
+`LineNumber` and `ActiveLineNumber` are independent of message styles.
+
+The primary normal-mode cursor reverses the token's colors and retains its text
+attributes; the insert caret leaves those colors intact. Selections retain their
+grey background and default foreground. `MatchingBracket` decorates the partner
+with yellow, bold, underlined text. `SelectedMatchingBracket` and
+`MatchingBracketCursor` retain the selection or secondary-cursor background.
+None of these matching styles change the syntax of the primary cursor's bracket.
+
+[`Highlight`](../crates/vex_syntax/src/lib.rs) maps capture names to semantic
+categories without knowing terminal colors. Dotted captures use the most specific
+supported scope: `variable.parameter.special` falls back to `variable.parameter`,
+and `function.method.builtin` to `function`. Both `text.*` and supported `markup.*`
+spellings are accepted. The mapping is compiled once per language.
+`embedded` resets an enclosing string's foreground inside an interpolation;
+smaller captures still style its identifiers, calls, and literals normally.
 
 ## Indentation
 
@@ -209,6 +233,15 @@ colors without symbol resolution. In incomplete code, Tree-sitter's error recove
 can produce different trees depending on editing history; valid code is checked
 against a fresh parse, and node coordinates are checked for both cases.
 
+We use the grammars' bundled highlight queries. Their coverage varies: the Rust
+query misses several operators and has a broken uppercase-constant predicate;
+JavaScript lacks parameter and escape captures, while TypeScript's parameter and
+uppercase-name heuristics can misclassify default values and constructors.
+The bundled Markdown queries do not capture strikethrough, and source Markdown
+uses one winning capture rather than composing nested emphasis attributes.
+These query improvements are deferred in [TODO.md](../TODO.md). Markdown popups
+already compose their prepared text attributes, including strikethrough.
+
 Source tests cover incremental edits and grouped history, batched/multi-cursor
 input, Unicode and line endings, chunk boundaries, nested and clipped captures,
 cache bounds, cancellation/retry, stale completions, independent service delivery,
@@ -232,8 +265,15 @@ To add another bundled language:
    syntax-only support, or provide the server executable, argument list,
    environment override, status label, and root markers.
 3. Add representative source fixtures to the colocated syntax tests and check
-   filename detection. The existing LSP transport and completion code need no
+   filename detection. The capture-coverage test checks every registered language,
+   including Markdown's inline grammar, so new capture names cannot silently
+   lose their styles. Map new scopes in `Highlight::from_capture` and the theme
+   as needed. The existing LSP transport and completion code need no
    language-specific branches.
+
+Two captures are deliberately not styled: `vex.inline` identifies Markdown inline
+regions, and `none` reserves fenced code for language injections. Ignoring `none`
+keeps fenced code in the enclosing literal style until injections are supported.
 
 The registry is compiled into Vex. Loading languages or server settings from a
 user configuration file remains future work. These indentation settings control

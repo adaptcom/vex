@@ -269,7 +269,7 @@ pub(crate) fn paint_view(
         }
         if cursors.binary_search(&position).is_ok() {
             return if matching_bracket == Some(position) {
-                Style::MatchingSecondaryCursor
+                Style::MatchingBracketCursor
             } else {
                 Style::SecondaryCursor
             };
@@ -278,7 +278,7 @@ pub(crate) fn paint_view(
         let index = ranges.partition_point(|s| s.start() <= position);
         if index > 0 && position < ranges[index - 1].end() {
             if matching_bracket == Some(position) {
-                Style::MatchingSelection
+                Style::SelectedMatchingBracket
             } else {
                 Style::Selection
             }
@@ -305,9 +305,9 @@ pub(crate) fn paint_view(
                 screen_row as u16,
                 &number[number.len().saturating_sub(columns.digits)..],
                 if line == row {
-                    Style::Message
+                    Style::ActiveLineNumber
                 } else {
-                    Style::Gutter
+                    Style::LineNumber
                 },
             );
             if let Some(column) = columns.diff
@@ -749,7 +749,7 @@ mod tests {
             )))
             .unwrap();
         let frame = render(&editor, 20, 4, &mut Viewport::default());
-        assert_eq!(frame.style_at(5, 0), Some(Style::MatchingSelection));
+        assert_eq!(frame.style_at(5, 0), Some(Style::SelectedMatchingBracket));
         assert_eq!(frame.style_at(7, 0), Some(Style::PrimaryCursor(None)));
         editor
             .set_selections(
@@ -764,7 +764,7 @@ mod tests {
             )
             .unwrap();
         let mut frame = render(&editor, 20, 4, &mut Viewport::default());
-        assert_eq!(frame.style_at(5, 0), Some(Style::MatchingSecondaryCursor));
+        assert_eq!(frame.style_at(5, 0), Some(Style::MatchingBracketCursor));
         frame.inactive();
         assert_eq!(frame.style_at(5, 0), Some(Style::InactiveCursor));
         for mode in ["normal_mode", "insert_mode"] {

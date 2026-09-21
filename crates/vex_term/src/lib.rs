@@ -13,4 +13,5 @@ pub mod render;
 pub mod screen;
 mod sections;
 pub mod terminal;
+pub mod theme;
 mod ui;

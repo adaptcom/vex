@@ -57,45 +57,55 @@ pub enum Highlight {
     Heading,
     Emphasis,
     Strong,
+    Strikethrough,
     Link,
     LinkUrl,
     Raw,
+    /// Reset an enclosing string's color inside an interpolation. Nested
+    /// captures still supply their own styles.
+    Embedded,
 }
 
 impl Highlight {
-    fn from_capture(name: &str) -> Option<Self> {
-        match name {
-            "type.builtin" => return Some(Self::BuiltinType),
-            "variable.builtin" => return Some(Self::BuiltinVariable),
-            "variable.parameter" => return Some(Self::Parameter),
-            "string.escape" => return Some(Self::Escape),
-            "text.title" => return Some(Self::Heading),
-            "text.emphasis" => return Some(Self::Emphasis),
-            "text.strong" => return Some(Self::Strong),
-            "text.uri" => return Some(Self::LinkUrl),
-            "text.reference" => return Some(Self::Link),
-            "text.literal" => return Some(Self::Raw),
-            _ => {}
+    // Resolve the most specific supported scope, then its dotted parents.
+    // This runs once when compiling a language, never while drawing.
+    fn from_capture(mut name: &str) -> Option<Self> {
+        loop {
+            let highlight = match name {
+                "type.builtin" => Self::BuiltinType,
+                "variable.builtin" => Self::BuiltinVariable,
+                "variable.parameter" => Self::Parameter,
+                "variable.other.member" | "property" => Self::Property,
+                "string.escape" | "escape" => Self::Escape,
+                "text.title" | "markup.heading" => Self::Heading,
+                "text.emphasis" | "markup.italic" => Self::Emphasis,
+                "text.strong" | "markup.bold" => Self::Strong,
+                "text.strike" | "markup.strikethrough" => Self::Strikethrough,
+                "text.uri" | "markup.link.url" => Self::LinkUrl,
+                "text.reference" | "markup.link.text" => Self::Link,
+                "text.literal" | "markup.raw" => Self::Raw,
+                "keyword" => Self::Keyword,
+                "type" => Self::Type,
+                "constructor" => Self::Constructor,
+                "tag" => Self::Tag,
+                "namespace" => Self::Namespace,
+                "function" => Self::Function,
+                "constant" | "number" | "boolean" => Self::Constant,
+                "string" => Self::String,
+                "comment" => Self::Comment,
+                "operator" => Self::Operator,
+                "punctuation" => Self::Punctuation,
+                "attribute" => Self::Attribute,
+                "variable" => Self::Variable,
+                "label" => Self::Label,
+                "embedded" => Self::Embedded,
+                _ => {
+                    name = name.rsplit_once('.')?.0;
+                    continue;
+                }
+            };
+            return Some(highlight);
         }
-        Some(match name.split('.').next()? {
-            "keyword" => Self::Keyword,
-            "type" => Self::Type,
-            "constructor" => Self::Constructor,
-            "tag" => Self::Tag,
-            "namespace" => Self::Namespace,
-            "function" => Self::Function,
-            "constant" | "number" | "boolean" => Self::Constant,
-            "string" => Self::String,
-            "comment" => Self::Comment,
-            "operator" => Self::Operator,
-            "punctuation" => Self::Punctuation,
-            "attribute" => Self::Attribute,
-            "variable" => Self::Variable,
-            "property" => Self::Property,
-            "label" => Self::Label,
-            "escape" => Self::Escape,
-            _ => return None,
-        })
     }
 }
 
@@ -121,6 +131,9 @@ impl Configuration {
         let highlights = query
             .capture_names()
             .iter()
+            // `vex.inline` is handled separately. Markdown's `none` capture
+            // reserves fenced code for injections; until we support those,
+            // keep the enclosing literal style instead of stripping its color.
             .map(|name| Highlight::from_capture(name))
             .collect();
         let inline_capture = query.capture_index_for_name("vex.inline");
@@ -617,14 +630,80 @@ mod tests {
     }
 
     #[test]
+    fn captures_use_the_most_specific_supported_scope() {
+        for (capture, expected) in [
+            ("variable.parameter.special", Highlight::Parameter),
+            ("variable.builtin.special", Highlight::BuiltinVariable),
+            ("variable.other.member", Highlight::Property),
+            ("type.builtin.special", Highlight::BuiltinType),
+            ("string.escape.special", Highlight::Escape),
+            ("function.method.builtin", Highlight::Function),
+            ("constant.numeric.integer", Highlight::Constant),
+            ("comment.documentation", Highlight::Comment),
+            ("text.title.1", Highlight::Heading),
+            ("text.strike", Highlight::Strikethrough),
+            ("markup.heading.2", Highlight::Heading),
+            ("markup.raw.inline", Highlight::Raw),
+            ("markup.link.url", Highlight::LinkUrl),
+        ] {
+            assert_eq!(
+                Highlight::from_capture(capture),
+                Some(expected),
+                "{capture}"
+            );
+        }
+        for capture in [
+            "unknown",
+            "variableish",
+            "text.unknown",
+            "",
+            "none",
+            "vex.inline",
+        ] {
+            assert_eq!(Highlight::from_capture(capture), None, "{capture}");
+        }
+    }
+
+    #[test]
+    fn every_bundled_capture_is_styled_or_deliberately_ignored() {
+        for language in Language::ALL {
+            let configuration = language.configuration();
+            for config in std::iter::once(configuration).chain(configuration.inline.as_deref()) {
+                for (name, highlight) in config.query.capture_names().iter().zip(&config.highlights)
+                {
+                    assert!(
+                        highlight.is_some() || matches!(*name, "none" | "vex.inline"),
+                        "{language:?}: unmapped capture {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn bundled_languages_highlight_and_stay_correct_after_edits() {
         use Highlight::*;
         type Case<'a> = (Language, &'a str, &'a [(&'a str, Highlight)]);
         let cases: &[Case<'_>] = &[
             (
                 Language::Rust,
-                "fn main() { let n = 3; }",
-                &[("fn", Keyword), ("main", Function)],
+                "/// Docs\n#[derive(Debug)]\nstruct Item<T> { value: T }\nfn main(input: i32) { let text = \"hi\\n\"; println!(\"{}\", text); let item = Item { value: 42 }; item.run(); }",
+                &[
+                    ("/// Docs", Comment),
+                    ("derive", Attribute),
+                    ("struct", Keyword),
+                    ("Item", Type),
+                    ("<", Punctuation),
+                    ("value", Property),
+                    ("main", Function),
+                    ("input", Parameter),
+                    ("i32", BuiltinType),
+                    ("hi", String),
+                    ("\\n", Escape),
+                    ("println", Function),
+                    ("42", Constant),
+                    ("run", Function),
+                ],
             ),
             (
                 Language::Bash,
@@ -722,6 +801,67 @@ mod tests {
             fresh.query_budget = Duration::from_secs(10);
             assert_eq!(updated, all(&mut fresh, &document), "{language:?}");
             assert_eq!(syntax.incremental_parses, 1);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::literal_string_with_formatting_args)] // Literal shell parameter expansion.
+    fn interpolations_reset_string_colors_and_keep_nested_captures_when_clipped() {
+        use Highlight::*;
+        for (language, source, expected) in [
+            Language::JavaScript,
+            Language::Jsx,
+            Language::TypeScript,
+            Language::Tsx,
+        ]
+        .map(|language| {
+            (
+                language,
+                "const message = `before ${ item.call(42) } after`;",
+                vec![
+                    ("before", String),
+                    (" item", Embedded),
+                    ("item", Variable),
+                    ("call", Function),
+                    ("42", Constant),
+                    (" after", String),
+                ],
+            )
+        })
+        .into_iter()
+        .chain(std::iter::once((
+            Language::Bash,
+            "echo \"before ${name:-fallback} $(printf word) after\"",
+            vec![
+                ("before", String),
+                ("name", Property),
+                ("fallback", Embedded),
+                ("printf", Function),
+                ("word", Embedded),
+                (" after", String),
+            ],
+        ))) {
+            let document = Document::from(source);
+            let mut syntax = Syntax::new(language, &document);
+            syntax.parse_budget = Duration::from_secs(10);
+            syntax.query_budget = Duration::from_secs(10);
+            let spans = all(&mut syntax, &document);
+            for (token, highlight) in expected {
+                let start = source.find(token).unwrap();
+                assert_eq!(at(&spans, start), Some(highlight), "{language:?}: {token}");
+                // Enclosing strings and interpolations can start outside the
+                // viewport. Clipping must preserve the same winner.
+                let clipped =
+                    syntax.highlights(&document, ByteOffset(start)..ByteOffset(start + 1));
+                assert_eq!(
+                    &*clipped,
+                    &[HighlightSpan {
+                        range: ByteOffset(start)..ByteOffset(start + 1),
+                        highlight,
+                    }],
+                    "{language:?}: {token}"
+                );
+            }
         }
     }
 
