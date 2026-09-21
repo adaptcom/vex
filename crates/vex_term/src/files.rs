@@ -13,6 +13,7 @@ pub(crate) mod watch;
 #[derive(Debug)]
 pub struct FileState {
     path: Option<PathBuf>,
+    scratch_name: &'static str,
     target: Option<PathBuf>,
     existed: bool,
     saved: Rope,
@@ -70,6 +71,7 @@ impl FileState {
     pub fn scratch(document: &Document) -> Self {
         Self {
             path: None,
+            scratch_name: "[scratch]",
             target: None,
             existed: false,
             saved: document.text().clone(),
@@ -82,11 +84,30 @@ impl FileState {
         self.path.as_deref()
     }
 
+    pub(crate) fn named_scratch(document: &Document, name: &'static str) -> Self {
+        Self {
+            scratch_name: name,
+            ..Self::scratch(document)
+        }
+    }
+
+    pub(crate) fn is_named_scratch(&self, name: &str) -> bool {
+        self.path.is_none() && self.scratch_name == name
+    }
+
+    /// UI label, with home paths abbreviated and scratch buffers named.
+    pub(crate) fn label(&self) -> String {
+        self.path().map_or_else(
+            || self.scratch_name.to_owned(),
+            |path| crate::paths::display(path).to_string(),
+        )
+    }
+
     /// Literal filename for the `%` register, which can be pasted into commands
     /// or document text. UI labels use `paths::display` separately.
     pub fn display_name(&self) -> std::sync::Arc<str> {
         self.path().map_or_else(
-            || "[scratch]".into(),
+            || self.scratch_name.into(),
             |path| path.to_string_lossy().as_ref().into(),
         )
     }

@@ -782,6 +782,53 @@ def main():
             terminal.finish()
         print("PASS: background prompt completion, literal paths, modified keys, history, queued Enter")
 
+        tutorial_file = Path(directory) / "before tutorial.txt"
+        tutorial_file.write_text("original on disk\n")
+        notes = Path(directory) / "tutorial notes.txt"
+        with Terminal([binary, str(tutorial_file)]) as terminal:
+            terminal.start()
+            terminal.send(b"iunsaved ")
+            terminal.leave_insert()
+            terminal.send(b":tut\t\r")
+            terminal.expect_screen_idle("VEX TUTORIAL")
+            terminal.expect_screen_idle("[tutorial]", row=22)
+            # Run a multi-selection exercise through the real search worker.
+            terminal.send(b"/^cat dog cat\r")
+            terminal.expect_screen_idle("cat dog cat")
+            terminal.send(b"ghxscat\rcfox")
+            terminal.expect_screen_idle("fox dog fox")
+            terminal.leave_insert()
+            terminal.send(b"ga")
+            terminal.expect_screen_idle("unsaved original on disk")
+            terminal.send(b":tutorial\r")
+            terminal.expect_screen_idle("fox dog fox")
+            terminal.send(b"gg btutorial")
+            terminal.expect_screen_idle("Buffers")
+            terminal.expect_screen_idle("[tutorial]  [*+]")
+            terminal.send(b"\r")
+            terminal.expect_screen_absent("Buffers")
+            terminal.expect_screen_idle("VEX TUTORIAL")
+            terminal.send(b":bc!\r")
+            terminal.expect_screen_idle("unsaved original on disk")
+            terminal.send(b":tutorial\r")
+            terminal.expect_screen_idle("VEX TUTORIAL")
+            terminal.send(b"iPractice notes: ")
+            terminal.leave_insert()
+            terminal.send(b":w " + os.fsencode(notes) + b"\r")
+            terminal.expect_screen_idle("wrote")
+            bundled = Path(__file__).resolve().parents[1] / "crates/vex_term/src/tutorial.txt"
+            assert notes.read_text() == "Practice notes: " + bundled.read_text()
+            assert tutorial_file.read_text() == "original on disk\n"
+            terminal.send(b":tutorial\r")
+            terminal.expect_screen_idle("[tutorial]", row=22)
+            terminal.expect_screen_absent("Practice notes:")
+            terminal.send(b":bc!\r:bc\r")
+            terminal.expect_screen_idle("unsaved original on disk")
+            terminal.send(b":wq\r")
+            terminal.finish()
+            assert tutorial_file.read_text() == "unsaved original on disk\n"
+        print("PASS: tutorial command completion, practice, resume, picker, restart, and save-as")
+
         with Terminal([binary]) as terminal:
             terminal.start()
             mark = terminal.send(b"i")

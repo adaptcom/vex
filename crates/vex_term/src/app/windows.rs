@@ -412,6 +412,37 @@ impl App {
         self.replace_window_buffer(Prepared::Existing(id))
     }
 
+    /// Reuse an in-memory practice buffer, preserving its edits and saved view.
+    /// A saved copy becomes an ordinary file, so opening again starts fresh.
+    pub(super) fn open_named_scratch(&mut self, name: &'static str, text: &str) -> io::Result<()> {
+        if self.files.is_named_scratch(name) {
+            return Ok(());
+        }
+        let prepared = if let Some((&id, _)) = self
+            .windows
+            .buffers
+            .iter()
+            .find(|(_, buffer)| buffer.files.is_named_scratch(name))
+        {
+            Prepared::Existing(id)
+        } else {
+            let document = vex_core::Document::from(text);
+            let files = FileState::named_scratch(&document, name);
+            let mut editor = Editor::with_session(document, self.editor.session());
+            editor.set_display_name(files.display_name());
+            editor.set_background_search(true);
+            editor.set_deferred_repeat(true);
+            editor.set_background_syntax(true);
+            Prepared::New(Box::new(Buffer {
+                editor,
+                files,
+                automatic_language: true,
+            }))
+        };
+        self.record_jump();
+        self.replace_window_buffer(prepared)
+    }
+
     fn record_buffer_access(&mut self) {
         self.windows.access_clock += 1;
         self.windows
@@ -578,10 +609,7 @@ impl App {
                             .insert(Arc::new(Document {
                                 snapshot: editor.document().snapshot(),
                                 resolver: editor.document().position_resolver(),
-                                label: files
-                                    .path()
-                                    .map(|path| crate::paths::display(path).to_string())
-                                    .unwrap_or_else(|| "[scratch]".into()),
+                                label: files.label(),
                             }))
                             .clone()
                     }
@@ -611,10 +639,7 @@ impl App {
             )
             .map(|(editor, files)| {
                 let id = editor.document().id();
-                let mut label = files
-                    .path()
-                    .map(|path| crate::paths::display(path).to_string())
-                    .unwrap_or_else(|| "[scratch]".into());
+                let mut label = files.label();
                 let dirty = files.is_dirty(editor.document());
                 if dirty || id == current {
                     label.push_str("  [");
@@ -1179,10 +1204,7 @@ impl App {
                     let buffer = self.windows.buffers.get_mut(&pane.document).unwrap();
                     (&mut buffer.editor, &buffer.files)
                 };
-                let filename = files
-                    .path()
-                    .map(|path| crate::paths::display(path).to_string())
-                    .unwrap_or_else(|| "[scratch]".into());
+                let filename = files.label();
                 let dirty = files.is_dirty(editor.document());
                 let git = self.git.gutter_diff(editor.document().id(), files.target());
                 editor

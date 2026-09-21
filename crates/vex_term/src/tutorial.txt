@@ -1,0 +1,655 @@
+VEX TUTORIAL
+============
+
+Welcome. This is an editable practice buffer. Change the examples below!
+Your other buffers, unsaved edits, and undo histories are still available.
+The bundled original is never changed by these exercises.
+
+  j / Down       Move down to read. k / Up moves back up.
+  Ctrl-d         Move down half a page in normal mode. Ctrl-u goes up.
+  Esc            Leave insert mode or dismiss a prompt/key group.
+  u              Undo an edit in normal mode. U redoes it.
+  :bc! Enter     Discard this practice copy and return to another buffer.
+  :tutorial      Return to this practice copy, keeping edits and position.
+
+For a fresh copy, close this one with :bc! and run :tutorial again.
+To keep your notes, use :w tutorial-notes.txt with an unused filename.
+Switch back to your previous buffer with ga, or choose one with Space b.
+
+Keys are case-sensitive. gg means g twice; Space f means Space, then f.
+Ctrl-x means hold Control and press x. <Enter> and <Esc> mean those keys.
+When a sequence contains inserted text, only type it after i/a/c/etc.
+Between exercises, press Esc, then , then ; for one ordinary cursor.
+Use u to restore a practice line before repeating an exercise.
+
+Lessons 01-21 do not need a language server. Take them in sections.
+The cursor and selections show what the next editing command will affect.
+
+CONTENTS
+  01 Moving and counts             13 Brackets and textobjects
+  02 Finding a lesson              14 Adding/changing surrounds
+  03 Words and WORDs               15 Insert-mode tools
+  04 Seeking and direct jumps      16 Repeat and undo checkpoints
+  05 Inserting text                17 Comments and languages
+  06 Changing, deleting, undo      18 Scrolling and view mode
+  07 Growing selections           19 Files and buffers
+  08 Copying and registers         20 Jump history
+  09 Lines, indentation, joining   21 Windows and mouse
+  10 Search and occurrences        22 Language-server tools
+  11 Regex selections              23 Prompts and pickers
+  12 Editing at multiple cursors   24 Quick reference
+
+
+LESSON 01 - Moving and counts
+----------------------------
+
+Vex starts in NORMAL mode (NOR in the status line). Letters run commands.
+In INSERT mode (INS), ordinary letters type text. Esc returns to normal.
+SELECT mode (SEL) extends selections as you move; we will use it shortly.
+
+  h / Left       left              l / Right      right
+  j / Down       down              k / Up         up
+
+Move onto this practice row and travel along it with h and l:
+walk slowly across this line
+
+Type 5l to move five characters right; 3h moves three left. Prefix a
+movement with a number to repeat it. 4j moves down four logical lines.
+Arrows also work in insert mode. h/j/k/l there are ordinary text!
+
+Vex uses selection-first editing: select text, then act on that selection.
+A normal-mode cursor already covers one character. Word motions often
+select several characters. Watch the selection before pressing d or c.
+The ; key collapses a selection back to the character at its cursor.
+
+
+LESSON 02 - Finding a lesson
+---------------------------
+
+Press / to open a forward-search prompt. Type a query, then Enter to keep
+the match. Esc cancels the search and restores your old selection/view.
+Search wraps around the document, so you can find a lesson from anywhere.
+
+Try /^LESSON 03<Enter> to jump to the next lesson. The ^ means line start.
+The contents list will not match. /^LESSON 01<Enter> brings you back.
+You can use the same pattern for any two-digit lesson number in this file.
+
+Most exercises give a search for their practice row. A search selects its
+match. Press gh afterward to put a single cursor at the row's beginning.
+The anchored searches below find practice rows without matching the prose.
+If you changed an example, u restores it, or navigate with j/k instead.
+
+Try /^findable<Enter>, then gh:
+findable practice text
+
+Press i, type hello followed by a space, then Esc. You edited the row.
+Press u to restore it. Press U to redo, then u again to leave it ready.
+
+
+LESSON 03 - Words and WORDs
+-------------------------
+
+Find /^red<Enter>, then gh:
+red green blue
+
+  w   select forward through the next word start
+  b   select backward to a word start
+  e   select through the next word end, without following whitespace
+
+Try w, w, b, and e. Compare the highlighted text after each movement.
+Use gh to start again. 2w covers two word movements in one selection.
+For a precise whole word from anywhere inside it, use miw (match inside
+word). This is useful before changing or copying a word.
+
+Find /^path/to<Enter>, then gh:
+path/to/file.rs + another_name
+
+W, B, and E do the corresponding motions for whitespace-separated WORDs.
+Punctuation separates small words but stays inside a WORD. Compare w with
+W from the start of this row. Unicode characters stay intact as you move.
+
+
+LESSON 04 - Seeking and direct jumps
+-----------------------------------
+
+Find /^alpha,<Enter>, then gh:
+alpha, beta, gamma.
+
+  f<char>   select through the next occurrence of a character
+  t<char>   select up to, but not including, that occurrence
+  F<char>   find backward          T<char>   till backward
+
+From the start try f, then gh then t,. Try 2f, to reach the second comma.
+From the end (gl), try F,. These searches can cross line boundaries and
+do not wrap. If there is no matching character, the selection stays put.
+Enter can be the character to find a line ending. Esc cancels a pending f.
+
+  gh / Home      beginning of the line
+  gs             first non-whitespace character of the line
+  gl / End       last character of the line (end boundary in insert mode)
+  gg             start of the document
+  ge             end-of-file boundary
+  G              first column of the last content line
+  25gg / 25G     first column of line 25
+  8g|            display column 8 on the current line (columns start at 1)
+
+Try gh, gl, and gs on an indented line below. Use /^LESSON 05<Enter> to
+continue after trying document jumps. gt, gc, and gb move to the top,
+center, and bottom of the visible text area, respecting the scroll margin.
+
+
+LESSON 05 - Inserting text
+-------------------------
+
+Find /^small boat<Enter>, then gh:
+small boat
+
+  i   insert before the selection    a   append after the selection
+  I   insert at first non-whitespace A   append at the end of the line
+  o   open a line below              O   open a line above
+
+Type I, add a word and a space, then Esc. Use A to add an exclamation mark
+at the end, then Esc. Each completed insert session is an undo group.
+Undo twice to restore the example.
+
+Now try o, type another boat, and press Esc. Undo once: the new line and
+its text disappear together. Try O for a line above. 2o opens two lines
+with a caret on each: typing fills both. Esc then , keeps one cursor.
+
+Enter copies the leading indentation before your caret. o/O copy the
+original line's indentation. Tab inserts the buffer's indentation unit.
+Existing files supply indentation hints; language defaults fill the gaps.
+Newlines preserve the file's line endings. Paste inserts literal text.
+
+
+LESSON 06 - Changing, deleting, and undo
+--------------------------------------
+
+Find /^old cabin<Enter>, then gh:
+old cabin
+
+Type miw to select old, then c, type new, and press Esc.
+The result should be new cabin. One u restores the original; U redoes it.
+Undo again, use gh then miw then d: the word is cut without entering
+insert mode. u restores it. d and c also copy the removed text for p.
+
+The order is selection, then action. miwc means select word, then change.
+Use r<char> to replace every selected character with that character.
+For example, gh then miw then r_ turns old into ___. Undo afterward.
+
+u/U accept counts: 3u undoes three groups. They restore selections too.
+Backspace/Delete edit behind/ahead of the caret in INSERT mode.
+In normal mode, use d on the selected text.
+
+You can edit the instructions accidentally and still undo them. A clean
+tutorial starts clean, so undo only visits your own practice edits.
+
+
+LESSON 07 - Growing and reducing selections
+-----------------------------------------
+
+Find /^one two three<Enter>, then gh:
+one two three four
+
+v enters select mode. Movements then extend from the original anchor.
+Try v then 2w: the selection grows across words. v toggles back to normal
+mode while retaining the range. Esc also leaves select mode.
+
+  ;   collapse each selection to its cursor
+  ,   keep only the primary selection
+  _   trim whitespace from selection edges
+  %   select the whole document
+  x   select whole lines; repeated x adds more lines below
+  X   extend to line boundaries without adding lines on repetition
+
+Try x on the example, then another x. Compare with X twice. Use ; to
+collapse. 3x selects three lines from an ordinary cursor. This includes
+their line endings, which matters when copying and pasting whole lines.
+
+% is useful before a document-wide operation. To recover a single cursor
+after a big selection or many cursors, press Esc, then , then ;.
+
+
+LESSON 08 - Copy, paste, and registers
+------------------------------------
+
+Find /^cargo wagon<Enter>, then gh:
+cargo wagon
+
+miwy copies cargo. The y command is called yank. It returns to normal
+mode, keeping the copied text selected. gl moves to the last letter of
+wagon. miw selects that word; R replaces it with the copy. Undo it.
+
+  y   copy selections        p   paste after       P   paste before
+  R   replace selections with copied text
+
+Try xy then p on the practice row. Because x includes the newline, p
+pastes a whole line below. P puts it above. Without a trailing newline,
+paste uses the selection edges. A final line without a newline is text.
+
+Registers are shared between buffers. Prefix the next command with a
+double quote and a name: "ay copies into a; "ap pastes from a.
+"_d deletes without replacing your copied text. Uppercase names are
+separate registers. In insert mode, Ctrl-r then a inserts register a.
+Ctrl-r also inserts register text in prompts and picker queries.
+
+Special registers: " last yank/cut, _ discard, . current selection text,
+# selection numbers, % filename/buffer name, / search, : last command.
+
+Space y copies to the system clipboard; Space Y copies only the primary
+selection. Space p/P paste after/before; Space R replaces selections.
+"+ refers to that clipboard; "* is the primary clipboard where supported.
+Clipboard access needs a supported local platform helper/session.
+
+
+LESSON 09 - Lines, indentation, and joining
+-----------------------------------------
+
+Find /^first plank<Enter>, then gh:
+first plank
+second plank
+third plank
+
+Try x then > to indent the first row. < removes an indentation level.
+Use 2x then > to indent two rows together. Counts before >/< add/remove
+multiple levels. u restores the previous step; undo each experiment.
+
+J joins selected lines. On one line, it joins that line with the next.
+It removes the newline and following indentation and adds a space when
+needed. From the first row, J should produce first plank second plank.
+Select all three rows with 3x and press J to join them together.
+
+[ followed by Space adds an empty line above; ] followed by Space adds
+one below. Both stay in normal mode. 2]Space adds two blank lines.
+Use o/O when you want to start typing on the newly opened line instead.
+
+J keeps comment prefixes literally. Automatic language-aware joining and
+syntax-aware indentation increases are not implemented yet.
+
+
+LESSON 10 - Search and selected occurrences
+------------------------------------------
+
+Find /^stone moss<Enter>, then gh:
+stone moss stone moss stone
+
+/ searches forward; ? searches backward. Enter accepts; Esc cancels.
+Afterward n searches forward and N backward, regardless of whether the
+last prompt was / or ?. 3n skips through three matches.
+
+Queries are regular expressions. Lowercase queries ignore case; uppercase
+letters make the query case-sensitive. ^ and $ match line boundaries.
+Use \. to match a literal dot. Lookaround/backreferences are unsupported.
+
+On the first stone, miw then * remembers the selected text as a search,
+escaping its punctuation and detecting word boundaries. n finds another.
+In select mode, n/N ADD each match as a selection. Start again at stone,
+use miw*, then v then n then n. You now have three selected occurrences.
+Press c, type pebble, then Esc: all three change. Undo once to restore.
+Use , then ; to return to a single cursor.
+
+Search is live while you type; it does not change the document until you
+apply an editing command. Esc restores where you were before the prompt.
+
+
+LESSON 11 - Regex selections: s, S, and K
+---------------------------------------
+
+These commands work WITHIN your existing selections, not automatically
+through the whole document. x scopes them to a line; % scopes to the file.
+
+Find /^cat dog cat<Enter>, then gh:
+cat dog cat
+
+Type x, s, cat, Enter. Both cats are selected. c, fox, Esc changes them
+to fox dog fox. Undo, then ,; to keep one ordinary cursor.
+
+Find /^oak,pine<Enter>, then gh:
+oak,pine,birch
+
+x selects the row. _ trims its newline. S,<Enter> splits it at commas:
+each tree name becomes a selection and commas stay outside them.
+Type K, i, Enter to KEEP selections containing i: pine and birch survive.
+Type c, tree, Esc to get oak,tree,tree. Undo afterward and use ,;.
+
+s selects matches. S splits on separators. K filters selections.
+Empty selections can insert text, too: %s^<Enter> puts a cursor at every
+line start, including a trailing empty line. This affects the entire
+tutorial, so try it only if you are ready to undo the resulting edit!
+
+
+LESSON 12 - Copying a selection downward
+---------------------------------------
+
+Find /^amber<Enter>, then gh:
+amber
+azure
+apple
+
+From the a in amber, press C twice. There should be a cursor on the first
+character of each row. i, >, Esc prefixes all three with >. Undo it.
+2C is the counted form. Longer selections copy their span as well.
+
+Movement and editing commands normally apply to every selection. i inserts
+before each, a after each, and c replaces each selected range. Overlapping
+selections merge. , keeps the primary one; ; collapses all their ranges.
+
+Named registers can hold one fragment per selection. When pasting, Vex
+pairs those fragments with destinations in document order. Extra cursors
+repeat the last fragment. Ordinary single-fragment copies repeat at each.
+
+
+LESSON 13 - Brackets and textobjects
+-----------------------------------
+
+Find /^parcel<Enter>, then gh:
+parcel(alpha, [beta, gamma])
+
+f( puts the cursor on the opening parenthesis. mm jumps to its partner.
+On a bracket, its matching partner is highlighted. Use mm again to return.
+mi( selects INSIDE the parentheses; ma( selects AROUND, including them.
+Either bracket works as the object name: mi) selects the same contents.
+
+miw / maw select inside/around a word; miW / maW do the same for a WORD.
+The around forms include adjacent horizontal whitespace where available.
+mip / map select a paragraph / a paragraph plus following empty lines.
+2mip selects two paragraphs. Empty lines separate paragraphs.
+
+Inside beta, mim selects inside the closest enclosing pair. mam includes
+that pair; repeating mam expands outward. Explicit pairs include (), [],
+{}, <>, and quotes. Quote objects in plain text need a cursor inside them.
+Counts such as 2mi( can target outer pairs. Esc cancels a pending prefix.
+
+Select first, then act: miwc changes a word; mi(d deletes the contents
+but keeps the parentheses. Undo afterward so later examples stay intact.
+
+
+LESSON 14 - Adding, replacing, and deleting surrounds
+----------------------------------------------------
+
+Find /^bundle<Enter>, then gh:
+bundle
+
+Type miwms) to surround bundle with parentheses: (bundle).
+ms<char> adds a pair around each selection. Either side chooses a bracket
+pair. ms" uses quotes; other ordinary characters repeat on both sides.
+
+With the selection still on (bundle), type mr)] to change its parentheses
+to brackets: [bundle]. mr first takes the OLD delimiter, then the NEW one.
+Vex previews the pair while waiting for the replacement. Esc cancels it.
+
+Type md] to remove the brackets, returning to bundle. u restores them.
+mdm removes the nearest pair; mrm" replaces that pair with quotes.
+Counts before the prefix choose an outer pair, as in 2md(.
+
+These commands keep copied text/registers intact. Use them at several
+selections to surround or change multiple pieces of text together.
+
+
+LESSON 15 - Insert-mode tools
+----------------------------
+
+Find /^typing bench<Enter>, then gh, then A:
+typing bench
+
+Add a space and type (). The ( automatically inserts its closer when the
+following text allows a pair. Typing ) moves past it. Try [] and {}.
+Backspace between an empty pair removes both. Quotes do not auto-close.
+Press Esc, then u to undo this insert session.
+
+While inserting:
+  Backspace / Ctrl-h   delete backward     Delete / Ctrl-d delete forward
+  Ctrl-w               delete to the previous word start
+  Ctrl-u               delete back to the indentation/line start
+  Ctrl-k               delete to the line end
+  Enter / Ctrl-j       newline, copying leading indentation
+  Tab                  insert the buffer's indentation unit
+  Ctrl-r then a        insert the current contents of register a
+  Ctrl-s               start a new undo group; does NOT save
+
+At a line boundary, Ctrl-u/Ctrl-k can remove the neighboring newline.
+Home/End and arrows move the insertion caret. PageUp/PageDown scroll.
+Ctrl-u/Ctrl-d have different meanings in normal mode and open help popups.
+
+
+LESSON 16 - Repeat and undo checkpoints
+-------------------------------------
+
+Find /^repeat here<Enter>, then gh:
+repeat here
+repeat there
+
+Type I, >, Esc to prefix the first row. Move down with j, then press .
+The second row gets the same prefix. . repeats the last INSERT SESSION,
+including its entry command (i/a/I/A/o/O/c), typing, and insert movements.
+It does not repeat an arbitrary normal-mode command such as d or >.
+3. repeats that session three times. A counted repeat is one undo group
+unless you explicitly inserted undo checkpoints.
+
+Undo both prefixes. At the end of a practice line (A), type abc, Ctrl-s,
+then def, Esc. u removes def; another u removes abc. Ctrl-s did not save.
+The same key in normal/select mode records a jump checkpoint instead.
+
+Repeat history is shared between buffers. A new completed insert session,
+even an empty one, replaces the recording. u/U do not replace it.
+
+
+LESSON 17 - Comments and language settings
+----------------------------------------
+
+This tutorial starts as plain text. For this exercise use :language rust
+and Enter to supply Rust's comment delimiters. A filename is not required
+for comment commands or syntax highlighting.
+
+Find /^let practice<Enter>, then gh:
+let practice = 1;
+let example = 2;
+
+Space c toggles comments on the selected lines. Try it twice: the comment
+appears, then disappears. 2x selects both rows for the same operation.
+Ctrl-c is also toggle-comments in normal/select mode with no pending key.
+Inside prompts and pending commands, Ctrl-c cancels instead.
+
+Space C explicitly toggles block comments for languages that support them.
+Space c prefers line comments and falls back to block comments as needed.
+Undo any edits, then :language text returns this tutorial to plain text.
+
+:language auto uses a file's name/shebang; :language alone reports the
+current setting. Syntax and comment rules come from the language registry.
+Changing language does not edit the contents or rename the buffer.
+
+
+LESSON 18 - Scrolling and view mode
+---------------------------------
+
+In normal/select mode:
+  Ctrl-d / Ctrl-u           move and scroll down/up half a page
+  Ctrl-f / Ctrl-b           scroll down/up a full page
+  PageDown / PageUp         full-page aliases, also in insert mode
+  gt / gc / gb              move to top/center/bottom visible line
+
+z enters view mode for ONE command. Try zz to center this line vertically.
+zt puts it at the top; zb at the bottom; zc also centers vertically.
+zm centers the cursor horizontally, useful on a long unwrapped line.
+zj/zk scroll a line down/up. 5zj scrolls five lines.
+
+Z keeps view mode active: Z, j, j, k scrolls while the helper stays open.
+Esc leaves it. While in z/Z, Ctrl-f/b and PageDown/Up scroll full pages;
+Ctrl-d/u do half pages. In sticky mode, counts can follow Z: Z5j.
+Full-page and alignment commands ignore counts; line and half-page moves
+honor them. Scrolls can move the primary cursor to keep it visible.
+
+The wheel scrolls the pane under the pointer without changing focus.
+Keyboard movement brings an offscreen cursor back into view. There is no
+soft wrapping yet: motions and page distances use logical lines.
+
+
+LESSON 19 - Files, buffers, and saving
+------------------------------------
+
+Buffers remain loaded when you switch files, with text and undo history.
+Try ga to visit the buffer you opened this tutorial from, then :tutorial
+to return. Space b opens a picker of all loaded buffers, including this
+one and other unsaved buffers. Type tutorial to find this practice copy.
+
+  Space f         pick a project file, with a preview
+  Space b         pick a loaded buffer
+  Space '         reopen the last picker, keeping its query and position
+  ga              previous buffer in this pane
+  gn / gp         next/previous buffer in opening order; counts work
+  gm              last other buffer modified in this pane
+  gf              open the filename under the cursor or in selections
+  :open PATH      open a path, retaining your other buffers
+  :w [PATH]       save; a scratch buffer needs a path
+  :reload         reload a file; unsaved changes require :reload!
+
+File paths after :open/:w are literal, including spaces; do not add quotes
+or expect shell/~ expansion. Displayed home paths may still use ~.
+Saved tutorial notes become an ordinary file; :tutorial then starts fresh.
+Clean visible files reload after external changes; dirty buffers stay put.
+Tracked files show Git changes in the gutter, including unsaved edits.
+
+:bc closes a buffer; :bc! discards its edits. :q closes a pane and, on the
+last pane, exits. :qa exits all panes. Unsaved buffers block normal quit.
+Use :bc! to leave this practice copy without discarding other buffers.
+:q!/:qa! at exit discard unsaved work. :wq saves and closes the pane.
+
+
+LESSON 20 - Jump history
+-----------------------
+
+Ctrl-s in normal/select mode saves your selections as a jump checkpoint.
+Try Ctrl-s here, then gg. Ctrl-o returns; Ctrl-i moves forward again.
+Tab is an alias for Ctrl-i in normal/select mode.
+
+File and language-server navigation also record origins. The history is
+per pane, and counts work: 2Ctrl-o goes back two checkpoints.
+Space j opens the jump picker. It restores the full saved selection set,
+including hidden buffers. Stored positions follow later edits.
+
+g. returns to the end of the most recent undo group's change in the
+current buffer. It also records a return checkpoint. This is different
+from gm, which switches to the last OTHER modified buffer.
+
+
+LESSON 21 - Windows and mouse
+----------------------------
+
+Ctrl-w, then a key, enters window commands. Space w is the same prefix.
+Try Ctrl-w v to split this tutorial vertically. Each pane has its own
+cursor and scroll position; both see the same text and undo history.
+
+After Ctrl-w (or Space w):
+  v / s       split vertically / horizontally
+  h j k l     focus left / down / up / right; arrows work too
+  w           cycle focus
+  H J K L     swap panes in that direction
+  =           equalize all split sizes
+  q           close this pane
+  o           keep only this pane, retaining hidden buffers
+  f / F       open selected filenames in horizontal / vertical splits
+
+Try moving in one pane, then focus the other. Try an edit and u: both
+views update together. Ctrl-w o returns to a single pane.
+:vsplit PATH / :hsplit PATH split and open a file; omit PATH to share.
+
+Mouse wheel scrolling and split resizing are supported. Drag a vertical
+divider or the status line between stacked panes. :mouse off/on toggles
+capture. Clicking to place a cursor and dragging text selections are not
+implemented yet; use the keyboard for those operations.
+
+
+LESSON 22 - Language-server tools (in a real source file)
+-------------------------------------------------------
+
+These require a configured language server installed on PATH, such as
+rust-analyzer for Rust. They are not active in this pathless tutorial.
+Open a source file with Space f and return with :tutorial afterward.
+
+  gd / gy / gi       definition / type definition / implementation
+  gr                 references picker
+  Space h            select related occurrences in this document
+  Space s / Space S  document / workspace symbol picker
+  Space k            hover documentation; Ctrl-u/d scroll it
+  Space r            rename the symbol across files
+  Space a            code-action menu
+  Space d / Space D  document / workspace diagnostics picker
+  [d / ]d            previous / next diagnostic
+  [D / ]D            first / last diagnostic
+  =                  format one selection, if the server supports it
+  :format / :fmt     format the file
+
+Rename, formatting, and code actions leave text unsaved, with undo in each
+affected buffer. Use Ctrl-o to return after navigation. LSP:down means no
+ready language server; ordinary editing remains available.
+
+In insert mode, completions open automatically after eligible typing and
+an idle delay. Ctrl-x requests completion immediately. Tab/Ctrl-n/Down
+select the next item; Shift-Tab/Ctrl-p/Up select the previous one.
+Enter accepts a selected item. With none selected, it inserts a newline.
+Ctrl-c rejects the menu and keeps insert mode. Esc accepts an explicitly
+selected item and leaves insert mode. Use Ctrl-c to dismiss without it.
+:auto-completion off/on controls automatic requests; Ctrl-x still works.
+Signature help appears automatically at calls; Alt-p/n cycle overloads.
+
+
+LESSON 23 - Prompts, pickers, and help
+------------------------------------
+
+Typing : opens the command prompt. Try :tut then Tab then Enter to use
+command completion and return to this same practice buffer.
+:help COMMAND shows its documentation; try :help select_line.
+:help tutorial describes the tutorial buffer's lifecycle.
+
+Command/search prompts:
+  Enter                 submit (empty input recalls the last entry)
+  Esc / Ctrl-c          cancel
+  Up/Down or Ctrl-p/n   history
+  Left/Right, Ctrl-b/f  move one character
+  Home/End, Ctrl-a/e    start/end
+  Ctrl-Left/Right       move by word/path component (Alt-b/f also work)
+  Ctrl-w                delete previous word
+  Ctrl-u / Ctrl-k       delete to start/end
+  Backspace / Delete    delete backward/forward (Ctrl-h/d also work)
+  Tab / Shift-Tab       command/path completion
+  Ctrl-r then name      insert register text
+
+Pickers filter as you type. Enter opens; Esc/Ctrl-c closes. Up/Down,
+Ctrl-p/n, or Shift-Tab/Tab choose results; Ctrl-u/d move a page at a time.
+The preview shows the selected result, including unsaved buffer text.
+Space / searches file contents below the working directory with a regex.
+It includes unsaved named buffers; this pathless tutorial is excluded.
+
+Press a prefix such as g, m, Space, [, ], z, Z, or Ctrl-w to see available
+keys. Esc cancels a prefix. You can also run an editing command by name,
+such as :select_all or :move_word_forward.
+
+
+LESSON 24 - Quick reference and a final exercise
+-----------------------------------------------
+
+  Move        h j k l, w b e, W B E, f F t T, counts
+  Jump        gh gs gl, gg ge G, counted gg/G/g|, gt gc gb, g.
+  Select      v, x X %, ; , _, mi/ma + w W p delimiters or m
+  Edit        i a I A o O, c d r, > < J, [Space ]Space
+  History     u U, . repeat insert, Ctrl-s checkpoint
+  Copy        y p P R, "<register>, Space y/Y/p/P/R, insert Ctrl-r
+  Search      / ? n N *, s S K, v then n/N to add occurrences
+  Multi       C, counted C, regex selections; , keeps primary
+  Match       mm, ms<char>, mr<old><new>, md<char>
+  Comments    Space c/C, normal/select Ctrl-c
+  View        Ctrl-u/d/b/f, PageUp/Down, z/Z then z c t b m j k
+  Buffers     Space f/b/j/', ga gn gp gm gf, :open, :bc[!]
+  Windows     Ctrl-w / Space w, then v s h j k l w H J K L = q o f F
+
+Final exercise: find /^crate crate<Enter>, then gh:
+crate crate crate
+
+Use x then s then crate then Enter to select the three words. Use ms)
+to surround each word. The row should be (crate) (crate) (crate).
+Then md) removes the pairs. Undo, redo, and copy into a register.
+Combine these commands to make the selection you want before editing.
+
+You can stop here and come back at any time with :tutorial.
+Use :bc! to discard this practice copy, or :w PATH to save your notes.
+Have fun editing.

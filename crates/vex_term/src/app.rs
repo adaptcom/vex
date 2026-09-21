@@ -30,6 +30,7 @@ mod prompt;
 mod reload;
 mod rename;
 mod signature;
+mod tutorial;
 mod view;
 mod windows;
 pub mod workspace;
@@ -125,7 +126,7 @@ impl App {
             viewport: Viewport::default(),
             prompt: None,
             prompt_history: prompt::History::default(),
-            message: "i insert  / search  :w write  :q quit  :help".into(),
+            message: "i insert  / search  :w write  :q quit  :tutorial".into(),
             error: false,
             quit: false,
             size,
@@ -466,11 +467,7 @@ impl App {
 
     fn paint_current_window(&mut self, frame: &mut Frame, reserved_bottom: u16) -> io::Result<()> {
         self.mouse.completion = None;
-        let filename = self
-            .files
-            .path()
-            .map(|path| crate::paths::display(path).to_string())
-            .unwrap_or_else(|| "[scratch]".into());
+        let filename = self.files.label();
         let mut pending = format!(
             "{}{}",
             self.keys.count().map(|n| n.to_string()).unwrap_or_default(),
@@ -812,6 +809,11 @@ macro_rules! commands {
 }
 
 commands! {
+    /// Open the editable Vex tutorial, or resume its existing practice buffer. The current buffer and unsaved edits are retained. Use :bc! in the tutorial to discard it; the next :tutorial starts fresh.
+    fn tutorial(app, argument, force) ["tutorial"] {
+        if !argument.is_empty() || force { return Err(io::Error::other("tutorial takes no arguments or !")); }
+        app.open_tutorial()
+    }
     /// Enable or disable mouse scrolling and split resizing. With no argument, show the current setting.
     fn mouse_mode(app, argument, force) ["mouse"] complete OnOff {
         if force || !matches!(argument, "" | "on" | "off") { return Err(io::Error::other("mouse expects on or off")); }
@@ -939,7 +941,7 @@ commands! {
     fn help(app, argument, force) ["help", "h"] complete Command {
         if force { return Err(io::Error::other("help does not accept !")); }
         app.message = if argument.is_empty() {
-            "i/a insert  Esc normal  v select  hjkl/wbe move  /? search  n/N next/previous  u/U undo/redo  :w [PATH] write  :q[!] quit  :help COMMAND".into()
+            "i/a insert  Esc normal  v select  hjkl/wbe move  /? search  n/N next/previous  u/U undo/redo  :w [PATH] write  :q[!] quit  :tutorial practice  :help COMMAND".into()
         } else if let Some(command) = vex_editor::commands::find(argument) {
             command.description().into()
         } else if let Some(command) = COMMANDS.iter().find(|c| c.name == argument || c.aliases.contains(&argument)) {

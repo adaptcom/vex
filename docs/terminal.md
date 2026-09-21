@@ -300,6 +300,7 @@ on matches, `K` filters selections, and `*` remembers selected text for search. 
 
 | Command | Action |
 |---|---|
+| `:tutorial` | Open or resume the editable `[tutorial]` practice buffer |
 | `:mouse [on\|off]` | Toggle mouse scrolling/resizing, or show the current setting |
 | `:write [PATH]`, `:w [PATH]` | Save to the current or supplied path |
 | `:write! [PATH]`, `:w! [PATH]` | Allow replacing an existing destination or external edits |
@@ -316,6 +317,13 @@ on matches, `K` filters selections, and `*` remembers selected text for search. 
 | `:lsp-restart` | Restart the configured language server for the current file |
 | `:file_picker` | Open the fuzzy project file picker |
 | `:move_word_forward`, etc. | Invoke an editing command by its registered name |
+
+The tutorial is bundled with the executable and works offline. It retains your
+other buffers and their unsaved edits. It starts clean, with ordinary editing,
+search, and undo; `:tutorial` resumes the same practice copy and saved view.
+`:bc!` discards it, so the next `:tutorial` starts fresh. Save notes with
+`:w PATH`; the saved copy becomes a normal file, and `:tutorial` opens a fresh
+practice buffer. No language server is needed for the core editing lessons.
 
 The remaining text after a file command is a literal path, including internal
 spaces; quoting, shell expansion, and escapes are not interpreted. Leading and

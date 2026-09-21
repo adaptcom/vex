@@ -22,6 +22,11 @@ Omit the path for a scratch buffer. Press `i` to insert, `Esc` for normal mode,
 require `:q!` to discard. `:wq` saves and quits. Use `:help` or
 `:help move_word_forward` for command documentation.
 
+Run `:tutorial` for an editable, built-in tutorial covering motions, selections,
+everyday editing, registers, search, windows, and navigation. Your other buffers
+stay open. Run it again to resume; close the practice buffer with `:bc!` before
+opening a fresh copy. Use `:w PATH` to save your notes.
+
 Everyday edits include `I`/`A` for insertion at line edges, `r<char>` to replace
 selected characters, `>`/`<` for buffer indentation, `J` to join
 lines, and `[Space`/`]Space` to add blank lines. See the

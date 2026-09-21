@@ -41,7 +41,7 @@ The boxed register helper shows short previews while collecting the name.
 | `_` | Discard writes; pasting does nothing |
 | `#` | Current selection indices, starting at 1; read-only |
 | `.` | Current selection contents; read-only |
-| `%` | Current file name, or `[scratch]`; read-only |
+| `%` | Current file name, or buffer name such as `[scratch]` / `[tutorial]`; read-only |
 | `/` | Last accepted search, unless a different register was chosen |
 | `:` | Last submitted nonempty colon command |
 | `+` | System clipboard, shared with the Space clipboard commands |
