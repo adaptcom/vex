@@ -43,8 +43,9 @@ your selections and scroll position, and `n` / `N` to search forward/backward.
 Use `s` to select matches, `S` to split selections, `K` to filter, and `*` to
 remember selected text for search. Select mode accumulates navigation matches. See [search behavior](docs/search.md).
 Interactive search runs on a worker, with cancellation and revision checks.
-Rust, Markdown, Bash/shell, TypeScript/TSX, and JavaScript/JSX use syntax colors
-automatically, including in file previews. Use `:language NAME` to override
+Rust, Python, Go, C/C++, Java, C#, Swift, Ruby, PHP, Lua, JavaScript/TypeScript,
+JSX/TSX, HTML, CSS, JSON/JSONC, YAML, TOML, Markdown, and Bash/shell use syntax
+colors automatically, including in file previews. Use `:language NAME` to override
 detection, `:language text` for plain text, or `:language auto` to restore
 filename/shebang detection. See [syntax support and adding languages](docs/syntax.md).
 With the configured server on `PATH`, named files also get diagnostics (Space-d for the document, Space-D across files), Space-k for
@@ -101,7 +102,8 @@ python3 tools/terminal_smoke.py
 python3 tools/picker_smoke.py
 python3 tools/git_smoke.py # Requires Git.
 python3 tools/lsp_smoke.py # Requires rust-analyzer and a Rust toolchain.
-python3 tools/languages_smoke.py # Requires typescript-language-server and TypeScript.
+python3 tools/languages_smoke.py --syntax-only # All language fixtures; no servers needed.
+python3 tools/languages_smoke.py --go # Requires gopls, Go, typescript-language-server, and TypeScript.
 python3 tools/background_search_benchmark.py
 ```
 

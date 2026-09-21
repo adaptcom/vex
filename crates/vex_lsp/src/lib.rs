@@ -1540,6 +1540,22 @@ while True:
             (Language::Tsx, "typescriptreact", vec!["--stdio"]),
             (Language::JavaScript, "javascript", vec!["--stdio"]),
             (Language::Jsx, "javascriptreact", vec!["--stdio"]),
+            (Language::Python, "python", vec!["--stdio"]),
+            (Language::Go, "go", vec![]),
+            (Language::C, "c", vec![]),
+            (Language::Cpp, "cpp", vec![]),
+            (Language::Java, "java", vec![]),
+            (Language::CSharp, "csharp", vec![]),
+            (Language::Swift, "swift", vec![]),
+            (Language::Ruby, "ruby", vec![]),
+            (Language::Php, "php", vec!["--stdio"]),
+            (Language::Lua, "lua", vec![]),
+            (Language::Html, "html", vec!["--stdio"]),
+            (Language::Css, "css", vec!["--stdio"]),
+            (Language::Json, "json", vec!["--stdio"]),
+            (Language::Jsonc, "jsonc", vec!["--stdio"]),
+            (Language::Yaml, "yaml", vec!["--stdio"]),
+            (Language::Toml, "toml", vec!["lsp", "stdio"]),
         ];
         for (index, (language, _, _)) in cases.iter().enumerate() {
             doc.epoch = index as u64 + 1;
@@ -1602,6 +1618,29 @@ while True:
         assert_eq!(root(&file, Language::Bash), workspace);
         fs::write(package.join(".shellcheckrc"), "").unwrap();
         assert_eq!(root(&file, Language::Bash), package);
+        fs::write(workspace.join("go.work"), "").unwrap();
+        fs::write(package.join("go.mod"), "").unwrap();
+        assert_eq!(root(&file, Language::Go), workspace);
+        for (language, marker) in [
+            (Language::Python, "pyproject.toml"),
+            (Language::C, "compile_commands.json"),
+            (Language::Cpp, "compile_commands.json"),
+            (Language::Java, "pom.xml"),
+            (Language::CSharp, "Directory.Build.props"),
+            (Language::Swift, "Package.swift"),
+            (Language::Ruby, "Gemfile"),
+            (Language::Php, "composer.json"),
+            (Language::Lua, ".luarc.json"),
+            (Language::Html, "package.json"),
+            (Language::Css, "package.json"),
+            (Language::Json, "package.json"),
+            (Language::Jsonc, "package.json"),
+            (Language::Yaml, ".yamllint"),
+            (Language::Toml, ".taplo.toml"),
+        ] {
+            fs::write(package.join(marker), "").unwrap();
+            assert_eq!(root(&file, language), package, "{language:?}");
+        }
         fs::create_dir(source.join(".git")).unwrap();
         assert_eq!(root(&file, Language::Rust), source);
         assert_eq!(root(&file, Language::TypeScript), source);

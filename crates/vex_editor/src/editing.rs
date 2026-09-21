@@ -427,12 +427,13 @@ mod tests {
             let mut editor = Editor::new(Document::from("x"));
             editor.set_language(Some(*language));
             editor.execute("indent", 1).unwrap();
-            let spaces = if *language == Language::Rust { 4 } else { 2 };
-            assert_eq!(
-                editor.document.text(),
-                format!("{}x", " ".repeat(spaces)).as_str()
-            );
-            assert_eq!(editor.tab_width().get(), spaces);
+            let defaults = language.indentation();
+            let indent = match defaults.style {
+                IndentStyle::Spaces(width) => " ".repeat(width.get()),
+                IndentStyle::Tabs => "\t".into(),
+            };
+            assert_eq!(editor.document.text(), format!("{indent}x").as_str());
+            assert_eq!(editor.tab_width(), defaults.tab_width);
             editor.execute("unindent", 1).unwrap();
             assert_eq!(editor.document.text(), "x");
         }

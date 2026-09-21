@@ -4,12 +4,26 @@ Opening a named file with a configured language starts its server from `PATH`.
 Install language servers and their toolchains separately; Vex does not download
 them. Syntax highlighting works without a language server.
 
-| Language | Command | Executable override | Status label |
-|---|---|---|---|
-| Rust | `rust-analyzer` | `VEX_RUST_ANALYZER` | `RA` |
-| Markdown | `marksman server` | `VEX_MARKSMAN` | `Marksman` |
-| Bash / POSIX shell | `bash-language-server start` | `VEX_BASH_LANGUAGE_SERVER` | `Bash` |
-| TypeScript, TSX, JavaScript, JSX | `typescript-language-server --stdio` | `VEX_TYPESCRIPT_LANGUAGE_SERVER` | `TS` |
+| Language / server documentation | Command | Executable override |
+|---|---|---|
+| Rust | `rust-analyzer` | `VEX_RUST_ANALYZER` |
+| Markdown | `marksman server` | `VEX_MARKSMAN` |
+| Bash / POSIX shell | `bash-language-server start` | `VEX_BASH_LANGUAGE_SERVER` |
+| TypeScript, TSX, JavaScript, JSX | `typescript-language-server --stdio` | `VEX_TYPESCRIPT_LANGUAGE_SERVER` |
+| [Python / Pyright](https://github.com/microsoft/pyright) | `pyright-langserver --stdio` | `VEX_PYRIGHT` |
+| [Go / gopls](https://go.dev/gopls/) | `gopls` | `VEX_GOPLS` |
+| [C, C++ / clangd](https://clangd.llvm.org/installation) | `clangd` | `VEX_CLANGD` |
+| [Java / JDT LS](https://github.com/eclipse-jdtls/eclipse.jdt.ls) | `jdtls` | `VEX_JDTLS` |
+| [C# / csharp-ls](https://github.com/razzmatazz/csharp-language-server) | `csharp-ls` | `VEX_CSHARP_LS` |
+| [Swift / SourceKit-LSP](https://github.com/swiftlang/sourcekit-lsp) | `sourcekit-lsp` | `VEX_SOURCEKIT_LSP` |
+| [Ruby / Ruby LSP](https://github.com/Shopify/ruby-lsp) | `ruby-lsp` | `VEX_RUBY_LSP` |
+| [PHP / Intelephense](https://github.com/bmewburn/intelephense-docs) | `intelephense --stdio` | `VEX_INTELEPHENSE` |
+| [Lua / LuaLS](https://github.com/LuaLS/lua-language-server/wiki/Getting-Started) | `lua-language-server` | `VEX_LUA_LANGUAGE_SERVER` |
+| [HTML](https://github.com/hrsh7th/vscode-langservers-extracted) | `vscode-html-language-server --stdio` | `VEX_HTML_LANGUAGE_SERVER` |
+| [CSS](https://github.com/hrsh7th/vscode-langservers-extracted) | `vscode-css-language-server --stdio` | `VEX_CSS_LANGUAGE_SERVER` |
+| [JSON, JSONC](https://github.com/hrsh7th/vscode-langservers-extracted) | `vscode-json-language-server --stdio` | `VEX_JSON_LANGUAGE_SERVER` |
+| [YAML](https://github.com/redhat-developer/yaml-language-server) | `yaml-language-server --stdio` | `VEX_YAML_LANGUAGE_SERVER` |
+| [TOML / Taplo](https://taplo.tamasfe.dev/cli/usage/language-server.html) | `taplo lsp stdio` | `VEX_TAPLO` |
 
 Overrides specify an executable path, with the listed arguments supplied
 separately; they are not shell command strings. The server commands follow the
@@ -18,6 +32,17 @@ separately; they are not shell command strings. The server commands follow the
 [TypeScript language server](https://github.com/typescript-language-server/typescript-language-server)
 documentation. TypeScript language server also needs TypeScript/tsserver installed;
 Bash diagnostics may require ShellCheck.
+
+Root discovery uses each language's project markers and stops at repository
+boundaries. Go uses the outermost `go.work`/`go.mod` within that boundary;
+Python uses the nearest `pyproject.toml`/`pyrightconfig.json` or other recognized
+project file. Other examples include `compile_commands.json`/`.clangd` for C/C++,
+`pom.xml`/Gradle files for Java, `Package.swift` for Swift, `Gemfile` for Ruby,
+and `composer.json` for PHP. Exact rules live in the shared
+[language registry](../crates/vex_syntax/src/language.rs).
+Servers still need their runtime/toolchain and project-specific setup described
+in their documentation. Executable overrides can point to wrapper scripts when
+additional arguments or setup are needed.
 
 Scratch buffers gain language services after saving to a recognized path or
 saving with a manually selected language. `:language NAME` changes both syntax

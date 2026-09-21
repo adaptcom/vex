@@ -11,9 +11,31 @@ downloads or external Tree-sitter installation.
 | Bash / POSIX shell | `.sh`, `.bash`, `.bashrc`, `.bash_profile`, `.profile`, `PKGBUILD`; `bash`, `sh`, `dash` shebangs | `bash`, `sh`, `shell` |
 | JavaScript / JSX | `.js`, `.mjs`, `.cjs`, `.jsx`; `node` shebangs | `javascript`, `js`, `jsx` |
 | TypeScript / TSX | `.ts`, `.mts`, `.cts`, `.tsx` | `typescript`, `ts`, `tsx` |
+| Python | `.py`, `.pyi`, `.pyw`, `SConstruct`; `python`, `python3`, `pypy` shebangs | `python`, `py` |
+| Go | `.go` | `go`, `golang` |
+| C | `.c`, `.h` | `c` |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx`, `.ipp`, `.tpp`, `.C`, `.H` | `cpp`, `c++`, `cxx` |
+| Java | `.java` | `java` |
+| C# | `.cs`, `.csx` | `c-sharp`, `csharp`, `cs`, `c#` |
+| Swift | `.swift`; `swift` shebangs | `swift` |
+| Ruby | `.rb`, `.rake`, `.gemspec`, `.ru`, `Gemfile`, `Rakefile`, `Brewfile`, `Podfile`; `ruby` shebangs | `ruby`, `rb` |
+| PHP | `.php`, `.phtml`; `php` shebangs | `php` |
+| Lua | `.lua`, `.luacheckrc`; `lua`, `luajit` shebangs | `lua` |
+| HTML | `.html`, `.htm` | `html`, `htm` |
+| CSS | `.css` | `css` |
+| JSON | `.json`, `.babelrc`, `.prettierrc`, `.eslintrc` | `json` |
+| JSON with comments | `.jsonc`, `tsconfig.json`, `jsconfig.json` | `jsonc`, `json-with-comments` |
+| YAML | `.yaml`, `.yml`, `.clangd`, `.clang-format`, `.clang-tidy` | `yaml`, `yml` |
+| TOML | `.toml`, `Cargo.lock`, `uv.lock`, `poetry.lock`, `Pipfile` | `toml` |
 
 Known paths take precedence over shebangs. Detection reads at most 256 characters
 of a shebang and supports `/usr/bin/env bash` and `/usr/bin/env -S bash -eu`.
+Versioned interpreter names such as `python3.13` and `lua5.4` also work.
+Explicit filenames take precedence over extensions, so `tsconfig.json` uses
+JSONC. Exact extension matches precede case-insensitive fallback: `.c` is C,
+`.C` is C++, and `README.MD` remains Markdown. Ambiguous `.h` headers default to
+C; use `:language cpp` for C++ headers. Names such as `tsconfig.build.json`
+use generic JSON detection; override them with `:language jsonc` as needed.
 It runs on open, Save As, and `:language auto`; editing a shebang does not
 continually change the active language. Bash syntax is not a dedicated Zsh or
 Fish grammar.
@@ -86,8 +108,9 @@ nested block does not make the indentation unit larger. A style must account for
 at least three quarters of the sample; sparse, conflicting, or tied evidence
 falls back to the language's defaults.
 
-Rust and plain text default to four spaces; Markdown, Bash/shell,
-JavaScript/JSX, and TypeScript/TSX default to two. Detected spaces set both the
+Rust, Python, C/C++, Java, C#, Swift, PHP, and plain text default to four
+spaces. Go defaults to literal tabs with four-column display stops. The other
+bundled languages default to two spaces. Detected spaces set both the
 indentation and tab display width. Literal tabs identify the style but cannot
 reveal a display width, so they retain the language's default tab stops.
 
@@ -113,6 +136,11 @@ including for the block command. Markdown toggles `<!-- -->` per selected line
 with `Space-c` or around selections with `Space-C`. Plain text defaults to `#`
 for lines and `/* */` for blocks. Rust recognizes existing `///` and `//!`
 comments as well as block documentation comments.
+Python, Ruby, YAML, and TOML use `#` for both comment commands. Go, C/C++, Java,
+C#, Swift, and PHP use `//` and `/* */`; PHP also recognizes existing `#`
+comments. Lua uses `--` and `--[[ ]]`. HTML uses `<!-- -->`; CSS uses `/* */`
+for both commands. JSON leaves both comment commands inactive; JSONC uses
+`//` and `/* */`. Plain-text buffers retain their generic fallbacks.
 
 Line comments share the minimum indentation of the selected nonblank lines;
 overlapping line selections are edited once. Block toggling skips whitespace
@@ -129,6 +157,10 @@ highlight cache. In the terminal, a persistent syntax worker owns this state,
 including grammar initialization and each grammar's bundled highlight queries.
 TypeScript combines the JavaScript base query with its TypeScript additions;
 TSX also includes JSX captures.
+C++ similarly combines the C query with the C++ additions. Older capture names
+from bundled queries (`module`, `method`, `parameter`, `field`, `delimiter`,
+and keyword aliases) map to the shared semantic styles. No custom language
+highlight queries are added.
 Queries and grammar configuration initialize once per process. Colors remain in
 the terminal layer; syntax returns semantic byte ranges such as keyword, string,
 comment, function, and type. Markdown adds heading, emphasis, strong emphasis,
@@ -231,6 +263,9 @@ configuration are not implemented yet. Bundled queries supply syntactic
 colors without symbol resolution. In incomplete code, Tree-sitter's error recovery
 can produce different trees depending on editing history; valid code is checked
 against a fresh parse, and node coordinates are checked for both cases.
+HTML script/style bodies and HTML inside PHP do not receive nested language
+highlighting. JSONC uses the JSON grammar's comment support; trailing commas
+rely on error recovery rather than a separate JSONC grammar.
 
 We use the grammars' bundled highlight queries. Their coverage varies: the Rust
 query misses several operators and has a broken uppercase-constant predicate;
@@ -240,6 +275,10 @@ The bundled Markdown queries do not capture strikethrough, and source Markdown
 uses one winning capture rather than composing nested emphasis attributes.
 These query improvements are deferred in [TODO.md](../TODO.md). Markdown popups
 already compose their prepared text attributes, including strikethrough.
+With the current capture precedence, Go's later generic identifier capture wins
+over function captures, and TOML's narrower bare-key capture wins over its
+enclosing property capture. Go names use the variable style and TOML bare keys
+use the type style.
 
 Source tests cover incremental edits and grouped history, batched/multi-cursor
 input, Unicode and line endings, chunk boundaries, nested and clipped captures,
@@ -270,9 +309,9 @@ To add another bundled language:
    as needed. The existing LSP transport and completion code need no
    language-specific branches.
 
-Two captures are deliberately not styled: `vex.inline` identifies Markdown inline
-regions, and `none` reserves fenced code for language injections. Ignoring `none`
-keeps fenced code in the enclosing literal style until injections are supported.
+Three captures are deliberately not styled: `vex.inline` identifies Markdown
+inline regions, `none` reserves fenced code for language injections, and `spell`
+is a spelling hint. Ignoring these hints preserves the enclosing text style.
 
 The registry is compiled into Vex. Loading languages or server settings from a
 user configuration file remains future work. These indentation settings control

@@ -1457,14 +1457,18 @@ mod tests {
     }
 
     #[test]
-    fn soft_tabs_at_multiple_carets_group_with_typing_and_repeat_across_languages() {
+    fn tabs_at_multiple_carets_group_with_typing_and_repeat_across_languages() {
         use crate::Language;
         use vex_core::{Selection, SelectionSet};
         for language in std::iter::once(None).chain(Language::ALL.iter().copied().map(Some)) {
             let source = "é\r\n界";
             let mut editor = Editor::new(Document::from(source));
             editor.set_language(language);
-            let width = editor.tab_width().get();
+            let indent = match editor.indentation().style {
+                crate::IndentStyle::Spaces(width) => " ".repeat(width.get()),
+                crate::IndentStyle::Tabs => "\t".into(),
+            };
+            let width = indent.len();
             editor
                 .set_selections(
                     SelectionSet::new(
@@ -1484,7 +1488,7 @@ mod tests {
                 Dispatch::Executed("insert_tab")
             );
             press(&mut keys, &mut editor, "x");
-            let expected = format!("{0}xé\r\n{0}x界", " ".repeat(width));
+            let expected = format!("{indent}xé\r\n{indent}x界");
             assert_eq!(editor.document().text(), expected.as_str());
             assert_eq!(
                 editor.selections().ranges(),

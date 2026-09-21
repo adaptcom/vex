@@ -238,6 +238,27 @@ mod tests {
     }
 
     #[test]
+    fn go_defaults_to_tabs_but_existing_spaces_take_precedence() {
+        let mut empty = Editor::new(Document::default());
+        empty.set_language(Some(Language::Go));
+        empty.execute("insert_mode", 1).unwrap();
+        empty.execute("insert_tab", 1).unwrap();
+        assert_eq!(empty.document().text(), "\t");
+        assert_eq!(empty.tab_width().get(), 4);
+
+        let source = sample("  ", "\n");
+        let mut existing = Editor::new(Document::from(source.as_str()));
+        existing.set_language(Some(Language::Go));
+        assert_eq!(
+            existing.indentation(),
+            Indentation::spaces(NonZeroUsize::new(2).unwrap())
+        );
+        existing.execute("insert_mode", 1).unwrap();
+        existing.execute("insert_tab", 1).unwrap();
+        assert_eq!(existing.document().text(), format!("  {source}").as_str());
+    }
+
+    #[test]
     fn reloads_refresh_detection_and_retain_explicit_buffer_overrides() {
         fn reload(editor: &mut Editor, text: &str) {
             let transaction = editor

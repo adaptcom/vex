@@ -132,7 +132,8 @@ selections, and measure operations that could affect input latency.
 
 - [ ] Revisit bundled Tree-sitter query coverage: Rust operators and its broken
   uppercase-constant predicate; JavaScript parameters and escapes; TypeScript
-  default-value/constructor classification; Markdown strikethrough. Keep using
+  default-value/constructor classification; Markdown strikethrough; Go generic
+  identifier precedence and TOML bare-key/property precedence. Keep using
   upstream queries for now; custom highlight queries are deferred.
 - [ ] Compose nested source-Markdown attributes (for example bold inside italic
   or headings). Source highlighting currently chooses one capture; prepared

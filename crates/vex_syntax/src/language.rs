@@ -105,6 +105,30 @@ const TYPESCRIPT_SERVER: Option<LanguageServer> = Some(LanguageServer {
     outermost_root: false,
 });
 
+const CLANGD_SERVER: Option<LanguageServer> = Some(LanguageServer {
+    command: "clangd",
+    arguments: &[],
+    environment: "VEX_CLANGD",
+    label: "Clangd",
+    root_markers: &[
+        ".clangd",
+        "compile_commands.json",
+        "compile_flags.txt",
+        "CMakeLists.txt",
+        "Makefile",
+    ],
+    outermost_root: false,
+});
+
+const JSON_SERVER: Option<LanguageServer> = Some(LanguageServer {
+    command: "vscode-json-language-server",
+    arguments: &["--stdio"],
+    environment: "VEX_JSON_LANGUAGE_SERVER",
+    label: "JSON",
+    root_markers: &["package.json"],
+    outermost_root: false,
+});
+
 const TWO_SPACES: Indentation = Indentation::spaces(NonZeroUsize::new(2).unwrap());
 const FOUR_SPACES: Indentation = Indentation::spaces(NonZeroUsize::new(4).unwrap());
 const C_COMMENTS: Comments = Comments {
@@ -187,6 +211,166 @@ languages! {
         grammar: || tree_sitter_typescript::LANGUAGE_TSX.into(),
         queries: &[tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY, tree_sitter_typescript::HIGHLIGHTS_QUERY], inline: None,
     },
+    Python {
+        name: "python", aliases: &["py"], extensions: &["py", "pyi", "pyw"],
+        filenames: &["SConstruct", "SConscript"], interpreters: &["python", "python2", "python3", "pypy", "pypy3"],
+        language_id: "python", indentation: FOUR_SPACES,
+        comments: Comments { line: &["#"], block: &[] },
+        server: Some(LanguageServer {
+            command: "pyright-langserver", arguments: &["--stdio"], environment: "VEX_PYRIGHT", label: "Pyright",
+            root_markers: &["pyproject.toml", "pyrightconfig.json", "setup.py", "setup.cfg", "Pipfile", "requirements.txt"], outermost_root: false,
+        }),
+        grammar: || tree_sitter_python::LANGUAGE.into(),
+        queries: &[tree_sitter_python::HIGHLIGHTS_QUERY], inline: None,
+    },
+    Go {
+        name: "go", aliases: &["golang"], extensions: &["go"], filenames: &[], interpreters: &[],
+        language_id: "go", indentation: Indentation { style: IndentStyle::Tabs, tab_width: NonZeroUsize::new(4).unwrap() },
+        comments: C_COMMENTS,
+        server: Some(LanguageServer {
+            command: "gopls", arguments: &[], environment: "VEX_GOPLS", label: "Go",
+            root_markers: &["go.work", "go.mod"], outermost_root: true,
+        }),
+        grammar: || tree_sitter_go::LANGUAGE.into(),
+        queries: &[tree_sitter_go::HIGHLIGHTS_QUERY], inline: None,
+    },
+    C {
+        name: "c", aliases: &[], extensions: &["c", "h"], filenames: &[], interpreters: &[],
+        language_id: "c", indentation: FOUR_SPACES, comments: C_COMMENTS,
+        server: CLANGD_SERVER,
+        grammar: || tree_sitter_c::LANGUAGE.into(),
+        queries: &[tree_sitter_c::HIGHLIGHT_QUERY], inline: None,
+    },
+    Cpp {
+        name: "cpp", aliases: &["c++", "cxx"], extensions: &["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "ipp", "tpp", "C", "H"],
+        filenames: &[], interpreters: &[], language_id: "cpp", indentation: FOUR_SPACES, comments: C_COMMENTS,
+        server: CLANGD_SERVER,
+        grammar: || tree_sitter_cpp::LANGUAGE.into(),
+        queries: &[tree_sitter_c::HIGHLIGHT_QUERY, tree_sitter_cpp::HIGHLIGHT_QUERY], inline: None,
+    },
+    Java {
+        name: "java", aliases: &[], extensions: &["java"], filenames: &[], interpreters: &[],
+        language_id: "java", indentation: FOUR_SPACES, comments: C_COMMENTS,
+        server: Some(LanguageServer {
+            command: "jdtls", arguments: &[], environment: "VEX_JDTLS", label: "Java",
+            root_markers: &["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "build.xml"], outermost_root: false,
+        }),
+        grammar: || tree_sitter_java::LANGUAGE.into(),
+        queries: &[tree_sitter_java::HIGHLIGHTS_QUERY], inline: None,
+    },
+    CSharp {
+        name: "c-sharp", aliases: &["csharp", "cs", "c#"], extensions: &["cs", "csx"], filenames: &[], interpreters: &[],
+        language_id: "csharp", indentation: FOUR_SPACES, comments: C_COMMENTS,
+        server: Some(LanguageServer {
+            command: "csharp-ls", arguments: &[], environment: "VEX_CSHARP_LS", label: "C#",
+            root_markers: &["global.json", "Directory.Build.props", "Directory.Build.targets", "nuget.config"], outermost_root: false,
+        }),
+        grammar: || tree_sitter_c_sharp::LANGUAGE.into(),
+        queries: &[tree_sitter_c_sharp::HIGHLIGHTS_QUERY], inline: None,
+    },
+    Swift {
+        name: "swift", aliases: &[], extensions: &["swift"], filenames: &[], interpreters: &["swift"],
+        language_id: "swift", indentation: FOUR_SPACES, comments: C_COMMENTS,
+        server: Some(LanguageServer {
+            command: "sourcekit-lsp", arguments: &[], environment: "VEX_SOURCEKIT_LSP", label: "Swift",
+            root_markers: &["Package.swift", ".sourcekit-lsp/config.json", "compile_commands.json"], outermost_root: false,
+        }),
+        grammar: || tree_sitter_swift::LANGUAGE.into(),
+        queries: &[tree_sitter_swift::HIGHLIGHTS_QUERY], inline: None,
+    },
+    Ruby {
+        name: "ruby", aliases: &["rb"], extensions: &["rb", "rake", "gemspec", "ru"],
+        filenames: &["Gemfile", "Rakefile", "Guardfile", "Vagrantfile", "Brewfile", "Podfile", "Fastfile", "Appfile"],
+        interpreters: &["ruby"], language_id: "ruby", indentation: TWO_SPACES,
+        comments: Comments { line: &["#"], block: &[] },
+        server: Some(LanguageServer {
+            command: "ruby-lsp", arguments: &[], environment: "VEX_RUBY_LSP", label: "Ruby",
+            root_markers: &["Gemfile", ".ruby-version"], outermost_root: false,
+        }),
+        grammar: || tree_sitter_ruby::LANGUAGE.into(),
+        queries: &[tree_sitter_ruby::HIGHLIGHTS_QUERY], inline: None,
+    },
+    Php {
+        name: "php", aliases: &[], extensions: &["php", "phtml", "php3", "php4", "php5", "php7", "php8", "phps"],
+        filenames: &[], interpreters: &["php"], language_id: "php", indentation: FOUR_SPACES,
+        comments: Comments { line: &["//", "#"], block: &[("/*", "*/"), ("/**", "*/")] },
+        server: Some(LanguageServer {
+            command: "intelephense", arguments: &["--stdio"], environment: "VEX_INTELEPHENSE", label: "PHP",
+            root_markers: &["composer.json", ".php-version"], outermost_root: false,
+        }),
+        grammar: || tree_sitter_php::LANGUAGE_PHP.into(),
+        queries: &[tree_sitter_php::HIGHLIGHTS_QUERY], inline: None,
+    },
+    Lua {
+        name: "lua", aliases: &[], extensions: &["lua"], filenames: &[".luacheckrc"],
+        interpreters: &["lua", "luajit"], language_id: "lua", indentation: TWO_SPACES,
+        comments: Comments { line: &["--"], block: &[("--[[", "]]")] },
+        server: Some(LanguageServer {
+            command: "lua-language-server", arguments: &[], environment: "VEX_LUA_LANGUAGE_SERVER", label: "Lua",
+            root_markers: &[".luarc.json", ".luarc.jsonc", ".luacheckrc", "stylua.toml", ".stylua.toml"], outermost_root: false,
+        }),
+        grammar: || tree_sitter_lua::LANGUAGE.into(),
+        queries: &[tree_sitter_lua::HIGHLIGHTS_QUERY], inline: None,
+    },
+    Html {
+        name: "html", aliases: &["htm"], extensions: &["html", "htm"], filenames: &[], interpreters: &[],
+        language_id: "html", indentation: TWO_SPACES,
+        comments: Comments { line: &[], block: &[("<!--", "-->")] },
+        server: Some(LanguageServer {
+            command: "vscode-html-language-server", arguments: &["--stdio"], environment: "VEX_HTML_LANGUAGE_SERVER", label: "HTML",
+            root_markers: &["package.json"], outermost_root: false,
+        }),
+        grammar: || tree_sitter_html::LANGUAGE.into(),
+        queries: &[tree_sitter_html::HIGHLIGHTS_QUERY], inline: None,
+    },
+    Css {
+        name: "css", aliases: &[], extensions: &["css"], filenames: &[], interpreters: &[],
+        language_id: "css", indentation: TWO_SPACES,
+        comments: Comments { line: &[], block: &[("/*", "*/")] },
+        server: Some(LanguageServer {
+            command: "vscode-css-language-server", arguments: &["--stdio"], environment: "VEX_CSS_LANGUAGE_SERVER", label: "CSS",
+            root_markers: &["package.json"], outermost_root: false,
+        }),
+        grammar: || tree_sitter_css::LANGUAGE.into(),
+        queries: &[tree_sitter_css::HIGHLIGHTS_QUERY], inline: None,
+    },
+    Json {
+        name: "json", aliases: &[], extensions: &["json"], filenames: &[".babelrc", ".prettierrc", ".eslintrc"], interpreters: &[],
+        language_id: "json", indentation: TWO_SPACES,
+        comments: Comments { line: &[], block: &[] }, server: JSON_SERVER,
+        grammar: || tree_sitter_json::LANGUAGE.into(),
+        queries: &[tree_sitter_json::HIGHLIGHTS_QUERY], inline: None,
+    },
+    Jsonc {
+        name: "jsonc", aliases: &["json-with-comments"], extensions: &["jsonc"],
+        filenames: &["tsconfig.json", "jsconfig.json"], interpreters: &[],
+        language_id: "jsonc", indentation: TWO_SPACES,
+        comments: C_COMMENTS, server: JSON_SERVER,
+        grammar: || tree_sitter_json::LANGUAGE.into(),
+        queries: &[tree_sitter_json::HIGHLIGHTS_QUERY], inline: None,
+    },
+    Yaml {
+        name: "yaml", aliases: &["yml"], extensions: &["yaml", "yml"], filenames: &[".clangd", ".clang-format", ".clang-tidy"], interpreters: &[],
+        language_id: "yaml", indentation: TWO_SPACES,
+        comments: Comments { line: &["#"], block: &[] },
+        server: Some(LanguageServer {
+            command: "yaml-language-server", arguments: &["--stdio"], environment: "VEX_YAML_LANGUAGE_SERVER", label: "YAML",
+            root_markers: &[".yamllint", ".yamllint.yaml", ".yamllint.yml"], outermost_root: false,
+        }),
+        grammar: || tree_sitter_yaml::LANGUAGE.into(),
+        queries: &[tree_sitter_yaml::HIGHLIGHTS_QUERY], inline: None,
+    },
+    Toml {
+        name: "toml", aliases: &[], extensions: &["toml"], filenames: &["Cargo.lock", "uv.lock", "Pipfile", "poetry.lock"], interpreters: &[],
+        language_id: "toml", indentation: TWO_SPACES,
+        comments: Comments { line: &["#"], block: &[] },
+        server: Some(LanguageServer {
+            command: "taplo", arguments: &["lsp", "stdio"], environment: "VEX_TAPLO", label: "TOML",
+            root_markers: &["taplo.toml", ".taplo.toml", "Cargo.toml", "pyproject.toml"], outermost_root: false,
+        }),
+        grammar: || tree_sitter_toml_ng::LANGUAGE.into(),
+        queries: &[tree_sitter_toml_ng::HIGHLIGHTS_QUERY], inline: None,
+    },
 }
 
 impl Language {
@@ -202,20 +386,41 @@ impl Language {
     }
 
     pub fn from_path(path: &Path) -> Option<Self> {
-        Self::ALL.iter().copied().find(|language| {
-            let definition = language.definition();
-            path.file_name().is_some_and(|name| {
-                definition
-                    .filenames
-                    .iter()
-                    .any(|candidate| name == *candidate)
-            }) || path.extension().is_some_and(|extension| {
-                definition
-                    .extensions
-                    .iter()
-                    .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        // Explicit names (tsconfig.json) precede generic extensions (.json).
+        // Exact extension matches preserve the C/C++ distinction of .c/.C;
+        // other case variants such as README.MD retain the usual fallback.
+        path.file_name()
+            .and_then(|name| {
+                Self::ALL.iter().copied().find(|language| {
+                    language
+                        .definition()
+                        .filenames
+                        .iter()
+                        .any(|candidate| name == *candidate)
+                })
             })
-        })
+            .or_else(|| {
+                let extension = path.extension()?;
+                Self::ALL
+                    .iter()
+                    .copied()
+                    .find(|language| {
+                        language
+                            .definition()
+                            .extensions
+                            .iter()
+                            .any(|candidate| extension == *candidate)
+                    })
+                    .or_else(|| {
+                        Self::ALL.iter().copied().find(|language| {
+                            language
+                                .definition()
+                                .extensions
+                                .iter()
+                                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+                        })
+                    })
+            })
     }
 
     /// Detect known paths first, then a bounded shebang prefix. This reads at
@@ -238,10 +443,17 @@ impl Language {
                     .rsplit('/')
                     .next()?;
             }
-            Self::ALL
-                .iter()
-                .copied()
-                .find(|language| language.definition().interpreters.contains(&interpreter))
+            Self::ALL.iter().copied().find(|language| {
+                language.definition().interpreters.iter().any(|candidate| {
+                    interpreter == *candidate
+                        || interpreter.strip_prefix(candidate).is_some_and(|suffix| {
+                            // Recognize python3.13 and lua5.4, not python-helper.
+                            !suffix.is_empty()
+                                && suffix.starts_with(|ch: char| ch.is_ascii_digit())
+                                && suffix.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+                        })
+                })
+            })
         })
     }
 
@@ -294,6 +506,37 @@ mod tests {
             ("view.tsx", Language::Tsx),
             ("view.jsx", Language::Jsx),
             ("module.cjs", Language::JavaScript),
+            ("main.py", Language::Python),
+            ("types.pyi", Language::Python),
+            ("SConstruct", Language::Python),
+            ("main.go", Language::Go),
+            ("main.c", Language::C),
+            ("header.h", Language::C),
+            ("main.C", Language::Cpp),
+            ("header.H", Language::Cpp),
+            ("main.cpp", Language::Cpp),
+            ("header.hpp", Language::Cpp),
+            ("Main.java", Language::Java),
+            ("Main.cs", Language::CSharp),
+            ("Package.swift", Language::Swift),
+            ("app.rb", Language::Ruby),
+            ("Gemfile", Language::Ruby),
+            ("Rakefile", Language::Ruby),
+            ("index.php", Language::Php),
+            ("config.lua", Language::Lua),
+            (".luacheckrc", Language::Lua),
+            ("index.html", Language::Html),
+            ("style.css", Language::Css),
+            ("package.json", Language::Json),
+            ("tsconfig.json", Language::Jsonc),
+            ("jsconfig.json", Language::Jsonc),
+            ("settings.jsonc", Language::Jsonc),
+            ("config.yaml", Language::Yaml),
+            (".clangd", Language::Yaml),
+            ("Cargo.toml", Language::Toml),
+            ("Cargo.lock", Language::Toml),
+            ("Pipfile", Language::Toml),
+            ("uv.lock", Language::Toml),
         ] {
             assert_eq!(
                 Language::from_path(Path::new(path)),
@@ -318,14 +561,69 @@ mod tests {
                 Some(Language::Bash)
             );
         }
-        assert_eq!(
-            Language::detect(None, &Rope::from_str("#!/usr/bin/env python bash")),
-            None
-        );
+        for (source, expected) in [
+            ("#!/usr/bin/python3.13\nprint('hi')", Language::Python),
+            ("#!/usr/bin/env -S python3 -u", Language::Python),
+            ("#!/usr/bin/env python bash", Language::Python),
+            ("#!/usr/bin/env ruby", Language::Ruby),
+            ("#!/usr/bin/env php", Language::Php),
+            ("#!/usr/bin/env swift", Language::Swift),
+            ("#!/usr/bin/lua5.4", Language::Lua),
+            ("#!/usr/bin/env luajit", Language::Lua),
+        ] {
+            assert_eq!(
+                Language::detect(None, &Rope::from_str(source)),
+                Some(expected),
+                "{source}"
+            );
+            assert_eq!(
+                Language::detect(Some(Path::new("source.rs")), &Rope::from_str(source)),
+                Some(Language::Rust)
+            );
+        }
+        for interpreter in ["python-helper", "python3-config", "pythonx", "perl"] {
+            assert_eq!(
+                Language::detect(
+                    None,
+                    &Rope::from_str(&format!("#!/usr/bin/env {interpreter}"))
+                ),
+                None
+            );
+        }
         assert_eq!(
             Language::detect(None, &Rope::from_str("ordinary text")),
             None
         );
         assert_eq!(Language::from_path(Path::new("notes.txt")), None);
+    }
+
+    #[test]
+    fn registry_names_and_file_rules_are_unambiguous() {
+        let mut names = std::collections::HashSet::new();
+        let mut extensions = std::collections::HashSet::new();
+        let mut filenames = std::collections::HashSet::new();
+        for language in Language::ALL {
+            let definition = language.definition();
+            for name in std::iter::once(&definition.name).chain(definition.aliases) {
+                assert!(
+                    names.insert(name.to_ascii_lowercase()),
+                    "duplicate language name: {name}"
+                );
+            }
+            for extension in definition.extensions {
+                assert!(
+                    extensions.insert(extension),
+                    "duplicate extension: {extension}"
+                );
+                assert_eq!(
+                    Language::from_path(Path::new(&format!("file.{extension}"))),
+                    Some(*language)
+                );
+            }
+            for filename in definition.filenames {
+                assert!(filenames.insert(filename), "duplicate filename: {filename}");
+                assert_eq!(Language::from_path(Path::new(filename)), Some(*language));
+            }
+        }
     }
 }

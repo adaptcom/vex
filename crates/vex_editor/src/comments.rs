@@ -34,6 +34,11 @@ pub(crate) fn toggle(editor: &mut Editor, block: bool) -> Result<(), Error> {
         .language()
         .map(|language| language.comments())
         .unwrap_or_default();
+    // A known language with no delimiters (JSON) does not support comments.
+    // Keep the generic fallbacks for buffers with no language selected.
+    if editor.language().is_some() && config.line.is_empty() && config.block.is_empty() {
+        return Ok(());
+    }
     if block {
         if config.block.is_empty() && !config.line.is_empty() {
             return line_comments(editor, config.line);
@@ -295,6 +300,21 @@ mod tests {
             (Some(Language::Bash), "# x", "# x"),
             (Some(Language::TypeScript), "// x", "/* x */"),
             (Some(Language::Markdown), "<!-- x -->", "<!-- x -->"),
+            (Some(Language::Python), "# x", "# x"),
+            (Some(Language::Go), "// x", "/* x */"),
+            (Some(Language::C), "// x", "/* x */"),
+            (Some(Language::Cpp), "// x", "/* x */"),
+            (Some(Language::Java), "// x", "/* x */"),
+            (Some(Language::CSharp), "// x", "/* x */"),
+            (Some(Language::Swift), "// x", "/* x */"),
+            (Some(Language::Ruby), "# x", "# x"),
+            (Some(Language::Php), "// x", "/* x */"),
+            (Some(Language::Lua), "-- x", "--[[ x ]]"),
+            (Some(Language::Html), "<!-- x -->", "<!-- x -->"),
+            (Some(Language::Css), "/* x */", "/* x */"),
+            (Some(Language::Jsonc), "// x", "/* x */"),
+            (Some(Language::Yaml), "# x", "# x"),
+            (Some(Language::Toml), "# x", "# x"),
             (None, "# x", "/* x */"),
         ] {
             for (command, expected) in [("toggle_comments", line), ("toggle_block_comments", block)]
@@ -305,6 +325,19 @@ mod tests {
                 editor.execute(command, 1).unwrap();
                 assert_eq!(editor.document.text(), "x");
             }
+        }
+    }
+
+    #[test]
+    fn json_comment_commands_leave_text_selections_and_history_unchanged() {
+        let mut editor = editor("{\"enabled\": true}", Some(Language::Json));
+        let original = editor.document().snapshot();
+        let selections = editor.selections().clone();
+        for command in ["toggle_comments", "toggle_block_comments"] {
+            editor.execute(command, 1).unwrap();
+            assert_eq!(editor.document().revision(), original.revision());
+            assert_eq!(editor.selections(), &selections);
+            assert_eq!(editor.document().undo_depth(), 0);
         }
     }
 

@@ -74,8 +74,12 @@ impl Highlight {
             let highlight = match name {
                 "type.builtin" => Self::BuiltinType,
                 "variable.builtin" => Self::BuiltinVariable,
-                "variable.parameter" => Self::Parameter,
-                "variable.other.member" | "property" => Self::Property,
+                "variable.parameter" | "parameter" => Self::Parameter,
+                "variable.other.member"
+                | "variable.member"
+                | "property"
+                | "field"
+                | "string.special.key" => Self::Property,
                 "string.escape" | "escape" => Self::Escape,
                 "text.title" | "markup.heading" => Self::Heading,
                 "text.emphasis" | "markup.italic" => Self::Emphasis,
@@ -84,17 +88,18 @@ impl Highlight {
                 "text.uri" | "markup.link.url" => Self::LinkUrl,
                 "text.reference" | "markup.link.text" => Self::Link,
                 "text.literal" | "markup.raw" => Self::Raw,
-                "keyword" => Self::Keyword,
+                "keyword" | "conditional" | "repeat" | "preproc" | "include" | "charset"
+                | "import" | "media" | "supports" | "keyframes" => Self::Keyword,
                 "type" => Self::Type,
                 "constructor" => Self::Constructor,
                 "tag" => Self::Tag,
-                "namespace" => Self::Namespace,
-                "function" => Self::Function,
+                "namespace" | "module" => Self::Namespace,
+                "function" | "method" => Self::Function,
                 "constant" | "number" | "boolean" => Self::Constant,
-                "string" => Self::String,
+                "string" | "character" => Self::String,
                 "comment" => Self::Comment,
                 "operator" => Self::Operator,
-                "punctuation" => Self::Punctuation,
+                "punctuation" | "delimiter" => Self::Punctuation,
                 "attribute" => Self::Attribute,
                 "variable" => Self::Variable,
                 "label" => Self::Label,
@@ -134,6 +139,7 @@ impl Configuration {
             // `vex.inline` is handled separately. Markdown's `none` capture
             // reserves fenced code for injections; until we support those,
             // keep the enclosing literal style instead of stripping its color.
+            // `spell` is a spell-checking hint, not a foreground override.
             .map(|name| Highlight::from_capture(name))
             .collect();
         let inline_capture = query.capture_index_for_name("vex.inline");
@@ -635,6 +641,15 @@ mod tests {
             ("variable.parameter.special", Highlight::Parameter),
             ("variable.builtin.special", Highlight::BuiltinVariable),
             ("variable.other.member", Highlight::Property),
+            ("variable.member", Highlight::Property),
+            ("field", Highlight::Property),
+            ("parameter", Highlight::Parameter),
+            ("module.builtin", Highlight::Namespace),
+            ("method.call", Highlight::Function),
+            ("character.special", Highlight::String),
+            ("delimiter", Highlight::Punctuation),
+            ("conditional", Highlight::Keyword),
+            ("media", Highlight::Keyword),
             ("type.builtin.special", Highlight::BuiltinType),
             ("string.escape.special", Highlight::Escape),
             ("function.method.builtin", Highlight::Function),
@@ -659,6 +674,7 @@ mod tests {
             "",
             "none",
             "vex.inline",
+            "spell",
         ] {
             assert_eq!(Highlight::from_capture(capture), None, "{capture}");
         }
@@ -672,7 +688,7 @@ mod tests {
                 for (name, highlight) in config.query.capture_names().iter().zip(&config.highlights)
                 {
                     assert!(
-                        highlight.is_some() || matches!(*name, "none" | "vex.inline"),
+                        highlight.is_some() || matches!(*name, "none" | "vex.inline" | "spell"),
                         "{language:?}: unmapped capture {name}"
                     );
                 }
@@ -774,7 +790,177 @@ mod tests {
                     ("echo", Raw),
                 ],
             ),
+            (
+                Language::Python,
+                "# comment\ndef greet(name):\n    return \"hello\", 42\n",
+                &[
+                    ("# comment", Comment),
+                    ("def", Keyword),
+                    ("greet", Function),
+                    ("hello", String),
+                    ("42", Constant),
+                ],
+            ),
+            (
+                Language::Go,
+                "package main\n// comment\nfunc greet() string { return \"hello\" }\n",
+                &[
+                    ("package", Keyword),
+                    ("// comment", Comment),
+                    // The bundled query's later identifier capture wins.
+                    ("greet", Variable),
+                    ("hello", String),
+                ],
+            ),
+            (
+                Language::C,
+                "// comment\nint main(void) { return 42; }\n",
+                &[
+                    ("// comment", Comment),
+                    ("int", Type),
+                    ("main", Function),
+                    ("return", Keyword),
+                    ("42", Constant),
+                ],
+            ),
+            (
+                Language::Cpp,
+                "// comment\nclass Example { public: int run() { return 42; } };\n",
+                &[
+                    ("// comment", Comment),
+                    ("class", Keyword),
+                    ("Example", Type),
+                    ("run", Function),
+                    ("42", Constant),
+                ],
+            ),
+            (
+                Language::Java,
+                "// comment\nclass Example { String greet() { return \"hello\"; } }\n",
+                &[
+                    ("// comment", Comment),
+                    ("class", Keyword),
+                    ("Example", Type),
+                    ("greet", Function),
+                    ("hello", String),
+                ],
+            ),
+            (
+                Language::CSharp,
+                "// comment\nnamespace Demo { class Example { int Run() { return 42; } } }\n",
+                &[
+                    ("// comment", Comment),
+                    ("namespace", Keyword),
+                    ("Demo", Namespace),
+                    ("Run", Function),
+                    ("42", Constant),
+                ],
+            ),
+            (
+                Language::Swift,
+                "// comment\nfunc greet() -> String { return \"hello\" }\n",
+                &[
+                    ("// comment", Comment),
+                    ("func", Keyword),
+                    ("greet", Function),
+                    ("String", Type),
+                    ("hello", String),
+                ],
+            ),
+            (
+                Language::Ruby,
+                "# comment\ndef greet(name)\n  \"hello\"\nend\n",
+                &[
+                    ("# comment", Comment),
+                    ("def", Keyword),
+                    ("greet", Function),
+                    ("hello", String),
+                ],
+            ),
+            (
+                Language::Php,
+                "<?php\n// comment\nfunction greet() { return \"hello\"; }\n",
+                &[
+                    ("// comment", Comment),
+                    ("function", Keyword),
+                    ("greet", Function),
+                    ("hello", String),
+                ],
+            ),
+            (
+                Language::Lua,
+                "-- comment\nlocal function greet(name)\n  return \"hello\", 42\nend\n",
+                &[
+                    ("-- comment", Comment),
+                    ("function", Keyword),
+                    ("greet", Function),
+                    ("name", Parameter),
+                    ("hello", String),
+                    ("42", Constant),
+                ],
+            ),
+            (
+                Language::Html,
+                "<!-- comment -->\n<div title=\"hello\">text</div>\n",
+                &[
+                    ("<!-- comment -->", Comment),
+                    ("div", Tag),
+                    ("title", Attribute),
+                    ("hello", String),
+                ],
+            ),
+            (
+                Language::Css,
+                "/* comment */\n@media screen { body { color: red; width: 42px; } }\n",
+                &[
+                    ("/* comment */", Comment),
+                    ("@media", Keyword),
+                    ("body", Tag),
+                    ("color", Property),
+                    ("42", Constant),
+                ],
+            ),
+            (
+                Language::Json,
+                "{\"message\": \"hello\", \"count\": 42, \"enabled\": true}\n",
+                &[("hello", String), ("42", Constant), ("true", Constant)],
+            ),
+            (
+                Language::Jsonc,
+                "{\n// comment\n\"message\": \"hello\", \"count\": 42\n}\n",
+                &[("// comment", Comment), ("hello", String), ("42", Constant)],
+            ),
+            (
+                Language::Yaml,
+                "# comment\nmessage: \"hello\"\ncount: 42\nenabled: true\n",
+                &[
+                    ("# comment", Comment),
+                    ("message", Property),
+                    ("hello", String),
+                    ("42", Constant),
+                    ("true", Constant),
+                ],
+            ),
+            (
+                Language::Toml,
+                "# comment\nmessage = \"hello\"\ncount = 42\nenabled = true\n",
+                &[
+                    ("# comment", Comment),
+                    // Bare keys are narrower than the pair's property capture.
+                    ("message", Type),
+                    ("hello", String),
+                    ("42", Constant),
+                    ("true", Constant),
+                ],
+            ),
         ];
+        for language in Language::ALL {
+            assert!(
+                cases.iter().any(|(tested, _, _)| tested == language),
+                "missing syntax fixture: {language:?}"
+            );
+        }
+        let mut mismatches = Vec::new();
         for &(language, source, expected) in cases {
             let mut document = Document::from(source);
             let mut syntax = Syntax::new(language, &document);
@@ -786,11 +972,12 @@ mod tests {
                 "{language:?}"
             );
             for &(token, highlight) in expected {
-                assert_eq!(
-                    at(&spans, source.find(token).unwrap()),
-                    Some(highlight),
-                    "{language:?}: {token}"
-                );
+                let actual = at(&spans, source.find(token).unwrap());
+                if actual != Some(highlight) {
+                    mismatches.push(format!(
+                        "{language:?}: {token}: expected {highlight:?}, got {actual:?}"
+                    ));
+                }
             }
             let mut selections = SelectionSet::single(Selection::cursor(CharOffset(0)));
             let transaction = document.replace_selections(&selections, "\n").unwrap();
@@ -802,6 +989,7 @@ mod tests {
             assert_eq!(updated, all(&mut fresh, &document), "{language:?}");
             assert_eq!(syntax.incremental_parses, 1);
         }
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
     }
 
     #[test]
