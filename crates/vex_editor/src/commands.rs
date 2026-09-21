@@ -1344,6 +1344,12 @@ commands! {
     /// Join lines within each selection; a single-line selection joins the next line. Remove the line break and following indentation, adding a separating space if needed. Shared joins happen once; counts are ignored, selections and normal/select mode are retained. Comment prefixes are kept literally.
     fn join_selections(ctx) { crate::editing::join(ctx.editor) }
 
+    /// Hard-wrap each selection independently at 80 display columns, or the explicit count. Use :reflow [width] in the command prompt. Preserves blank lines, indentation, language line-comment prefixes, selection direction, and mode in one undo step. Long words remain intact; uses the buffer's line ending for new breaks. Select a paragraph with mip first; no default keybinding.
+    fn reflow(ctx) {
+        let width = if ctx.count_given { ctx.count } else { NonZeroUsize::new(80).unwrap() };
+        crate::reflow::reflow(ctx.editor, width)
+    }
+
     /// Add a counted number of empty lines above each selection without entering insert mode. Shared insertion points are handled once; uses the buffer's line ending and retains selections on the original text in one undo step.
     fn add_newline_above(ctx) { crate::editing::add_newlines(ctx, false) }
 

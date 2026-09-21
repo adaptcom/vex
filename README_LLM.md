@@ -33,6 +33,8 @@ Everyday edits include `I`/`A` for insertion at line edges, `r<char>` to replace
 selected characters, `>`/`<` for buffer indentation, `J` to join
 lines, and `[Space`/`]Space` to add blank lines. See the
 [editing controls](docs/terminal.md#controls) for selection and count behavior.
+Select a paragraph with `mip` and use `:reflow [width]` to hard-wrap it at
+80 display columns by default. See [text reflow](docs/reflow.md).
 Use `"ay` to copy into a named register, `"ap` to paste it, and Ctrl-r `a` to
 insert it while typing or editing a prompt. See [registers](docs/registers.md).
 

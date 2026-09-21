@@ -837,6 +837,20 @@ commands! {
         app.editor.execute("format_document", 1).map_err(io::Error::other)
     }
 
+    /// Hard-wrap each selection at WIDTH display columns (default 80). Select a paragraph with mip first. Preserves blank lines, indentation, language line-comment prefixes, and the buffer's line ending; long words remain intact. All selections share one undo step. WIDTH must be positive; does not accept !.
+    fn reflow_text(app, argument, force) ["reflow"] {
+        if force { return Err(io::Error::other("reflow does not accept !")); }
+        let width = if argument.is_empty() {
+            0
+        } else {
+            argument.parse::<std::num::NonZeroUsize>()
+                .map_err(|_| io::Error::other("reflow expects one positive integer width"))?.get()
+        };
+        app.editor.execute("reflow", width).map_err(io::Error::other)?;
+        app.viewport.resume_following();
+        Ok(())
+    }
+
     /// Split vertically, optionally opening PATH in the new right-hand window.
     fn vertical_split(app, argument, force) ["vsplit", "vs"] complete Path {
         if force { return Err(io::Error::other("vsplit does not accept !")); }
@@ -973,6 +987,63 @@ mod tests {
         frame.reset(app.size.0, app.size.1).unwrap();
         app.paint(&mut frame).unwrap();
         frame
+    }
+
+    #[test]
+    fn reflow_prompt_wraps_a_selected_paragraph_and_undo_restores_it() {
+        let source = "one two three four five\n\nleave this paragraph alone\n";
+        let mut app = App::from_document(Document::from(source), (80, 12));
+        press(&mut app, "mip");
+        let before = app.editor.selections().clone();
+        press(&mut app, ":reflow 10");
+        key(&mut app, KeyCode::Enter);
+        assert!(!app.error, "{}", app.message);
+        assert_eq!(
+            app.editor.document().text(),
+            "one two\nthree four\nfive\n\nleave this paragraph alone\n"
+        );
+        assert!(app.is_dirty());
+        draw(&mut app);
+        press(&mut app, "u");
+        assert_eq!(app.editor.document().text(), source);
+        assert_eq!(app.editor.selections(), &before);
+        assert!(!app.is_dirty());
+        press(&mut app, "U");
+        assert_eq!(
+            app.editor.document().text(),
+            "one two\nthree four\nfive\n\nleave this paragraph alone\n"
+        );
+    }
+
+    #[test]
+    fn reflow_default_help_and_invalid_widths_use_the_command_registry() {
+        let source = "word ".repeat(19) + "word";
+        let mut app = App::from_document(Document::from(source.as_str()), (80, 12));
+        press(&mut app, "%");
+        let selections = app.editor.selections().clone();
+        for command in [
+            "reflow 0",
+            "reflow -1",
+            "reflow word",
+            "reflow 12 20",
+            "reflow 1.5",
+            "reflow 999999999999999999999999999999",
+            "reflow!",
+            "reflow! 10",
+        ] {
+            assert!(app.execute(command).is_err(), "{command}");
+            assert_eq!(app.editor.document().text(), source.as_str());
+            assert_eq!(app.editor.selections(), &selections);
+            assert_eq!(app.editor.document().undo_depth(), 0);
+        }
+        app.execute("help reflow").unwrap();
+        assert!(app.message.contains("80"));
+        assert!(app.message.contains(":reflow [width]"));
+        app.execute("reflow").unwrap();
+        assert_eq!(
+            app.editor.document().text(),
+            format!("{}\n{}", &source[..79], &source[80..]).as_str()
+        );
     }
 
     #[test]

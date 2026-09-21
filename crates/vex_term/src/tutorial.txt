@@ -259,6 +259,11 @@ It removes the newline and following indentation and adds a space when
 needed. From the first row, J should produce first plank second plank.
 Select all three rows with 3x and press J to join them together.
 
+To wrap prose at a fixed width, select a paragraph with mip and run :reflow.
+The default is 80 display columns; :reflow 72 chooses a different width.
+The text stays selected, and u undoes the entire reflow. Blank lines and
+indentation are preserved. Long words remain intact.
+
 [ followed by Space adds an empty line above; ] followed by Space adds
 one below. Both stay in normal mode. 2]Space adds two blank lines.
 Use o/O when you want to start typing on the newly opened line instead.

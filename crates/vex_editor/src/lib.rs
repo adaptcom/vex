@@ -29,6 +29,7 @@ mod indentation;
 mod keymap;
 pub mod paths;
 mod prepared_selection;
+mod reflow;
 mod register;
 mod repeat;
 mod search;

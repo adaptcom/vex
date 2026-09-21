@@ -80,6 +80,7 @@ and calls that existing dispatcher.
 | Space-a | Open the code-action menu; Enter applies, Escape cancels |
 | `=` | Format one selection using the language server |
 | `:format`, `:fmt` | Format the active file; changes remain unsaved and undoable |
+| `:reflow [width]` | Hard-wrap selections at 80 display columns, or the supplied width |
 | Ctrl-w, Space-w | Enter [window mode](windows.md) to split, focus, swap, and close panes |
 | Escape | Cancel a prefix/picker/prompt; otherwise enter normal mode |
 | `:` in normal/select mode | Open the command prompt |
@@ -305,6 +306,7 @@ on matches, `K` filters selections, and `*` remembers selected text for search. 
 | `:write [PATH]`, `:w [PATH]` | Save to the current or supplied path |
 | `:write! [PATH]`, `:w! [PATH]` | Allow replacing an existing destination or external edits |
 | `:reload[!]` | Reload the current file as one undo step; `!` accepts disk contents over unsaved edits |
+| `:reflow [width]` | Reflow selected text; defaults to 80 columns; `mip` selects a paragraph |
 | `:quit`, `:q` | Close the current pane; protect the last view of unsaved text |
 | `:quit!`, `:q!` | Close the current pane, allowing unsaved text to be discarded |
 | `:vsplit [PATH]`, `:hsplit [PATH]` | Split and optionally open a different file |

@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 vex_core.workspace = true
 vex_syntax.workspace = true
+unicode-segmentation.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
