@@ -76,6 +76,11 @@ Press Space-f for the fuzzy project file picker. Named key groups (`g`, `m`, Spa
 `[`, `]`, Ctrl-w) show available bindings. Discovery, matching, and previews run in the
 background using Vex's own implementations. See [key groups and pickers](docs/pickers.md).
 
+Space-e or `:browse [PATH]` browses one directory at a time in the same picker.
+Enter opens files or enters directories; Backspace with an empty query goes up.
+The preview shows file contents or directory children, and navigation remembers
+the query and position in visited directories.
+
 Space-b picks from loaded buffers, including unsaved and hidden files. Use `ga`
 for the previous buffer, `gn`/`gp` to cycle, `gm` for the last modified buffer,
 and `gf` to open a selected path. Switching preserves text, undo, and each pane's

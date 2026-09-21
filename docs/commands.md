@@ -42,6 +42,7 @@ Generated from command Rustdoc and the default keymap.
 | `goto_file_vsplit` | Normal: `<Space>wF`, Normal: `<C-w>F`, Select: `<Space>wF`, Select: `<C-w>F` | Open filenames in the selections in vertical splits. Paths are relative to the current file. |
 | `completion` | Insert: `<C-x>` | Request language-server completion at the insertion cursor. |
 | `file_picker` | Normal: `<Space>f`, Select: `<Space>f` | Open a fuzzy file picker at the current project root. |
+| `file_browser` | Normal: `<Space>e`, Select: `<Space>e` | Browse files   Browse the current file's directory, or the working directory for scratch buffers. Type to filter entries; Enter opens files or enters directories, and Backspace with an empty query goes to the parent. Previews show file contents or directory children. |
 | `buffer_picker` | Normal: `<Space>b`, Select: `<Space>b` | Open a fuzzy picker of loaded buffers, including hidden and unsaved buffers. |
 | `jumplist_picker` | Normal: `<Space>j`, Select: `<Space>j` | Open a fuzzy picker of saved jump locations from every pane, restoring the full selection on acceptance. |
 | `last_picker` | Normal: `<Space>'`, Select: `<Space>'` | Reopen the last picker with its query, selected result, and scroll position. |

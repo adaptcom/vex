@@ -287,6 +287,7 @@ impl Default for Keymap {
                 (vec![Char('m'), Char('d')], "surround_delete"),
                 (vec![Char('m'), Char('r')], "surround_replace"),
                 (vec![Char(' '), Char('f')], "file_picker"),
+                (vec![Char(' '), Char('e')], "file_browser"),
                 (vec![Char(' '), Char('b')], "buffer_picker"),
                 (vec![Char(' '), Char('j')], "jumplist_picker"),
                 (vec![Char(' '), Char('\'')], "last_picker"),

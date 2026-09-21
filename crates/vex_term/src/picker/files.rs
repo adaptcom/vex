@@ -141,37 +141,7 @@ impl Index {
     }
 
     fn rules(&mut self, path: &Path, parent: Option<Arc<Rules>>, repository: bool) -> Arc<Rules> {
-        let mut contents = String::new();
-        // Repository exclusions have lower precedence than .gitignore; .ignore
-        // lets projects configure this picker without altering Git's policy.
-        let names: &[&str] = if repository {
-            &[".git/info/exclude", ".gitignore", ".ignore"]
-        } else {
-            &[".gitignore", ".ignore"]
-        };
-        for name in names {
-            let file = path.join(name);
-            // Never open a symlink or special file as an ignore configuration.
-            if !fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
-                continue;
-            }
-            let result = File::open(&file).and_then(|file| {
-                let mut bytes = Vec::new();
-                file.take((64 << 10) + 1).read_to_end(&mut bytes)?;
-                if bytes.len() > 64 << 10 {
-                    return Err(io::Error::other("ignore file exceeds 64 KiB"));
-                }
-                String::from_utf8(bytes).map_err(io::Error::other)
-            });
-            match result {
-                Ok(text) => {
-                    contents.push_str(&text);
-                    contents.push('\n');
-                }
-                Err(error) => self.notice = format!("{}: {error}", crate::paths::display(&file)),
-            }
-        }
-        Arc::new(Rules::new(path.into(), &contents, parent))
+        super::ignore::Rules::load(path, parent, repository, &mut self.notice)
     }
 
     pub fn complete(&self) -> bool {
@@ -501,7 +471,11 @@ fn snapshot_preview(
 }
 
 fn preview(path: &Path, cancellation: &Cancellation) -> io::Result<Preview> {
-    if !fs::symlink_metadata(path)?.is_file() {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir() {
+        return super::browser::preview(path, cancellation);
+    }
+    if !metadata.is_file() {
         return Err(io::Error::other("not a regular file"));
     }
     let mut file = File::open(path)?.take(PREVIEW_BYTES as u64 + 1);
@@ -729,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_is_bounded_handles_binary_and_split_utf8_and_never_reads_directories() {
+    fn preview_is_bounded_handles_binary_split_utf8_and_directory_listings() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("file");
         let cancel = Cancellation::default();
@@ -744,7 +718,7 @@ mod tests {
                 .text
                 .ends_with("preview truncated")
         );
-        assert!(preview(directory.path(), &cancel).is_err());
+        assert_eq!(preview(directory.path(), &cancel).unwrap().text, "file\n");
     }
 
     #[test]

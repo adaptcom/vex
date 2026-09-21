@@ -17,6 +17,7 @@ use std::{io, path::PathBuf, sync::Arc, time::Instant};
 use unicode_width::UnicodeWidthStr;
 use vex_editor::background::Cancellation;
 
+mod browser;
 mod diagnostics;
 mod jumps;
 mod locations;
@@ -26,6 +27,7 @@ mod symbols;
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Target {
     File(PathBuf),
+    Directory(PathBuf),
     Symbol(vex_lsp::Location),
     Location(Arc<vex_lsp::Destination>),
     Diagnostic(crate::picker::diagnostics::Hit),
@@ -36,6 +38,7 @@ enum Target {
 
 enum Source {
     Files(Option<PathBuf>, PathBuf),
+    Browser(browser::Source),
     Symbols(symbols::Source),
     Locations(locations::Source),
     Diagnostics(diagnostics::Source),
@@ -69,6 +72,7 @@ pub(super) struct State {
     last: Option<Active>,
     next_session: u64,
     file_job: Option<FileJob>,
+    browser_job: Option<crate::picker::browser::Job>,
     preview_job: Option<PreviewJob>,
     symbol_job: Option<SymbolJob>,
     location_job: Option<crate::picker::locations::Job>,
@@ -177,6 +181,16 @@ impl App {
         active.preview_target = None;
         active.accept_pending = false;
         self.picker.preview_job = None;
+        if let Source::Browser(source) = &active.source {
+            self.picker.browser_job = Some(crate::picker::browser::Job {
+                session: active.session,
+                revision: active.revision,
+                directory: source.directory.clone(),
+                query: active.view.query.text().into(),
+                cancellation: active.cancellation.clone(),
+            });
+            return;
+        }
         if let Source::Diagnostics(source) = &mut active.source {
             source.generation = self.language.diagnostic_catalog.generation();
             active.view.pending = true;
@@ -274,7 +288,7 @@ impl App {
                 Target::Buffer(id) => {
                     return self.buffer_preview(id, session, request, cancellation);
                 }
-                Target::File(path) => (path, None),
+                Target::File(path) | Target::Directory(path) => (path, None),
                 Target::Symbol(location) => (location.path, Some(location.position)),
                 Target::Location(location) => (location.path.clone(), Some(location.range.start)),
                 Target::Diagnostic(hit) => ((*hit.path).clone(), Some(hit.range.start)),
@@ -330,7 +344,10 @@ impl App {
             Some(Target::Location(location)) => self
                 .snapshot_for_path(&location.path)
                 .is_some_and(|snapshot| snapshot.id() == document),
-            Some(Target::Diagnostic(_) | Target::Search(_) | Target::Jump(_)) | None => false,
+            Some(
+                Target::Directory(_) | Target::Diagnostic(_) | Target::Search(_) | Target::Jump(_),
+            )
+            | None => false,
         };
         if changed {
             self.picker.active.as_mut().unwrap().preview_target = None;
@@ -367,6 +384,7 @@ impl App {
             self.picker.last = Some(active);
         }
         self.picker.preview_job = None;
+        self.picker.browser_job = None;
         self.picker.symbol_job = None;
         self.picker.location_job = None;
         self.picker.diagnostic_job = None;
@@ -531,6 +549,7 @@ impl App {
                 Err(error) => self.fail(error),
             },
             Action::Cancel => self.close_picker(),
+            Action::Parent => self.browser_parent(),
             Action::Query => self.submit_picker_query(),
             Action::Selection => self.request_picker_preview(),
             Action::Accept => {
@@ -628,6 +647,10 @@ impl App {
             return;
         };
         let result = match target {
+            Target::Directory(path) => {
+                self.browse_directory(path);
+                return;
+            }
             Target::Diagnostic(hit) => {
                 self.accept_diagnostic(hit);
                 return;

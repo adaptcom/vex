@@ -1,6 +1,7 @@
 //! Reusable picker presentation and selection state. Providers own discovery and
 //! matching; the view only receives bounded results and paints visible rows.
 
+pub(crate) mod browser;
 pub(crate) mod buffers;
 mod catalog;
 pub(crate) mod diagnostics;
@@ -91,6 +92,14 @@ pub(crate) enum Action {
     Selection,
     Accept,
     Cancel,
+    Parent,
+}
+
+/// Small navigation checkpoint; directory history need not retain result lists.
+pub(crate) struct Bookmark<T> {
+    query: Prompt,
+    selected: Option<Arc<Entry<T>>>,
+    top: usize,
 }
 
 pub(crate) struct Picker<T> {
@@ -106,6 +115,7 @@ pub(crate) struct Picker<T> {
     pub total: usize,
     pub title: String,
     pub noun: &'static str,
+    pub browse: bool,
     pub notice: String,
     pub preview: Preview,
     preview_title: String,
@@ -129,6 +139,7 @@ impl<T: Eq> Picker<T> {
             total: 0,
             title,
             noun: "files",
+            browse: false,
             notice: String::new(),
             preview: Preview::default(),
             preview_title: String::new(),
@@ -140,6 +151,29 @@ impl<T: Eq> Picker<T> {
 
     pub fn selected(&self) -> Option<&Arc<Entry<T>>> {
         self.items.get(self.selected).map(|item| &item.entry)
+    }
+
+    pub fn bookmark(&mut self) -> Bookmark<T> {
+        Bookmark {
+            query: std::mem::take(&mut self.query),
+            selected: self.restore.clone().or_else(|| self.selected().cloned()),
+            top: self.top,
+        }
+    }
+
+    pub fn restore_bookmark(&mut self, bookmark: Bookmark<T>) {
+        self.query = bookmark.query;
+        self.restore = bookmark.selected;
+        self.top = bookmark.top;
+        self.touched = true;
+    }
+
+    pub fn select_on_refresh(&mut self, value: T) {
+        self.restore = Some(Arc::new(Entry {
+            label: String::new(),
+            value,
+        }));
+        self.touched = true;
     }
 
     /// Retained rows remain drawable, but only current rows may be accepted.
@@ -247,6 +281,7 @@ impl<T: Eq> Picker<T> {
         match key {
             Key::Escape | Key::Ctrl('c') => return Action::Cancel,
             Key::Enter => return Action::Accept,
+            Key::Backspace if self.browse && self.query.text().is_empty() => return Action::Parent,
             Key::Down | Key::Ctrl('n') | Key::Tab => self.navigate(1),
             Key::Up | Key::Ctrl('p') | Key::BackTab => self.navigate(-1),
             Key::PageDown | Key::Ctrl('d') => self.navigate(page.max(1) as isize),
@@ -394,11 +429,15 @@ impl<T: Eq> Picker<T> {
             y,
             shape: CursorShape::Bar,
         });
-        self.top = self.top.min(self.selected);
-        if self.selected >= self.top + rows {
-            self.top = self.selected + 1 - rows;
+        // A restored directory has no rows until its worker responds. Loading
+        // frames must not discard the checkpoint's scroll position.
+        if !(self.pending && self.items.is_empty() && self.restore.is_some()) {
+            self.top = self.top.min(self.selected);
+            if self.selected >= self.top + rows {
+                self.top = self.selected + 1 - rows;
+            }
+            self.top = self.top.min(self.items.len().saturating_sub(rows));
         }
-        self.top = self.top.min(self.items.len().saturating_sub(rows));
         if self.items.is_empty() && !self.pending && self.notice.is_empty() {
             let message = format!("No matching {}", self.noun);
             label(frame, x + 1, y + 2, right - x - 1, &message, Style::Gutter);
@@ -433,9 +472,19 @@ impl<T: Eq> Picker<T> {
             } else {
                 format!("{count} matches · {} {}", self.total, self.noun)
             };
+            let controls = if self.browse {
+                "Enter open · BS parent"
+            } else {
+                "↑↓ move · Enter open"
+            };
+            let short_controls = if self.browse {
+                controls
+            } else {
+                "↑↓ · Enter open"
+            };
             let choices = [
-                format!("{counts} · ↑↓ move · Enter open"),
-                format!("{count} · ↑↓ · Enter open"),
+                format!("{counts} · {controls}"),
+                format!("{count} · {short_controls}"),
                 format!("{count} · Enter open"),
                 format!("{count} · Enter"),
                 count,
@@ -513,6 +562,46 @@ pub(crate) fn label(frame: &mut Frame, mut x: u16, y: u16, width: u16, text: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_checkpoint_survives_loading_frames_and_restores_the_selected_row() {
+        let items = || {
+            (0..40)
+                .map(|value| Item {
+                    entry: Arc::new(Entry {
+                        label: format!("entry{value:02}/"),
+                        value,
+                    }),
+                    matched: Vec::new(),
+                })
+                .collect()
+        };
+        let mut picker = Picker::new("Browse".into());
+        picker.browse = true;
+        picker.paste("entry");
+        picker.handle(Key::Left, 1);
+        picker.replace(items());
+        picker.pending = false;
+        picker.navigate(30);
+        let mut frame = Frame::default();
+        frame.reset(80, 20).unwrap();
+        picker.paint(&mut frame);
+        picker.navigate(-4); // Selection sits above the bottom of the page.
+        picker.paint(&mut frame);
+        let before = (picker.top, picker.selected);
+        assert!(before.0 > 0);
+        let mut returned = Picker::new("Browse".into());
+        returned.restore_bookmark(picker.bookmark());
+        returned.paint(&mut frame);
+        returned.paint(&mut frame);
+        returned.replace(items());
+        returned.pending = false;
+        returned.paint(&mut frame);
+        assert_eq!((returned.top, returned.selected), before);
+        assert_eq!(returned.query.text(), "entry");
+        assert_eq!(returned.query.cursor(), 4);
+        assert_eq!(returned.selected().unwrap().value, 26);
+    }
 
     #[test]
     fn growing_picker_fills_the_page_without_moving_selection_and_narrow_footer_keeps_controls() {

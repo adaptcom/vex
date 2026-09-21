@@ -204,6 +204,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             if let Some(job) = app.take_picker_job() {
                 runtime.submit_picker(job);
             }
+            if let Some(job) = app.take_browser_job() {
+                runtime.submit_browser(job);
+            }
             if let Some(job) = app.take_diagnostic_job() {
                 runtime.submit_diagnostics(job);
             }
@@ -277,6 +280,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
                 AppEvent::Background(BackgroundEvent::Syntax(result)) => {
                     redraw |= app.handle_syntax_results(result);
                 }
+                AppEvent::Background(BackgroundEvent::Browser(result)) => {
+                    redraw |= app.handle_browser_result(result);
+                }
                 AppEvent::Background(BackgroundEvent::Files(result)) => {
                     redraw |= app.handle_picker_result(result)
                 }
@@ -345,6 +351,9 @@ pub fn run(app: &mut App) -> io::Result<()> {
             }
             if let Some(job) = app.take_picker_job() {
                 runtime.submit_picker(job);
+            }
+            if let Some(job) = app.take_browser_job() {
+                runtime.submit_browser(job);
             }
             if let Some(job) = app.take_diagnostic_job() {
                 runtime.submit_diagnostics(job);

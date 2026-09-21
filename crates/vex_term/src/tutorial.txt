@@ -498,6 +498,7 @@ to return. Space b opens a picker of all loaded buffers, including this
 one and other unsaved buffers. Type tutorial to find this practice copy.
 
   Space f         pick a project file, with a preview
+  Space e         browse files and directories, with a preview
   Space b         pick a loaded buffer
   Space '         reopen the last picker, keeping its query and position
   ga              previous buffer in this pane
@@ -505,10 +506,16 @@ one and other unsaved buffers. Type tutorial to find this practice copy.
   gm              last other buffer modified in this pane
   gf              open the filename under the cursor or in selections
   :open PATH      open a path, retaining your other buffers
+  :browse [PATH]  browse a directory (defaults to the current file's directory)
   :w [PATH]       save; a scratch buffer needs a path
   :reload         reload a file; unsaved changes require :reload!
 
-File paths after :open/:w are literal, including spaces; do not add quotes
+In the browser, type to filter the current directory. Enter opens a file or
+enters a directory. Backspace with an empty query goes to the parent. The
+preview shows file contents or directory children. Escape cancels; Space '
+reopens the browser with its directory, query, and position intact.
+
+File paths after :open/:w/:browse are literal, including spaces; do not add quotes
 or expect shell/~ expansion. Displayed home paths may still use ~.
 Saved tutorial notes become an ordinary file; :tutorial then starts fresh.
 Clean visible files reload after external changes; dirty buffers stay put.

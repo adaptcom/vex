@@ -542,6 +542,7 @@ impl App {
                 Ok(())
             }
             Some(ApplicationAction::LastPicker) => self.reopen_last_picker(),
+            Some(ApplicationAction::FileBrowser) => self.open_browser(None),
             Some(ApplicationAction::GlobalSearch(register)) => self.open_workspace_search(register),
             Some(ApplicationAction::BufferPicker) => {
                 self.open_buffer_picker();
@@ -825,6 +826,12 @@ commands! {
         if force || argument.is_empty() { return Err(io::Error::other("open requires a path and does not accept !")); }
         app.open_window_from_picker(Path::new(argument))
     }
+    /// Browse PATH, or the current file's directory (working directory for scratch buffers). Type to filter; Enter opens a file or enters a directory. Backspace with an empty query goes to the parent. Previews show file contents or directory children. Does not accept !.
+    fn browse_files(app, argument, force) ["browse"] complete Path {
+        if force { return Err(io::Error::other("browse does not accept !")); }
+        app.open_browser((!argument.is_empty()).then(|| Path::new(argument)))
+    }
+
     /// Reload the current file from disk as one undo step. Unsaved edits require :reload!; failed reads keep the buffer intact.
     fn reload_file(app, argument, force) ["reload"] {
         if !argument.is_empty() { return Err(io::Error::other("reload takes no arguments")); }

@@ -20,7 +20,7 @@ compatibility guarantee.
 ## Using the picker
 
 Space-f or `:file_picker` opens a fuzzy file picker. Space-' (`:last_picker`)
-reopens the most recently closed file, buffer, jump, symbol, or search picker with its query,
+reopens the most recently closed file, directory browser, buffer, jump, symbol, or search picker with its query,
 caret, selected result, and scroll position. Accepting a result and cancelling
 both retain the picker. Only one previous picker is retained, with its bounded
 result list and preview; the full file index is released on the worker.
@@ -100,6 +100,40 @@ Opening another file retains the previous buffer, including unsaved edits and
 undo history. Successful opens add the origin to the existing Ctrl-o jump list.
 Loaded files reuse their buffers even when no pane displays them; an error leaves
 the picker open.
+
+## Directory browser
+
+Space-e (`:browse`, or the `file_browser` editor command) opens the same two-panel
+picker at the current file's directory, selecting that file when visible. Scratch buffers
+start in the working directory. `:browse PATH` opens a specific directory; paths
+are literal, relative to the working directory, and may contain spaces. The
+command supports path completion and rejects `!`.
+
+The left panel lists immediate children, with directories first and a trailing
+`/`. Typing fuzzy-filters those entries; it does not search descendants. The right
+panel previews the selected file's contents, including unsaved text in loaded
+buffers, or lists the selected directory's immediate children. Files retain the
+existing syntax highlighting. Narrow terminals show only the left panel.
+
+Enter enters a directory without closing the picker, or opens a file in the
+focused editor pane and closes the picker. Backspace edits the query; when it is
+already empty, Backspace goes to the parent directory. At the filesystem root
+it does nothing. The usual arrow/Ctrl-n/Ctrl-p navigation and Escape/Ctrl-c
+cancellation work. Returning to a visited directory restores its query, caret,
+selected entry, and scroll position; up to 64 directory checkpoints are retained.
+Space-' reopens the browser at its last directory with that state intact.
+
+Listings and previews use the same ignore-file rules as file discovery and
+exclude dot-prefixed entries, symlinks, and special files. Directory reads,
+path resolution, filtering, and previews run on the existing picker workers.
+Query edits reuse the current listing; navigating away and back or reopening
+the browser refreshes it. Errors remain visible in the picker without changing
+the editor buffer. Pending Enter waits for current results; obsolete listings
+and previews cannot replace results after navigation or cancellation.
+
+Each directory scan is bounded to 200,000 entries and 64 MiB of catalog data;
+the shared fuzzy ranker displays at most 512 matches. Directory previews show
+at most 200 entries / 64 KiB. Limit notices are displayed in the picker.
 
 ## Buffer picker
 
@@ -293,11 +327,14 @@ cargo test --workspace --locked
 cargo test -p vex_term --locked project_ignore_results_agree_with_git -- --ignored
 cargo build --release -p vex_term --locked
 python3 tools/picker_smoke.py
+python3 tools/browser_smoke.py
 python3 tools/workspace_search_smoke.py
 ```
 
-The PTY check covers hints, Unicode queries, floating borders, highlighted
+The PTY checks cover hints, Unicode queries, floating borders, highlighted
 previews, resizing, cancellation, early Enter followed by edit/save, jump-back,
 unsaved buffers, and terminal cleanup. The workspace search check also covers
 idle debounce expiry, regex errors, matching-line selection, retained searches,
 and early acceptance before queued edits.
+The browser check covers directory previews, descent/parent navigation, restored
+filters, paths with spaces, missing directories, and queued navigation/editing.

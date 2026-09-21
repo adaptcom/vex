@@ -734,6 +734,15 @@ commands! {
         Ok(())
     }
 
+    /// Browse files
+    ///
+    /// Browse the current file's directory, or the working directory for scratch buffers. Type to filter entries; Enter opens files or enters directories, and Backspace with an empty query goes to the parent. Previews show file contents or directory children.
+    fn file_browser(ctx) {
+        ctx.editor.finish_undo_group();
+        ctx.editor.request_application_action(crate::ApplicationAction::FileBrowser);
+        Ok(())
+    }
+
     /// Switch buffer
     ///
     /// Open a fuzzy picker of loaded buffers, including hidden and unsaved buffers.

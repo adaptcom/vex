@@ -3,6 +3,8 @@
 //! be re-included. No Git process or third-party glob engine is involved.
 
 use std::{
+    fs::{self, File},
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -278,6 +280,46 @@ impl Rules {
             Some(parent) => parent.check(path, directory, scratch, cancellation),
             None => Some(false),
         }
+    }
+
+    /// Read one directory's bounded ignore files, sharing the discovery policy.
+    pub(super) fn load(
+        path: &Path,
+        parent: Option<Arc<Rules>>,
+        repository: bool,
+        notice: &mut String,
+    ) -> Arc<Rules> {
+        let mut contents = String::new();
+        // Repository exclusions have lower precedence than .gitignore; .ignore
+        // lets projects configure this picker without altering Git's policy.
+        let names: &[&str] = if repository {
+            &[".git/info/exclude", ".gitignore", ".ignore"]
+        } else {
+            &[".gitignore", ".ignore"]
+        };
+        for name in names {
+            let file = path.join(name);
+            // Never open a symlink or special file as an ignore configuration.
+            if !fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+                continue;
+            }
+            let result = File::open(&file).and_then(|file| {
+                let mut bytes = Vec::new();
+                file.take((64 << 10) + 1).read_to_end(&mut bytes)?;
+                if bytes.len() > 64 << 10 {
+                    return Err(io::Error::other("ignore file exceeds 64 KiB"));
+                }
+                String::from_utf8(bytes).map_err(io::Error::other)
+            });
+            match result {
+                Ok(text) => {
+                    contents.push_str(&text);
+                    contents.push('\n');
+                }
+                Err(error) => *notice = format!("{}: {error}", crate::paths::display(&file)),
+            }
+        }
+        Arc::new(Rules::new(path.into(), &contents, parent))
     }
 
     #[cfg(test)]

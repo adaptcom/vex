@@ -34,6 +34,7 @@ pub(crate) enum BackgroundEvent {
     Search(SearchResult),
     Syntax(Vec<SyntaxResult>),
     Files(FileResult),
+    Browser(crate::picker::browser::Result),
     Symbols(SymbolResult),
     Locations(crate::picker::locations::Result),
     Diagnostics(crate::picker::diagnostics::Result),
@@ -152,6 +153,7 @@ impl EventQueue {
                 BackgroundEvent::Search(_) => 0,
                 BackgroundEvent::Syntax(_) => 1,
                 BackgroundEvent::Files(_)
+                | BackgroundEvent::Browser(_)
                 | BackgroundEvent::Symbols(_)
                 | BackgroundEvent::Locations(_)
                 | BackgroundEvent::Diagnostics(_)
@@ -336,6 +338,7 @@ impl SyntaxBuffers {
 
 enum PickerJob {
     Files(FileJob),
+    Browser(crate::picker::browser::Job),
     Symbols(SymbolJob),
     Locations(crate::picker::locations::Job),
     Diagnostics(crate::picker::diagnostics::Job),
@@ -352,6 +355,7 @@ impl Job for PickerJob {
     fn cancellation(&self) -> Cancellation {
         match self {
             Self::Files(job) => job.cancellation.clone(),
+            Self::Browser(job) => job.cancellation.clone(),
             Self::Symbols(job) => job.cancellation.clone(),
             Self::Locations(job) => job.cancellation.clone(),
             Self::Diagnostics(job) => job.cancellation.clone(),
@@ -531,74 +535,86 @@ impl Runtime {
         let mut file_state = FileWorker::default();
         let mut workspace_search = crate::picker::search::Worker::default();
         let mut diagnostic_state = crate::picker::diagnostics::Worker::default();
-        let files = LatestWorker::spawn("vex-picker", events.clone(), move |job| match job {
-            PickerJob::Diagnostics(job) => {
-                workspace_search = crate::picker::search::Worker::default();
-                file_state = FileWorker::default();
-                diagnostic_state.run(job).map(BackgroundEvent::Diagnostics)
+        let mut browser_state = crate::picker::browser::Worker::default();
+        let files = LatestWorker::spawn("vex-picker", events.clone(), move |job| {
+            if !matches!(job, PickerJob::Browser(_)) {
+                browser_state = crate::picker::browser::Worker::default();
             }
-            PickerJob::Files(job) => {
-                diagnostic_state = crate::picker::diagnostics::Worker::default();
-                workspace_search = crate::picker::search::Worker::default();
-                file_state.run(job, |result| {
-                    queue.background(BackgroundEvent::Files(result))
-                });
-                None
-            }
-            PickerJob::Locations(job) => {
-                diagnostic_state = crate::picker::diagnostics::Worker::default();
-                workspace_search = crate::picker::search::Worker::default();
-                file_state = FileWorker::default();
-                job.run().map(BackgroundEvent::Locations)
-            }
-            PickerJob::WorkspaceEdit(job) => {
-                diagnostic_state = crate::picker::diagnostics::Worker::default();
-                workspace_search = crate::picker::search::Worker::default();
-                file_state = FileWorker::default();
-                job.run().map(BackgroundEvent::WorkspaceEdit)
-            }
-            PickerJob::LocationNavigation(job) => {
-                diagnostic_state = crate::picker::diagnostics::Worker::default();
-                workspace_search = crate::picker::search::Worker::default();
-                file_state = FileWorker::default();
-                job.run().map(BackgroundEvent::LocationNavigation)
-            }
-            PickerJob::Symbols(job) => {
-                diagnostic_state = crate::picker::diagnostics::Worker::default();
-                workspace_search = crate::picker::search::Worker::default();
-                file_state = FileWorker::default();
-                job.run().map(BackgroundEvent::Symbols)
-            }
-            PickerJob::Buffers(job) => {
-                diagnostic_state = crate::picker::diagnostics::Worker::default();
-                workspace_search = crate::picker::search::Worker::default();
-                file_state = FileWorker::default();
-                job.run().map(BackgroundEvent::Buffers)
-            }
-            PickerJob::Jumps(job) => {
-                diagnostic_state = crate::picker::diagnostics::Worker::default();
-                workspace_search = crate::picker::search::Worker::default();
-                file_state = FileWorker::default();
-                job.run().map(BackgroundEvent::Jumps)
-            }
-            PickerJob::JumpNavigation(job) => {
-                diagnostic_state = crate::picker::diagnostics::Worker::default();
-                workspace_search = crate::picker::search::Worker::default();
-                file_state = FileWorker::default();
-                job.run().map(BackgroundEvent::JumpNavigation)
-            }
-            PickerJob::Prompt(job) => {
-                diagnostic_state = crate::picker::diagnostics::Worker::default();
-                workspace_search = crate::picker::search::Worker::default();
-                job.run().map(BackgroundEvent::Prompt)
-            }
-            PickerJob::WorkspaceSearch(job) => {
-                diagnostic_state = crate::picker::diagnostics::Worker::default();
-                file_state = FileWorker::default();
-                workspace_search.run(job, |result| {
-                    queue.background(BackgroundEvent::WorkspaceSearch(result))
-                });
-                None
+            match job {
+                PickerJob::Browser(job) => {
+                    diagnostic_state = crate::picker::diagnostics::Worker::default();
+                    workspace_search = crate::picker::search::Worker::default();
+                    file_state = FileWorker::default();
+                    browser_state.run(job).map(BackgroundEvent::Browser)
+                }
+                PickerJob::Diagnostics(job) => {
+                    workspace_search = crate::picker::search::Worker::default();
+                    file_state = FileWorker::default();
+                    diagnostic_state.run(job).map(BackgroundEvent::Diagnostics)
+                }
+                PickerJob::Files(job) => {
+                    diagnostic_state = crate::picker::diagnostics::Worker::default();
+                    workspace_search = crate::picker::search::Worker::default();
+                    file_state.run(job, |result| {
+                        queue.background(BackgroundEvent::Files(result))
+                    });
+                    None
+                }
+                PickerJob::Locations(job) => {
+                    diagnostic_state = crate::picker::diagnostics::Worker::default();
+                    workspace_search = crate::picker::search::Worker::default();
+                    file_state = FileWorker::default();
+                    job.run().map(BackgroundEvent::Locations)
+                }
+                PickerJob::WorkspaceEdit(job) => {
+                    diagnostic_state = crate::picker::diagnostics::Worker::default();
+                    workspace_search = crate::picker::search::Worker::default();
+                    file_state = FileWorker::default();
+                    job.run().map(BackgroundEvent::WorkspaceEdit)
+                }
+                PickerJob::LocationNavigation(job) => {
+                    diagnostic_state = crate::picker::diagnostics::Worker::default();
+                    workspace_search = crate::picker::search::Worker::default();
+                    file_state = FileWorker::default();
+                    job.run().map(BackgroundEvent::LocationNavigation)
+                }
+                PickerJob::Symbols(job) => {
+                    diagnostic_state = crate::picker::diagnostics::Worker::default();
+                    workspace_search = crate::picker::search::Worker::default();
+                    file_state = FileWorker::default();
+                    job.run().map(BackgroundEvent::Symbols)
+                }
+                PickerJob::Buffers(job) => {
+                    diagnostic_state = crate::picker::diagnostics::Worker::default();
+                    workspace_search = crate::picker::search::Worker::default();
+                    file_state = FileWorker::default();
+                    job.run().map(BackgroundEvent::Buffers)
+                }
+                PickerJob::Jumps(job) => {
+                    diagnostic_state = crate::picker::diagnostics::Worker::default();
+                    workspace_search = crate::picker::search::Worker::default();
+                    file_state = FileWorker::default();
+                    job.run().map(BackgroundEvent::Jumps)
+                }
+                PickerJob::JumpNavigation(job) => {
+                    diagnostic_state = crate::picker::diagnostics::Worker::default();
+                    workspace_search = crate::picker::search::Worker::default();
+                    file_state = FileWorker::default();
+                    job.run().map(BackgroundEvent::JumpNavigation)
+                }
+                PickerJob::Prompt(job) => {
+                    diagnostic_state = crate::picker::diagnostics::Worker::default();
+                    workspace_search = crate::picker::search::Worker::default();
+                    job.run().map(BackgroundEvent::Prompt)
+                }
+                PickerJob::WorkspaceSearch(job) => {
+                    diagnostic_state = crate::picker::diagnostics::Worker::default();
+                    file_state = FileWorker::default();
+                    workspace_search.run(job, |result| {
+                        queue.background(BackgroundEvent::WorkspaceSearch(result))
+                    });
+                    None
+                }
             }
         })?;
         let preview = LatestWorker::spawn("vex-preview", events.clone(), |job: PreviewJob| {
@@ -660,6 +676,9 @@ impl Runtime {
 
     pub(crate) fn submit_picker(&self, job: FileJob) {
         self.files.as_ref().unwrap().submit(PickerJob::Files(job));
+    }
+    pub(crate) fn submit_browser(&self, job: crate::picker::browser::Job) {
+        self.files.as_ref().unwrap().submit(PickerJob::Browser(job));
     }
     pub(crate) fn submit_diagnostics(&self, job: crate::picker::diagnostics::Job) {
         self.files
@@ -864,6 +883,9 @@ mod tests {
             }
             AppEvent::Background(BackgroundEvent::Syntax(result)) => {
                 app.handle_syntax_results(result);
+            }
+            AppEvent::Background(BackgroundEvent::Browser(result)) => {
+                app.handle_browser_result(result);
             }
             AppEvent::Background(BackgroundEvent::Files(result)) => {
                 app.handle_picker_result(result);

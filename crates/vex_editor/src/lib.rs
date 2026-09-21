@@ -91,6 +91,7 @@ pub enum ApplicationAction {
     RecordJump(std::sync::Arc<SelectionSet>),
     Jump { forward: bool, count: usize },
     FilePicker,
+    FileBrowser,
     BufferPicker,
     JumpPicker,
     LastPicker,

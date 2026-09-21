@@ -74,6 +74,7 @@ and calls that existing dispatcher.
 | `gd`, Ctrl-o | Go to definition / return to the previous jump checkpoint |
 | `]d`, `[d`, `[D`, `]D` | Select next/previous/first/last diagnostic; stop at list ends |
 | Space-f, Space-k | Open file picker / show hover |
+| Space-e, `:browse [PATH]` | Browse a directory, with file contents or directory children in the preview |
 | Space-s, Space-S | Open document / workspace symbol picker |
 | Space-d, Space-D | Pick cached document / workspace diagnostics with syntax previews |
 | Space-r | Rename the symbol at the primary cursor; edits remain unsaved in each affected buffer |
