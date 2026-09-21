@@ -146,10 +146,10 @@ fn syntax_color(highlight: Highlight) -> Color {
     match highlight {
         Keyword | BuiltinVariable | Label => Color::DarkRed,
         Type | Namespace | Parameter => Color::DarkYellow,
-        BuiltinType | Constant | Escape | Heading | Raw | String | Operator | Property | Link => {
+        BuiltinType | Constant | Escape | Raw | String | Operator | Property | Link => {
             Color::DarkBlue
         }
-        Function | Constructor => Color::DarkMagenta,
+        Function | Constructor | Heading => Color::DarkMagenta,
         Tag => Color::DarkGreen,
         Comment => Color::DarkGrey,
         Attribute => Color::Yellow,

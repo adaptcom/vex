@@ -61,9 +61,9 @@ using the terminal's built-in 16 colors and default foreground/background:
 | Syntax | Terminal color |
 |---|---|
 | Keywords, builtin variables, lifetime labels | Red |
-| Functions and constructors | Magenta |
+| Functions, constructors, and Markdown headings | Magenta |
 | Types, namespaces, and parameters | Dark yellow (orange/brown approximation) |
-| Builtin types, constants, strings, escapes, operators, properties, headings, and raw Markdown | Blue |
+| Builtin types, constants, strings, escapes, operators, properties, and raw Markdown | Blue |
 | Tags | Green |
 | Comments | Bright black / grey |
 | Attributes | Bright yellow |
