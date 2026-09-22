@@ -403,11 +403,20 @@ mod tests {
     }
 
     #[test]
-    fn ignores_binary_invalid_utf8_and_hidden_files_and_searches_unsaved_unicode_multiline_text() {
+    fn searches_dotfiles_and_unsaved_unicode_text_while_skipping_ignored_and_binary_files() {
         let root = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(root.path()).unwrap();
         fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
-        for name in ["ignored.txt", ".hidden", "main.txt"] {
+        fs::create_dir(root.join(".config")).unwrap();
+        fs::create_dir(root.join(".git")).unwrap();
+        for name in [
+            "ignored.txt",
+            ".hidden",
+            ".config/settings",
+            ".git/HEAD",
+            ".config/.git",
+            "main.txt",
+        ] {
             fs::write(root.join(name), "old needle\n").unwrap();
         }
         fs::write(root.join("binary"), b"needle\0").unwrap();
@@ -428,6 +437,19 @@ mod tests {
             Some((document.id(), document.revision()))
         );
         assert!(result.notice.contains("2 unreadable"));
+        let result = run(&mut worker, job(&root, "needle"));
+        assert_eq!(
+            result
+                .items
+                .iter()
+                .map(|item| item.entry.value.path.clone())
+                .collect::<Vec<_>>(),
+            [
+                root.join(".config/settings"),
+                root.join(".hidden"),
+                root.join("main.txt")
+            ]
+        );
         let result = run(&mut worker, job(&root, "NEEDLE"));
         assert!(result.items.is_empty());
     }

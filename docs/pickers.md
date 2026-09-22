@@ -123,7 +123,8 @@ cancellation work. Returning to a visited directory restores its query, caret,
 selected entry, and scroll position; up to 64 directory checkpoints are retained.
 Space-' reopens the browser at its last directory with that state intact.
 
-Listings and directory previews show dotfiles and dot-directories by default.
+Like the file picker, listings and directory previews show dotfiles and
+dot-directories by default, except `.git` files and directories.
 The same ignore-file rules as file discovery still apply; symlinks and special
 files are excluded. Directory reads,
 path resolution, filtering, and previews run on the existing picker workers.
@@ -292,9 +293,13 @@ Consequently tracked files
 that match ignore patterns are also hidden. Ignore files must be UTF-8 and at
 most 64 KiB each; read errors appear in the picker footer.
 
-Dot-prefixed entries and symlinks are excluded. Symlink directories are never
-followed. Discovery stops at 64 directory levels, 200,000 files, or 64 MiB of
-stored path/label bytes, with a notice when a limit is hit. The memory total also
+The file picker, directory browser, and workspace text search include dotfiles
+and files inside dot-directories, subject to the ignore rules above. Entries
+named `.git` are always excluded, including worktree `.git` files, and `.git`
+directories are never scanned. Other names such as `.github` and `.gitignore`
+remain visible. Symlinks are excluded; symlink directories are never followed.
+Discovery stops at 64 directory levels, 200,000 files, or 64 MiB of stored
+path/label bytes, with a notice when a limit is hit. The memory total also
 includes index entries, parsed rules, and matcher scratch storage. The index is
 retained while the picker is open, including across query changes; reopening
 rescans to observe filesystem and ignore-rule changes.

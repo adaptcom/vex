@@ -263,6 +263,10 @@ impl Rules {
         scratch: &mut Scratch,
         cancellation: &Cancellation,
     ) -> Option<bool> {
+        // Git metadata is always hidden, including worktree .git files.
+        if path.file_name().is_some_and(|name| name == ".git") {
+            return Some(true);
+        }
         if let Ok(relative) = path.strip_prefix(&self.base) {
             let label = relative.to_string_lossy();
             #[cfg(windows)]

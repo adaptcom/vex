@@ -179,10 +179,6 @@ impl Index {
 
     fn visit(&mut self, entry: fs::DirEntry, cancellation: &Cancellation) {
         let directory = self.stack.last_mut().unwrap();
-        let name = entry.file_name();
-        if name.to_string_lossy().starts_with('.') {
-            return;
-        }
         let path = entry.path();
         let kind = match entry.file_type() {
             Ok(kind) => kind,
@@ -624,22 +620,34 @@ mod tests {
     }
 
     #[test]
-    fn walking_respects_nested_ignores_pruning_hidden_files_and_query_changes() {
+    fn walking_includes_dotfiles_and_respects_nested_ignores_and_query_changes() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         fs::create_dir(root.join(".git")).unwrap();
         fs::create_dir_all(root.join("src/generated")).unwrap();
+        fs::create_dir(root.join(".config")).unwrap();
+        fs::create_dir(root.join(".github")).unwrap();
+        fs::create_dir(root.join(".ignored")).unwrap();
         fs::write(
             root.join(".gitignore"),
-            "*.log\ngenerated/\n!generated/keep.rs\n",
+            "*.log\ngenerated/\n!generated/keep.rs\n.ignored/\n!.git\n",
         )
         .unwrap();
         fs::write(root.join("src/.gitignore"), "!keep.log\n").unwrap();
+        fs::write(root.join(".config/.ignore"), "!keep.log\n").unwrap();
         for path in [
             "app.rs",
             "src/界.rs",
             ".hidden",
+            ".hidden.log",
+            ".config/settings.toml",
+            ".config/keep.log",
+            ".config/bad.log",
+            ".git/HEAD",
+            ".github/check.yml",
+            ".ignored/keep.rs",
             "bad.log",
+            "src/.git",
             "src/keep.log",
             "src/bad.log",
             "src/generated/keep.rs",
@@ -657,8 +665,33 @@ mod tests {
             .iter()
             .map(|i| i.entry.label.as_str())
             .collect();
-        assert_eq!(labels, ["app.rs", "src/keep.log", "src/界.rs"]);
+        assert_eq!(
+            labels,
+            [
+                ".config/.ignore",
+                ".config/keep.log",
+                ".config/settings.toml",
+                ".github/check.yml",
+                ".gitignore",
+                ".hidden",
+                "app.rs",
+                "src/.gitignore",
+                "src/keep.log",
+                "src/界.rs"
+            ]
+        );
         assert!(!result.scanning);
+        worker.run(job(root, ".hidden"), |result| {
+            assert_eq!(result.items.len(), 1);
+            assert_eq!(result.items[0].entry.value, root.join(".hidden"));
+        });
+        worker.run(job(root, "settings"), |result| {
+            assert_eq!(result.items.len(), 1);
+            assert_eq!(
+                result.items[0].entry.value,
+                root.join(".config/settings.toml")
+            );
+        });
         worker.run(job(root, "界"), |result| {
             assert_eq!(result.items.len(), 1);
             assert_eq!(result.items[0].entry.value, root.join("src/界.rs"));
@@ -698,8 +731,14 @@ mod tests {
         while !index.stack.is_empty() {
             index.scan(&cancellation);
         }
-        assert_eq!(index.entries.len(), 1);
-        assert_eq!(index.entries[0].label, "src/keep.txt");
+        assert_eq!(
+            index
+                .entries
+                .iter()
+                .filter(|entry| entry.label == "src/keep.txt")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -840,8 +879,12 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        fs::write(root.join(".gitignore"), "*.log\n!important.log\n/build/\n!build/keep.txt\nsrc/**/generated?.[ch]\nassets/[a-c]?.tmp\nfoo/**/bar\n[[:digit:]].txt\nspace\\ \n\\#literal\n\\!literal\n").unwrap();
         let paths = [
+            ".gitignore",
+            "src/.gitignore",
+            ".hidden",
+            ".hidden.log",
+            ".config/settings.toml",
             "keep.rs",
             "bad.log",
             "important.log",
@@ -870,6 +913,7 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, "text").unwrap();
         }
+        fs::write(root.join(".gitignore"), "*.log\n!important.log\n/build/\n!build/keep.txt\nsrc/**/generated?.[ch]\nassets/[a-c]?.tmp\nfoo/**/bar\n[[:digit:]].txt\nspace\\ \n\\#literal\n\\!literal\n").unwrap();
         fs::write(root.join("src/.gitignore"), "!bad.log\nimportant.log\n").unwrap();
         let mut child = Command::new("git")
             .current_dir(root)

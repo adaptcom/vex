@@ -227,7 +227,7 @@ mod tests {
     fn lists_children_including_dotfiles_with_directories_first_and_ignore_rules() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join(".git")).unwrap();
-        fs::write(root.path().join(".gitignore"), "*.log\nignored/\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "*.log\nignored/\n!.git\n").unwrap();
         let path = root.path().join("src");
         fs::create_dir(&path).unwrap();
         for name in ["zebra", "ignored", ".hidden"] {
@@ -244,6 +244,7 @@ mod tests {
         }
         fs::write(path.join(".ignore"), "!keep.log\n").unwrap();
         fs::write(path.join("zebra/nested.rs"), "nested").unwrap();
+        fs::write(path.join("zebra/.git"), "gitdir: elsewhere\n").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&path, path.join("cycle")).unwrap();
         let mut worker = Worker::default();
@@ -277,6 +278,26 @@ mod tests {
         assert_eq!(
             preview(&path, &Cancellation::default()).unwrap().text,
             ".hidden/\nzebra/\n.hidden.rs\n.ignore\nalpha.rs\nkeep.log\n界 file.rs\n"
+        );
+        let result = worker.run(job(root.path(), "")).unwrap();
+        assert_eq!(
+            result
+                .ranked
+                .items
+                .iter()
+                .map(|item| item.entry.label.as_str())
+                .collect::<Vec<_>>(),
+            ["src/", ".gitignore"]
+        );
+        assert_eq!(
+            preview(root.path(), &Cancellation::default()).unwrap().text,
+            "src/\n.gitignore\n"
+        );
+        assert_eq!(
+            preview(&path.join("zebra"), &Cancellation::default())
+                .unwrap()
+                .text,
+            "nested.rs\n"
         );
     }
 
