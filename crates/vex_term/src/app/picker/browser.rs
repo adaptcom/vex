@@ -309,6 +309,48 @@ mod tests {
     }
 
     #[test]
+    fn backspace_aliases_edit_browser_query_before_navigating_to_parent() {
+        for event in [
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::SHIFT),
+            // Crossterm decodes the legacy Backspace byte 0x08 as Ctrl-H.
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+        ] {
+            let (root, mut app, mut worker) = fixture();
+            press(&mut app, " e");
+            press(&mut app, "src");
+            finish(&mut app, &mut worker);
+            key(&mut app, KeyCode::Enter);
+            finish(&mut app, &mut worker);
+            press(&mut app, "界");
+            finish(&mut app, &mut worker);
+
+            app.handle(Event::Key(event));
+            assert!(
+                app.picker
+                    .active
+                    .as_ref()
+                    .unwrap()
+                    .view
+                    .query
+                    .text()
+                    .is_empty()
+            );
+            assert!(directory(&app).ends_with("src"), "{event:?}");
+            finish(&mut app, &mut worker);
+
+            app.handle(Event::Key(event));
+            finish(&mut app, &mut worker);
+            assert_eq!(
+                directory(&app),
+                root.path().canonicalize().unwrap(),
+                "{event:?}"
+            );
+            assert_eq!(selected(&app), "src/");
+        }
+    }
+
+    #[test]
     fn stale_results_after_navigation_close_and_reopen_are_ignored() {
         let (root, mut app, mut worker) = fixture();
         app.open_browser(Some(root.path())).unwrap();

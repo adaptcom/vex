@@ -116,8 +116,8 @@ buffers, or lists the selected directory's immediate children. Files retain the
 existing syntax highlighting. Narrow terminals show only the left panel.
 
 Enter enters a directory without closing the picker, or opens a file in the
-focused editor pane and closes the picker. Backspace edits the query; when it is
-already empty, Backspace goes to the parent directory. At the filesystem root
+focused editor pane and closes the picker. Backspace or Ctrl-h edits the query;
+when it is already empty, either key goes to the parent directory. At the filesystem root
 it does nothing. The usual arrow/Ctrl-n/Ctrl-p navigation and Escape/Ctrl-c
 cancellation work. Returning to a visited directory restores its query, caret,
 selected entry, and scroll position; up to 64 directory checkpoints are retained.

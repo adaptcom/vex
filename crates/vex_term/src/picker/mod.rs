@@ -281,7 +281,9 @@ impl<T: Eq> Picker<T> {
         match key {
             Key::Escape | Key::Ctrl('c') => return Action::Cancel,
             Key::Enter => return Action::Accept,
-            Key::Backspace if self.browse && self.query.text().is_empty() => return Action::Parent,
+            Key::Backspace | Key::Ctrl('h') if self.browse && self.query.text().is_empty() => {
+                return Action::Parent;
+            }
             Key::Down | Key::Ctrl('n') | Key::Tab => self.navigate(1),
             Key::Up | Key::Ctrl('p') | Key::BackTab => self.navigate(-1),
             Key::PageDown | Key::Ctrl('d') => self.navigate(page.max(1) as isize),
